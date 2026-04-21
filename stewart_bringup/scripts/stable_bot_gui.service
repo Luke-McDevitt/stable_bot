@@ -1,0 +1,22 @@
+[Unit]
+Description=Stable-Bot GUI HTTP server (serves index.html + recovery endpoints on :8080)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sorak
+Group=sorak
+WorkingDirectory=/home/sorak/ros2_ws/src/stewart_bringup
+# --host 0.0.0.0 so the laptop on the same WiFi can reach it. The
+# /reset and /launch endpoints are still local-only in spirit; if your
+# WiFi is untrusted, add a firewall rule or keep on --host 127.0.0.1
+# and access via an SSH tunnel.
+ExecStart=/usr/bin/python3 /home/sorak/ros2_ws/src/stewart_bringup/scripts/gui_server.py --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

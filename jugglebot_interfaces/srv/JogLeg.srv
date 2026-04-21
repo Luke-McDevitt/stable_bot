@@ -1,0 +1,6 @@
+int8 leg          # 0..5
+float32 delta_turns  # signed, in motor turns; clamped to soft limits
+---
+bool success
+string message
+float32 final_pos_turns

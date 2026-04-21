@@ -1,0 +1,1555 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stable-Bot Stewart Platform</title>
+<script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  input[type=range] { accent-color: rgb(59 130 246); }
+</style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+
+<header class="bg-slate-800 border-b border-slate-700">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+    <h1 class="text-lg font-semibold">Stable-Bot Stewart Platform</h1>
+    <div class="flex items-center gap-3">
+      <span id="conn-dot" class="w-3 h-3 rounded-full bg-red-500"></span>
+      <span id="conn-label" class="text-sm text-slate-300">disconnected</span>
+      <input id="ws-url" value="ws://localhost:9090"
+             class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-56">
+      <button id="connect-btn" class="text-sm bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded">Connect</button>
+      <button id="estop-btn"
+              class="text-sm font-bold uppercase bg-red-600 hover:bg-red-500 px-4 py-2 rounded shadow">
+        E-STOP
+      </button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto p-4 grid gap-4 lg:grid-cols-3">
+
+  <!-- LEFT COLUMN: status + speed cap + arming + live readouts -->
+  <section class="lg:col-span-1 space-y-4">
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Status</h2>
+      <pre id="status-box" class="mono text-xs whitespace-pre-wrap text-slate-200">(waiting...)</pre>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Diagnostics</h2>
+      <div class="grid grid-cols-3 gap-1 mono text-xs mb-2">
+        <div>ws: <span id="diag-ws">—</span></div>
+        <div>topics: <span id="diag-topic-count">—</span></div>
+        <div>nodes: <span id="diag-node-count">—</span></div>
+      </div>
+      <div class="grid grid-cols-2 gap-1 mono text-xs mb-2">
+        <div>/status:   <span id="diag-status-age">—</span></div>
+        <div>/encoders: <span id="diag-enc-age">—</span></div>
+        <div>/rpy:      <span id="diag-rpy-age">—</span></div>
+        <div>/currents: <span id="diag-cur-age">—</span></div>
+      </div>
+      <div class="flex gap-1 mb-1">
+        <button id="diag-probe-btn"
+                class="flex-1 bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">Probe ROS graph</button>
+        <button id="diag-reconnect-btn"
+                class="flex-1 bg-amber-600 hover:bg-amber-500 rounded py-1 text-xs">Reconnect rosbridge</button>
+      </div>
+      <div class="flex gap-1 mb-2">
+        <button id="diag-daemon-btn"
+                class="flex-1 bg-rose-700 hover:bg-rose-600 rounded py-1 text-xs">Restart ros2 daemon</button>
+      </div>
+      <div class="flex gap-1 mb-2">
+        <button id="diag-hardreset-btn"
+                class="flex-1 bg-red-800 hover:bg-red-700 rounded py-1 text-xs"
+                title="Kill all stewart processes + restart daemon. Works when rosbridge is unreachable (uses the gui_server.py HTTP endpoint, not /control_cmd).">Hard reset stack</button>
+        <button id="diag-launch-btn"
+                class="flex-1 bg-emerald-700 hover:bg-emerald-600 rounded py-1 text-xs"
+                title="Spawn `ros2 launch stewart_bringup stewart_gui_launch.py` in the background. Requires gui_server.py running (not plain http.server).">(Re)launch stack</button>
+      </div>
+      <div class="flex gap-1 mb-2">
+        <button id="diag-launchlog-btn"
+                class="flex-1 bg-slate-700 hover:bg-slate-600 rounded py-1 text-xs"
+                title="Tail the last_launch.log from gui_server.py — shows what the backend actually said on startup and since.">View launch log</button>
+      </div>
+      <pre id="diag-output"
+           class="mono text-xs bg-slate-900 border border-slate-700 rounded p-1 h-48 overflow-y-auto whitespace-pre">(click Probe)</pre>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Arming</h2>
+      <div class="flex gap-2">
+        <button id="arm-btn" class="flex-1 bg-emerald-600 hover:bg-emerald-500 rounded py-2">Arm</button>
+        <button id="disarm-btn" class="flex-1 bg-amber-600 hover:bg-amber-500 rounded py-2">Disarm</button>
+      </div>
+      <div class="mt-2 flex gap-2">
+        <button id="rest-btn" class="flex-1 bg-slate-600 hover:bg-slate-500 rounded py-2 text-sm">Go to rest</button>
+        <button id="level-on-btn" class="flex-1 bg-indigo-600 hover:bg-indigo-500 rounded py-2 text-sm">Level ON</button>
+        <button id="level-off-btn" class="flex-1 bg-slate-600 hover:bg-slate-500 rounded py-2 text-sm">Level OFF</button>
+      </div>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Motor limits
+        <span class="mono text-xs text-slate-500" id="vel-hard-ceiling"></span>
+      </h2>
+      <label class="text-xs text-slate-400 flex items-center gap-2">
+        Speed cap:
+        <input id="vel-cap-slider" type="range" min="0.1" max="2.0" step="0.05" value="1.0"
+               class="flex-1">
+        <span id="vel-cap-readout" class="mono text-sm w-20 text-right">1.00 t/s</span>
+      </label>
+      <label class="text-xs text-slate-400 flex items-center gap-2 mt-2">
+        Current:
+        <input id="leg-current-slider" type="range" min="2" max="15" step="0.5" value="6"
+               class="flex-1">
+        <span id="leg-current-readout" class="mono text-sm w-20 text-right">6.0 A</span>
+      </label>
+      <p class="text-xs text-slate-500 mt-1">
+        Current applies to every armed leg. Raise if a leg (e.g. L1/L4)
+        refuses to move against gravity; stock 6 A is fine for most jogs.
+        Change takes effect on release.
+      </p>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">IMU (platform)</h2>
+      <div class="grid grid-cols-3 gap-2 mono text-sm">
+        <div><span class="text-slate-400">roll</span><div id="imu-roll">--.--</div></div>
+        <div><span class="text-slate-400">pitch</span><div id="imu-pitch">--.--</div></div>
+        <div><span class="text-slate-400">yaw</span><div id="imu-yaw">--.--</div></div>
+      </div>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Leg encoders (turns)</h2>
+      <div id="encoder-grid" class="grid grid-cols-2 gap-1 mono text-sm">
+        <div>L0: <span id="enc-0">--</span></div>
+        <div>L1: <span id="enc-1">--</span></div>
+        <div>L2: <span id="enc-2">--</span></div>
+        <div>L3: <span id="enc-3">--</span></div>
+        <div>L4: <span id="enc-4">--</span></div>
+        <div>L5: <span id="enc-5">--</span></div>
+      </div>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Leg currents (A, Iq_measured)</h2>
+      <div class="grid grid-cols-2 gap-1 mono text-sm">
+        <div>L0: <span id="cur-0">--</span></div>
+        <div>L1: <span id="cur-1">--</span></div>
+        <div>L2: <span id="cur-2">--</span></div>
+        <div>L3: <span id="cur-3">--</span></div>
+        <div>L4: <span id="cur-4">--</span></div>
+        <div>L5: <span id="cur-5">--</span></div>
+      </div>
+      <p class="text-xs text-slate-500 mt-1">
+        Draw turns red when &ge; 80 % of the current limit slider.
+      </p>
+    </div>
+  </section>
+
+  <!-- MIDDLE COLUMN: jog + pose -->
+  <section class="lg:col-span-1 space-y-4">
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Per-leg jog (position, clamped to soft limits)</h2>
+      <label class="text-xs flex items-center gap-2 mb-2">
+        Step:
+        <input id="jog-step" type="number" step="0.01" value="0.1"
+               class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-20">
+        <span class="text-slate-400 text-xs mono" id="jog-mm-equiv">~7.1 mm</span>
+      </label>
+      <div id="jog-grid" class="grid grid-cols-3 gap-2"></div>
+      <p id="jog-msg" class="text-xs text-slate-400 mt-2 min-h-4"></p>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Velocity jog (dead-man)</h2>
+      <p class="text-xs text-slate-400 mb-2">
+        Checkboxes arm individual legs in <span class="mono">VELOCITY</span>
+        mode. While the slider is dragged, all checked legs run at the slider
+        value (clamped to the speed cap). Slider snaps back to 0 on release.
+      </p>
+      <div id="leg-arm-grid" class="grid grid-cols-6 gap-2 mb-3"></div>
+      <div class="flex items-center gap-3">
+        <input id="vel-jog-slider" type="range" min="-1.5" max="1.5" step="0.01" value="0"
+               class="flex-1">
+        <span id="vel-jog-readout" class="mono text-sm w-24 text-right">0.00 t/s</span>
+      </div>
+      <p id="arm-msg" class="text-xs text-slate-400 mt-2 min-h-4"></p>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Platform pose</h2>
+      <div id="pose-sliders" class="space-y-2"></div>
+      <div class="mt-2 flex gap-2">
+        <button id="pose-send" class="flex-1 bg-blue-600 hover:bg-blue-500 rounded py-2 text-sm">Send pose</button>
+        <button id="pose-zero" class="flex-1 bg-slate-600 hover:bg-slate-500 rounded py-2 text-sm">Zero sliders</button>
+      </div>
+      <p id="pose-msg" class="text-xs text-slate-400 mt-2 min-h-4"></p>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">
+        Stabilization (hold level at Z)
+      </h2>
+      <p class="text-xs text-slate-400 mb-2">
+        Drag the Z slider while the PI leveling loop is on. Pitch/roll
+        errors (vs saved <span class="mono">platform_level.yaml</span>)
+        are shown below — watch them settle to &lt;0.1°.
+      </p>
+
+      <div class="flex gap-2 mb-2">
+        <button id="stab-arm-btn" class="flex-1 bg-emerald-600 hover:bg-emerald-500 rounded py-2 text-sm">Arm</button>
+        <button id="stab-disarm-btn" class="flex-1 bg-amber-600 hover:bg-amber-500 rounded py-2 text-sm">Disarm</button>
+      </div>
+      <div class="flex gap-2 mb-3">
+        <button id="stab-level-on-btn" class="flex-1 bg-indigo-600 hover:bg-indigo-500 rounded py-2 text-sm">Level ON</button>
+        <button id="stab-level-off-btn" class="flex-1 bg-slate-600 hover:bg-slate-500 rounded py-2 text-sm">Level OFF</button>
+      </div>
+
+      <label class="text-xs text-slate-400 block mb-2">
+        Target Z (mm):
+        <div class="flex items-center gap-2">
+          <input id="stab-z-slider" type="range" min="-20" max="100" step="1" value="0"
+                 class="flex-1">
+          <span id="stab-z-readout" class="mono text-sm w-16 text-right">0 mm</span>
+        </div>
+      </label>
+
+      <div class="grid grid-cols-3 gap-2 mono text-sm border-t border-slate-700 pt-2">
+        <div>
+          <div class="text-xs text-slate-400">err roll</div>
+          <div id="stab-err-roll" class="text-lg">--.--</div>
+        </div>
+        <div>
+          <div class="text-xs text-slate-400">err pitch</div>
+          <div id="stab-err-pitch" class="text-lg">--.--</div>
+        </div>
+        <div>
+          <div class="text-xs text-slate-400">yaw (abs)</div>
+          <div id="stab-yaw" class="text-lg">--.--</div>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-2 mono text-xs mt-2 text-slate-400">
+        <div>corr roll: <span id="stab-corr-roll">--</span>°</div>
+        <div>corr pitch: <span id="stab-corr-pitch">--</span>°</div>
+      </div>
+      <p id="stab-msg" class="text-xs text-slate-400 mt-2 min-h-4"></p>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Routines (record / play)</h2>
+
+      <!-- Record section -->
+      <div class="mb-3 border-b border-slate-700 pb-3">
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-xs uppercase text-slate-400">Record</h3>
+          <div class="text-xs mono text-slate-500">
+            kf: <span id="rec-kf-count">0</span>
+            &nbsp;t: <span id="rec-elapsed">0.0</span>s
+          </div>
+        </div>
+        <div class="flex gap-2 mb-2">
+          <button id="rec-start-btn"
+                  class="flex-1 bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">Start / reset t=0</button>
+          <button id="rec-add-btn"
+                  class="flex-1 bg-blue-600 hover:bg-blue-500 rounded py-1 text-xs">+ Keyframe</button>
+          <button id="rec-clear-btn"
+                  class="flex-1 bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">Clear kf</button>
+        </div>
+        <div id="rec-kf-list"
+             class="mono text-xs bg-slate-900 border border-slate-700 rounded p-1 max-h-32 overflow-y-auto whitespace-pre"></div>
+        <div class="flex gap-2 mt-2">
+          <input id="rec-save-name" placeholder="routine name"
+                 class="mono text-xs flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1">
+          <label class="flex items-center gap-1 text-xs text-slate-400">
+            <input id="rec-save-loop" type="checkbox"> loop
+          </label>
+          <button id="rec-save-btn"
+                  class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs">Save</button>
+        </div>
+      </div>
+
+      <!-- Play section -->
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-xs uppercase text-slate-400">Play</h3>
+          <div class="text-xs mono text-slate-500" id="play-status">idle</div>
+        </div>
+        <div class="flex gap-2 mb-2 min-w-0">
+          <select id="play-routine-select"
+                  class="mono text-xs flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded px-2 py-1 truncate">
+            <option value="">(no routines saved)</option>
+          </select>
+          <button id="play-refresh-btn"
+                  class="shrink-0 bg-slate-600 hover:bg-slate-500 rounded px-2 py-1 text-xs" title="refresh list">↻</button>
+          <button id="play-delete-btn"
+                  class="shrink-0 bg-red-700 hover:bg-red-600 rounded px-2 py-1 text-xs" title="delete">🗑</button>
+        </div>
+        <div class="flex gap-2">
+          <button id="play-btn"
+                  class="flex-1 bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">Play</button>
+          <button id="play-stop-btn"
+                  class="flex-1 bg-amber-600 hover:bg-amber-500 rounded py-1 text-xs">Stop</button>
+          <label class="flex items-center gap-1 text-xs text-slate-400">
+            <input id="play-loop" type="checkbox"> loop
+          </label>
+          <label class="flex items-center gap-1 text-xs text-slate-400"
+                 title="Save commanded pose, IMU data, encoders, currents, and CAN traffic to ~/ros2_ws/src/stewart_bringup/logs/ for offline analysis">
+            <input id="play-record" type="checkbox"> rec
+          </label>
+        </div>
+        <div class="mt-2 h-1 bg-slate-900 rounded overflow-hidden">
+          <div id="play-progress" class="h-full bg-emerald-500" style="width:0%"></div>
+        </div>
+        <p id="routine-msg" class="text-xs text-slate-400 mt-2 min-h-4"></p>
+      </div>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Demo: rolling ball</h2>
+      <p class="text-xs text-slate-400 mb-2">
+        Generates a tilt-rotation routine so a ball on top orbits at the
+        given radius. After generating, the routine auto-appears in the
+        Play dropdown.
+      </p>
+      <ul class="text-xs text-slate-500 mb-2 list-disc pl-4 space-y-0.5">
+        <li><b>Ramp-up</b>: spin-up phase. The <i>orbit radius</i> R grows
+          0 → R_final via a smoothstep. During this phase the tilt includes
+          a tangential component (phase lead) that physically pushes the
+          ball along the orbit, building up angular momentum. Shorter =
+          more aggressive kick; longer = gentler.</li>
+        <li><b>Hold cycles</b>: full orbit rotations at the steady-state
+          tilt (R̈=Ṙ=0, just centripetal).</li>
+        <li><b>Ramp-down</b>: mirror of ramp-up. R shrinks R_final → 0 with
+          a braking phase lead that drains the ball's tangential velocity
+          back to rest.</li>
+        <li><b>Center hold</b>: flat platform (tilt = 0°) so the ball can
+          come to rest on top before the routine ends.</li>
+        <li><b>Min tilt</b>: safety floor during the active phases (not
+          applied during center hold). Usually leave at 0 with the new
+          feed-forward; only useful if you see the ball sitting still
+          during early ramp-up because of rolling friction.</li>
+      </ul>
+      <div class="grid grid-cols-2 gap-2 text-xs mb-2">
+        <label>Radius (mm)
+          <input id="rb-radius" type="number" step="10" value="180"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>Period (s)
+          <input id="rb-period" type="number" step="0.5" value="3.0"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>Ramp-up (s)
+          <input id="rb-rampup" type="number" step="0.5" value="2.0"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>Hold cycles
+          <input id="rb-cycles" type="number" step="1" value="3"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>Ramp-down (s)
+          <input id="rb-rampdown" type="number" step="0.5" value="2.0"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>Center hold (s)
+          <input id="rb-center" type="number" step="0.5" value="2.0"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label class="col-span-2">Center Z (mm) — elevates the whole demo so tilt doesn't hit bottom endstops
+          <input id="rb-z" type="number" step="5" value="30"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label class="col-span-2">Max tilt (°) — 0 = use physics-exact θ; else cap (ball won't reach full radius but motion is gentler)
+          <input id="rb-max-tilt" type="number" step="0.5" value="3.0"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label class="col-span-2">Min tilt (°) — floor on ramp envelope (leave 0 unless you see the ball sit still during ramp-up)
+          <input id="rb-min-tilt" type="number" step="0.1" value="0.0"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label class="col-span-2">Tilt multiplier — scale final θ (1.0 = physics-exact; >1 for static-friction bust; &lt;1 gentler)
+          <input id="rb-tilt-mult" type="number" step="0.1" value="1.0"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <p class="col-span-2 text-xs text-slate-500">
+          Set ramp-up or ramp-down to <b>0</b> to disable it (instant jump to/from the hold tilt — useful for breaking stiction but motors will slew hard).
+        </p>
+      </div>
+      <button id="rb-generate-btn"
+              class="w-full bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-sm">
+        Generate routine
+      </button>
+      <p class="text-xs text-slate-500 mt-2">
+        Tip: at R=180 mm the min safe period under the 15°/s cap is ~3 s.
+        First try without a ball (<b>do not</b> put a ball on it until you
+        like what you see).
+      </p>
+    </div>
+
+  </section>
+
+  <!-- RIGHT COLUMN: homing + errors -->
+  <section class="lg:col-span-1 space-y-4">
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">ODrive errors</h2>
+      <div class="flex gap-2 mb-2">
+        <button id="err-read-btn" class="flex-1 bg-slate-600 hover:bg-slate-500 rounded py-1 text-sm">Read now</button>
+        <button id="err-clear-btn" class="flex-1 bg-amber-600 hover:bg-amber-500 rounded py-1 text-sm">Clear all</button>
+      </div>
+      <div id="errors-grid" class="grid grid-cols-1 gap-1 mono text-xs"></div>
+      <p class="text-xs text-slate-500 mt-2">
+        Auto-refreshes every 0.5 s from the node. Nonzero fields turn red.
+      </p>
+      <div class="mt-3 border-t border-slate-700 pt-2">
+        <h3 class="text-xs uppercase text-slate-400 mb-1">CAN recovery</h3>
+        <button id="can-reset-btn"
+                class="w-full bg-rose-700 hover:bg-rose-600 rounded py-1 text-sm">
+          Soft-reset CAN bus (sudo ip link down/up)
+        </button>
+        <p id="can-reset-msg" class="text-xs text-slate-400 mt-1 min-h-4"></p>
+        <details class="text-xs text-slate-500 mt-1">
+          <summary class="cursor-pointer select-none">If that fails → manual steps</summary>
+          <ol class="list-decimal ml-4 mt-1 space-y-1">
+            <li>From Windows admin PowerShell:
+              <div class="mono bg-slate-900 border border-slate-700 rounded px-2 py-1 my-1 whitespace-pre">usbipd list
+usbipd detach --busid &lt;X-Y&gt;
+usbipd attach --wsl --busid &lt;X-Y&gt;</div>
+            </li>
+            <li>If the adapter's LED stayed dark during detach/attach, <b>physically unplug the USB cable</b> and re-plug it, then re-run <span class="mono">usbipd attach</span>.</li>
+            <li>In WSL: <span class="mono">sudo ip link set can0 up type can bitrate 1000000</span></li>
+            <li>Click "Soft-reset CAN bus" again.</li>
+          </ol>
+          <p class="mt-2">To enable the soft-reset button (passwordless <span class="mono">sudo</span> for <span class="mono">ip link</span>):</p>
+          <pre class="mono bg-slate-900 border border-slate-700 rounded px-2 py-1 my-1 whitespace-pre">sudo visudo -f /etc/sudoers.d/stewart-can
+# add this line (replace 'sorak' if needed):
+sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
+        </details>
+      </div>
+    </div>
+
+    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Homing</h2>
+      <p class="text-xs text-slate-400 mb-3">
+        Two-step workflow. <b>Step 1</b> stall-homes the bottom endstops
+        automatically. <b>Step 2</b> is a manual top-of-stroke capture —
+        you physically move each leg to its top position, then press
+        <span class="mono">[ENTER]</span> in the prompt to record it.
+      </p>
+      <div class="space-y-2 mb-2">
+        <div>
+          <div class="text-xs text-slate-400 mb-1">Legs to home:</div>
+          <div id="home-leg-cbs" class="grid grid-cols-6 gap-1"></div>
+        </div>
+        <button id="home-bottom-btn"
+                class="w-full bg-emerald-600 hover:bg-emerald-500 rounded py-2 text-sm">
+          1. Stall-home selected legs (bottom)
+        </button>
+        <p class="text-xs text-slate-500">
+          Flags below are pre-filled with your known-good values. Edit them
+          to override. On stall, the script prompts
+          <span class="mono">[y]=save+park / [r]=retry / [s]=skip / [q]=quit</span>
+          — reply via the stdin box.
+        </p>
+        <button id="home-top-btn"
+                class="w-full bg-indigo-600 hover:bg-indigo-500 rounded py-2 text-sm">
+          2. Capture top of stroke (manual, all 6)
+        </button>
+      </div>
+
+      <form id="homing-form" class="grid grid-cols-2 gap-2 text-xs mb-2">
+        <!-- Key tuned flags (pre-filled with user's known-good defaults) -->
+        <label>--vel (turns/s) — +=down on N0
+          <input id="h-vel" type="number" step="0.01" value="0.2"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>--current (A)
+          <input id="h-current" type="number" step="0.1" value="3.3"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+
+        <label>--travel-cap (turns)
+          <input id="h-travel-cap" type="number" step="0.1" value="1.0"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>--stall-vel-frac
+          <input id="h-stall-vel-frac" type="number" step="0.05" value="0.9"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+
+        <label>--stall-dur (s)
+          <input id="h-stall-dur" type="number" step="0.05" value="0.25"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>--baseline (s)
+          <input id="h-baseline" type="number" step="0.1" value="5.0"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+
+        <label>--retract-current (A)
+          <input id="h-retract-current" type="number" step="0.1" value="10.0"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>--retract (turns)
+          <input id="h-retract" type="number" step="0.1" value="0.5"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+
+        <!-- Rest of the flags are less commonly edited; tucked away -->
+      </form>
+
+      <details class="text-xs text-slate-400 mb-2">
+        <summary class="cursor-pointer select-none">More flags (rarely changed)</summary>
+        <div class="grid grid-cols-2 gap-2 text-xs mt-2">
+          <label>--vel-limit
+            <input id="h-vel-limit" type="number" step="0.1" value="1.5"
+                   class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+          </label>
+          <label>--free-motion-frac
+            <input id="h-free-motion-frac" type="number" step="0.05" value="0.5"
+                   class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+          </label>
+          <label>--pre-roll (s)
+            <input id="h-pre-roll" type="number" step="0.1" value="0.5"
+                   class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+          </label>
+          <label>--retract-mode
+            <select id="h-retract-mode"
+                    class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+              <option value="pos">pos (default)</option>
+              <option value="vel">vel</option>
+            </select>
+          </label>
+          <label>--retract-vel
+            <input id="h-retract-vel" type="number" step="0.1" value="0.5"
+                   class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+          </label>
+          <label>--distance (0 = unlimited)
+            <input id="h-distance" type="number" step="0.1" value="0"
+                   class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+          </label>
+          <fieldset class="col-span-2 border border-slate-700 rounded p-2 grid grid-cols-2 gap-1">
+            <legend class="px-1 text-slate-400">mode flags</legend>
+            <label class="flex items-center gap-1"><input id="h-dry-run" type="checkbox"> dry-run</label>
+            <label class="flex items-center gap-1"><input id="h-collect" type="checkbox"> collect</label>
+            <label class="flex items-center gap-1"><input id="h-no-stall" type="checkbox"> no-stall</label>
+            <label class="flex items-center gap-1"><input id="h-go-to-rest" type="checkbox"> go-to-rest (park only)</label>
+            <label class="flex items-center gap-1"><input id="h-no-park" type="checkbox"> no-park</label>
+            <label class="flex items-center gap-1"><input id="h-measure-stroke" type="checkbox"> measure-stroke (top)</label>
+            <label class="flex items-center gap-1"><input id="h-apply-to-all-legs" type="checkbox"> apply-to-all-legs</label>
+            <label class="flex items-center gap-1"><input id="h-manual-capture" type="checkbox"> manual-capture</label>
+          </fieldset>
+          <button type="button" id="homing-start"
+                  class="col-span-2 bg-slate-600 hover:bg-slate-500 rounded py-2 text-xs">
+            Advanced: run with these exact flags (no mode-forcing)
+          </button>
+        </div>
+      </details>
+
+      <div class="flex gap-2 mt-2">
+        <button type="button" id="homing-cancel"
+                class="flex-1 bg-amber-600 hover:bg-amber-500 rounded py-2 text-sm">Cancel running homing</button>
+      </div>
+
+      <div class="mt-3">
+        <div class="flex gap-1">
+          <input id="homing-stdin" placeholder="type input for manual-capture prompts, press Enter"
+                 class="mono text-xs flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1">
+          <button id="homing-send-stdin"
+                  class="text-xs bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded">Send</button>
+        </div>
+        <pre id="homing-log"
+             class="mono text-xs bg-black border border-slate-700 rounded p-2 mt-2 h-72 overflow-y-auto whitespace-pre-wrap"></pre>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// --- global ros state ---
+let ros = null;
+let srv = {};       // name -> ROSLIB.Service
+let topic = {};     // name -> ROSLIB.Topic
+let velCapInitialized = false;  // seeded from /status or /get_speed_cap
+let lastStatusMs = 0;           // last /status reception (ms epoch, 0 = never)
+const lastRxMs = { status: 0, encoders: 0, rpy: 0, currents: 0 };
+
+const $ = (id) => document.getElementById(id);
+
+function setConn(ok, label) {
+  $('conn-dot').className = 'w-3 h-3 rounded-full ' + (ok ? 'bg-emerald-500' : 'bg-red-500');
+  $('conn-label').innerText = label;
+}
+
+function connect() {
+  const url = $('ws-url').value;
+  if (ros) { try { ros.close(); } catch (e) {} }
+  ros = new ROSLIB.Ros({ url });
+  ros.on('connection', () => setConn(true, 'connected'));
+  ros.on('error',      (e) => setConn(false, 'error'));
+  ros.on('close',      () => setConn(false, 'disconnected'));
+  setupROSInterface();
+}
+
+function setupROSInterface() {
+  // --- services ---
+  srv.activate = new ROSLIB.Service({
+    ros, name: '/activate',
+    serviceType: 'jugglebot_interfaces/srv/ActivateOrDeactivate' });
+  srv.arm_leg = new ROSLIB.Service({
+    ros, name: '/arm_leg',
+    serviceType: 'jugglebot_interfaces/srv/ArmLeg' });
+  srv.e_stop = new ROSLIB.Service({
+    ros, name: '/e_stop', serviceType: 'std_srvs/srv/Trigger' });
+  srv.go_to_rest = new ROSLIB.Service({
+    ros, name: '/go_to_rest', serviceType: 'std_srvs/srv/Trigger' });
+  srv.jog_leg = new ROSLIB.Service({
+    ros, name: '/jog_leg', serviceType: 'jugglebot_interfaces/srv/JogLeg' });
+  srv.set_pose = new ROSLIB.Service({
+    ros, name: '/set_pose', serviceType: 'jugglebot_interfaces/srv/SetPose' });
+  srv.set_speed_cap = new ROSLIB.Service({
+    ros, name: '/set_speed_cap',
+    serviceType: 'jugglebot_interfaces/srv/SetFloat' });
+  srv.get_speed_cap = new ROSLIB.Service({
+    ros, name: '/get_speed_cap', serviceType: 'std_srvs/srv/Trigger' });
+  srv.enable_level = new ROSLIB.Service({
+    ros, name: '/enable_level',
+    serviceType: 'jugglebot_interfaces/srv/ActivateOrDeactivate' });
+  srv.start_homing = new ROSLIB.Service({
+    ros, name: '/start_homing',
+    serviceType: 'jugglebot_interfaces/srv/StartHoming' });
+  srv.cancel_homing = new ROSLIB.Service({
+    ros, name: '/cancel_homing', serviceType: 'std_srvs/srv/Trigger' });
+
+  // --- topics (subs) ---
+  topic.encoders = new ROSLIB.Topic({
+    ros, name: '/leg_encoders',
+    messageType: 'std_msgs/msg/Float64MultiArray' });
+  topic.rpy = new ROSLIB.Topic({
+    ros, name: '/platform_rpy',
+    messageType: 'std_msgs/msg/Float32MultiArray' });
+  topic.status = new ROSLIB.Topic({
+    ros, name: '/status', messageType: 'std_msgs/msg/String' });
+  topic.homing_out = new ROSLIB.Topic({
+    ros, name: '/homing_output', messageType: 'std_msgs/msg/String' });
+  topic.homing_stdin_in = new ROSLIB.Topic({
+    ros, name: '/homing_stdin_in', messageType: 'std_msgs/msg/String' });
+  topic.jog_vel_cmd = new ROSLIB.Topic({
+    ros, name: '/jog_vel_cmd', messageType: 'std_msgs/msg/Float32' });
+  // /control_cmd is the primary action bus (topic-based to work around
+  // rosbridge's broken service discovery in WSL2 + Kilted). GUI publishes
+  // JSON messages; node dispatches to the same internal methods its
+  // services call. Results come back on /control_result.
+  topic.control_cmd = new ROSLIB.Topic({
+    ros, name: '/control_cmd', messageType: 'std_msgs/msg/String' });
+  topic.control_result = new ROSLIB.Topic({
+    ros, name: '/control_result', messageType: 'std_msgs/msg/String' });
+  topic.odrive_errors = new ROSLIB.Topic({
+    ros, name: '/odrive_errors', messageType: 'std_msgs/msg/String' });
+  topic.odrive_errors.subscribe(m => {
+    try {
+      const d = JSON.parse(m.data);
+      renderErrors(d.nodes);
+    } catch (e) { console.error(e); }
+  });
+  topic.control_result.subscribe(m => {
+    try {
+      const r = JSON.parse(m.data);
+      const line = `${r.cmd}: ${r.success ? 'OK' : 'ERR'} — ${r.message}`;
+      const routineCmds = new Set([
+        'list_routines', 'start_recording', 'record_keyframe',
+        'clear_recording', 'save_recording', 'play_routine',
+        'stop_routine', 'delete_routine',
+        'generate_rolling_ball_routine',
+      ]);
+      if (routineCmds.has(r.cmd)) {
+        toast('routine-msg', line, r.success);
+        if (Array.isArray(r.routines)) populateRoutineDropdown(r.routines);
+        if (Array.isArray(r.keyframes)) renderKeyframeList(r.keyframes);
+        return;
+      }
+      if (r.cmd === 'probe_graph') {
+        const out = $('diag-output');
+        if (out) {
+          if (!r.success) {
+            out.innerText = 'probe failed: ' + r.message;
+          } else {
+            const topics = Array.isArray(r.topics) ? r.topics : [];
+            const nodes  = Array.isArray(r.nodes)  ? r.nodes  : [];
+            let txt = `=== TOPICS (${topics.length}) ===\n`;
+            for (const t of topics) {
+              const types = Array.isArray(t.types) ? t.types.join(', ') : '';
+              txt += `  ${t.name}\n    [${types}]\n`;
+            }
+            txt += `\n=== NODES (${nodes.length}) ===\n`;
+            for (const n of nodes) txt += `  ${n}\n`;
+            out.innerText = txt;
+            const tEl = $('diag-topic-count');
+            const nEl = $('diag-node-count');
+            if (tEl) tEl.innerText = topics.length;
+            if (nEl) nEl.innerText = nodes.length;
+          }
+        }
+        return;
+      }
+      if (r.cmd === 'restart_ros2_daemon_progress'
+          || r.cmd === 'restart_ros2_daemon') {
+        const out = $('diag-output');
+        if (out) {
+          const prev = out.innerText === 'restarting ros2 daemon...'
+                       ? '' : out.innerText;
+          const prefix = r.cmd === 'restart_ros2_daemon'
+                         ? (r.success ? '[done] ' : '[FAILED] ')
+                         : '';
+          out.innerText = (prev + '\n' + prefix + r.message).trim().split('\n')
+                           .slice(-12).join('\n');
+        }
+        return;
+      }
+      if (r.cmd === 'reset_can_progress') {
+        // Append to the msg area as an in-progress log
+        const el = $('can-reset-msg');
+        el.innerText = (el.innerText + '\n' + r.message).trim().split('\n').slice(-6).join('\n');
+        el.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap';
+        return;
+      }
+      if (r.cmd === 'reset_can') {
+        toast('can-reset-msg', line, r.success);
+        $('can-reset-msg').className =
+          'text-xs mt-1 min-h-4 whitespace-pre-wrap ' +
+          (r.success ? 'text-emerald-400' : 'text-red-400');
+        if (r.success) setTimeout(() =>
+          publishCmd({ cmd: 'read_errors' }), 300);
+        return;
+      }
+      // Otherwise route to the relevant toast area
+      const el = (r.cmd && r.cmd.startsWith('set_pose')) ? 'pose-msg'
+               : (r.cmd === 'arm_leg') ? 'arm-msg'
+               : 'jog-msg';
+      toast(el, line, r.success);
+    } catch (e) { console.error(e); }
+  });
+
+  topic.encoders.subscribe(m => {
+    lastRxMs.encoders = Date.now();
+    for (let i = 0; i < 6; i++) {
+      const v = m.data[i];
+      $(`enc-${i}`).innerText = isNaN(v) ? '--' : v.toFixed(4);
+    }
+  });
+  topic.currents = new ROSLIB.Topic({
+    ros, name: '/leg_currents',
+    messageType: 'std_msgs/msg/Float64MultiArray' });
+  topic.currents.subscribe(m => {
+    lastRxMs.currents = Date.now();
+    const cap = parseFloat($('leg-current-slider').value) || 6.0;
+    for (let i = 0; i < 6; i++) {
+      const v = m.data[i];
+      const el = $(`cur-${i}`);
+      if (isNaN(v)) { el.innerText = '--'; el.className = ''; continue; }
+      el.innerText = v.toFixed(2);
+      el.className = Math.abs(v) > 0.8 * cap ? 'text-red-400' :
+                     Math.abs(v) > 0.5 * cap ? 'text-amber-300' :
+                     'text-slate-200';
+    }
+  });
+  topic.rpy.subscribe(m => {
+    lastRxMs.rpy = Date.now();
+    $('imu-roll').innerText = m.data[0].toFixed(2);
+    $('imu-pitch').innerText = m.data[1].toFixed(2);
+    $('imu-yaw').innerText = m.data[2].toFixed(2);
+  });
+  topic.status.subscribe(m => {
+    lastStatusMs = Date.now();
+    lastRxMs.status = Date.now();
+    try {
+      const s = JSON.parse(m.data);
+      $('status-box').innerText = Object.entries(s).map(([k,v])=>
+        `${k.padEnd(28)} ${JSON.stringify(v)}`).join('\n');
+      updateLevelButtons(!!s.level_enabled);
+      updateStabReadouts(s);
+      updatePlaybackUI(s);
+      // Seed the speed-cap slider from /status as a fallback in case the
+      // /get_speed_cap service call is unavailable due to discovery issues.
+      if (!velCapInitialized && s.hard_max_vel_turns_per_sec) {
+        const slider = $('vel-cap-slider');
+        slider.max = Number(s.hard_max_vel_turns_per_sec).toFixed(2);
+        slider.value = Number(s.soft_max_vel_turns_per_sec).toFixed(2);
+        updateVelReadout();
+        $('vel-hard-ceiling').innerText =
+          `(hard max ${Number(s.hard_max_vel_turns_per_sec).toFixed(2)} t/s)`;
+        syncJogSliderBounds(Number(s.soft_max_vel_turns_per_sec));
+        velCapInitialized = true;
+      }
+    } catch (e) { $('status-box').innerText = m.data; }
+  });
+  topic.homing_out.subscribe(m => {
+    const pre = $('homing-log');
+    const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+    pre.innerText += m.data + '\n';
+    if (nearBottom) pre.scrollTop = pre.scrollHeight;
+  });
+
+  // Speed cap is seeded from /status topic above (topic discovery works
+  // even when service discovery doesn't in this setup).
+}
+
+// --- UI helpers ---
+function publishCmd(obj) {
+  // Send a command over the /control_cmd topic (instead of service call).
+  if (!ros || !topic.control_cmd) return;
+  topic.control_cmd.publish(new ROSLIB.Message({ data: JSON.stringify(obj) }));
+}
+
+// Paint the Level ON/OFF buttons (main + stab panel) based on current
+// level_enabled state. Active = indigo + ring, inactive = slate.
+function updateLevelButtons(on) {
+  const activeCls = 'flex-1 bg-indigo-600 hover:bg-indigo-500 rounded py-2 text-sm ring-2 ring-indigo-300';
+  const idleCls   = 'flex-1 bg-slate-600 hover:bg-slate-500 rounded py-2 text-sm';
+  for (const [onId, offId] of [
+      ['level-on-btn', 'level-off-btn'],
+      ['stab-level-on-btn', 'stab-level-off-btn']]) {
+    const onBtn = $(onId), offBtn = $(offId);
+    if (!onBtn || !offBtn) continue;
+    onBtn.className  = on ? activeCls : idleCls;
+    offBtn.className = on ? idleCls   : activeCls;
+  }
+}
+
+// Paint live error numbers in the stabilization panel. Green when
+// |err| < 0.1°, amber 0.1-0.5°, red > 0.5°.
+function updateStabReadouts(s) {
+  const fmt = (v) => isFinite(v) ? v.toFixed(2) : '--.--';
+  const colour = (v) => {
+    if (!isFinite(v)) return '';
+    const a = Math.abs(v);
+    return a < 0.1 ? 'text-emerald-300' :
+           a < 0.5 ? 'text-amber-300' :
+                     'text-red-300';
+  };
+  const er = $('stab-err-roll'), ep = $('stab-err-pitch');
+  if (er) { er.innerText = fmt(s.level_err_roll_deg);
+            er.className = 'text-lg ' + colour(s.level_err_roll_deg); }
+  if (ep) { ep.innerText = fmt(s.level_err_pitch_deg);
+            ep.className = 'text-lg ' + colour(s.level_err_pitch_deg); }
+  const yw = $('stab-yaw');
+  if (yw) yw.innerText = fmt(s.imu_yaw_deg);
+  const cr = $('stab-corr-roll'), cp = $('stab-corr-pitch');
+  if (cr) cr.innerText = fmt(s.level_corr_roll_deg);
+  if (cp) cp.innerText = fmt(s.level_corr_pitch_deg);
+}
+
+function toast(id, msg, ok=true) {
+  const el = $(id);
+  el.innerText = msg;
+  el.className = 'text-xs mt-2 min-h-4 ' + (ok ? 'text-emerald-400' : 'text-red-400');
+}
+
+// --- Routines panel helpers ---
+function populateRoutineDropdown(names) {
+  const sel = $('play-routine-select');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '';
+  if (names.length === 0) {
+    sel.innerHTML = '<option value="">(no routines saved)</option>';
+    return;
+  }
+  for (const n of names) {
+    const o = document.createElement('option');
+    o.value = n; o.text = n;
+    sel.appendChild(o);
+  }
+  if (names.includes(prev)) sel.value = prev;
+}
+
+function renderKeyframeList(kfs) {
+  const el = $('rec-kf-list');
+  const cnt = $('rec-kf-count');
+  if (!el) return;
+  cnt.innerText = kfs.length;
+  if (kfs.length === 0) {
+    el.innerText = '(no keyframes)';
+    return;
+  }
+  el.innerText = kfs.map((k, i) =>
+    `#${i.toString().padStart(2,' ')}  t=${k.t.toFixed(2).padStart(6)}s  ` +
+    `z=${(k.z || 0).toFixed(1).padStart(5)}  ` +
+    `rp=${(k.roll || 0).toFixed(1)},${(k.pitch || 0).toFixed(1)}°  ` +
+    `xy=${(k.x || 0).toFixed(1)},${(k.y || 0).toFixed(1)}`
+  ).join('\n');
+}
+
+function updatePlaybackUI(s) {
+  const status = $('play-status');
+  const bar = $('play-progress');
+  if (!status) return;
+  if (s.playing_routine) {
+    const el = s.playing_routine_elapsed_s || 0;
+    const du = s.playing_routine_duration_s || 0;
+    status.innerText = `▶ ${s.playing_routine}  ${el.toFixed(1)}/${du.toFixed(1)}s`;
+    bar.style.width = du > 0 ? `${Math.min(100, 100 * el / du)}%` : '0%';
+  } else {
+    status.innerText = 'idle';
+    bar.style.width = '0%';
+  }
+  const recEl = $('rec-elapsed');
+  if (recEl) {
+    // recording elapsed is approximated from number of kf (not exact, but
+    // we show 0 when not recording, and the last kf time when recording)
+    recEl.innerText = s.recording ? 'recording' : 'idle';
+  }
+}
+
+// --- per-leg arm checkboxes ---
+// Checkbox state mirrors what we THINK the backend is (optimistic update on
+// service reply). Status topic's `armed` bool covers the aggregate.
+const legArmed = [false, false, false, false, false, false];
+
+function buildLegArmGrid() {
+  const grid = $('leg-arm-grid');
+  grid.innerHTML = '';
+  for (let i = 0; i < 6; i++) {
+    const wrap = document.createElement('label');
+    wrap.className = 'flex flex-col items-center text-xs gap-1 bg-slate-900 border border-slate-700 rounded py-1';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.id = `arm-cb-${i}`;
+    cb.addEventListener('change', (e) => armLegToggle(i, e.target.checked));
+    const lbl = document.createElement('span');
+    lbl.className = 'mono';
+    lbl.innerText = `L${i}`;
+    wrap.append(cb, lbl);
+    grid.appendChild(wrap);
+  }
+}
+
+function armLegToggle(leg, checked) {
+  if (!ros) return;
+  const mode = checked ? 'vel' : 'idle';
+  // Optimistic: we'll see the real result on /control_result
+  legArmed[leg] = checked;
+  publishCmd({ cmd: 'arm_leg', leg: leg, mode: mode });
+}
+
+// --- dead-man velocity slider ---
+// On pointerdown/move we publish the current slider value. On pointerup /
+// leave / blur / escape we snap to 0 and publish 0 so the motor stops.
+function publishJogVel(v) {
+  if (!ros || !topic.jog_vel_cmd) return;
+  topic.jog_vel_cmd.publish(new ROSLIB.Message({ data: parseFloat(v) }));
+}
+
+function wireDeadManSlider() {
+  const s = $('vel-jog-slider');
+  const r = $('vel-jog-readout');
+  const update = () => {
+    r.innerText = parseFloat(s.value).toFixed(2) + ' t/s';
+  };
+  const zero = () => {
+    s.value = 0;
+    update();
+    publishJogVel(0);
+  };
+  s.addEventListener('input', () => {
+    update();
+    publishJogVel(s.value);
+  });
+  // Any release / leave / blur → zero
+  s.addEventListener('pointerup', zero);
+  s.addEventListener('pointercancel', zero);
+  s.addEventListener('mouseup', zero);   // some browsers
+  s.addEventListener('mouseleave', zero);
+  s.addEventListener('blur', zero);
+  s.addEventListener('keyup', zero);     // keyboard-driven changes also snap back
+  s.addEventListener('touchend', zero);
+  s.addEventListener('touchcancel', zero);
+  window.addEventListener('blur', zero); // tab/window loses focus
+  update();
+}
+
+// --- jog buttons ---
+function buildJogGrid() {
+  const grid = $('jog-grid');
+  grid.innerHTML = '';
+  for (let leg = 0; leg < 6; leg++) {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex flex-col items-stretch gap-1';
+    const label = document.createElement('div');
+    label.className = 'text-center text-xs text-slate-400';
+    label.innerText = `L${leg}`;
+    const up = document.createElement('button');
+    up.className = 'bg-slate-700 hover:bg-slate-600 rounded py-1 text-sm';
+    up.innerText = `+`;
+    up.addEventListener('click', () => jog(leg, +parseFloat($('jog-step').value)));
+    const dn = document.createElement('button');
+    dn.className = 'bg-slate-700 hover:bg-slate-600 rounded py-1 text-sm';
+    dn.innerText = `-`;
+    dn.addEventListener('click', () => jog(leg, -parseFloat($('jog-step').value)));
+    wrap.append(label, up, dn);
+    grid.appendChild(wrap);
+  }
+}
+
+function jog(leg, delta) {
+  publishCmd({ cmd: 'jog_leg', leg: leg, delta_turns: delta });
+}
+
+// --- pose sliders ---
+const POSE_CONFIG = [
+  { id: 'x', label: 'X (mm)',  min: -50, max: 50,  step: 1  },
+  { id: 'y', label: 'Y (mm)',  min: -50, max: 50,  step: 1  },
+  { id: 'z', label: 'Z (mm)',  min: -30, max: 60,  step: 1  },
+  { id: 'roll',  label: 'roll (deg)',  min: -10, max: 10, step: 0.5 },
+  { id: 'pitch', label: 'pitch (deg)', min: -10, max: 10, step: 0.5 },
+  { id: 'yaw',   label: 'yaw (deg)',   min: -10, max: 10, step: 0.5 },
+];
+
+function buildPoseSliders() {
+  const box = $('pose-sliders');
+  box.innerHTML = '';
+  POSE_CONFIG.forEach(c => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2 text-xs';
+    row.innerHTML = `
+      <label class="w-24">${c.label}</label>
+      <input id="pose-${c.id}" type="range" min="${c.min}" max="${c.max}" step="${c.step}" value="0" class="flex-1">
+      <span id="pose-${c.id}-v" class="mono w-14 text-right">0</span>
+    `;
+    box.appendChild(row);
+    const s = $(`pose-${c.id}`);
+    const v = $(`pose-${c.id}-v`);
+    s.addEventListener('input', () => v.innerText = parseFloat(s.value).toFixed(1));
+  });
+}
+
+function currentPoseRequest() {
+  return new ROSLIB.ServiceRequest({
+    x: parseFloat($('pose-x').value),
+    y: parseFloat($('pose-y').value),
+    z: parseFloat($('pose-z').value),
+    roll:  parseFloat($('pose-roll').value),
+    pitch: parseFloat($('pose-pitch').value),
+    yaw:   parseFloat($('pose-yaw').value),
+    blocking: false,
+  });
+}
+
+function sendPose() {
+  publishCmd({
+    cmd: 'set_pose',
+    x: parseFloat($('pose-x').value),
+    y: parseFloat($('pose-y').value),
+    z: parseFloat($('pose-z').value),
+    roll:  parseFloat($('pose-roll').value),
+    pitch: parseFloat($('pose-pitch').value),
+    yaw:   parseFloat($('pose-yaw').value),
+  });
+}
+
+function zeroPose() {
+  POSE_CONFIG.forEach(c => {
+    const s = $(`pose-${c.id}`);
+    s.value = 0;
+    $(`pose-${c.id}-v`).innerText = '0.0';
+  });
+}
+
+// --- speed cap ---
+function updateVelReadout() {
+  $('vel-cap-readout').innerText =
+    parseFloat($('vel-cap-slider').value).toFixed(2) + ' t/s';
+}
+function commitVelCap() {
+  if (!ros) return;
+  const v = parseFloat($('vel-cap-slider').value);
+  publishCmd({ cmd: 'set_speed_cap', value: v });
+  syncJogSliderBounds(v);
+}
+
+function fetchSpeedCap(attempt) {
+  if (!ros || !srv.get_speed_cap) return;
+  srv.get_speed_cap.callService(new ROSLIB.ServiceRequest({}), r => {
+    try {
+      const o = JSON.parse(r.message);
+      const slider = $('vel-cap-slider');
+      slider.max = o.hard_max_leg_vel_turns_per_sec.toFixed(2);
+      slider.value = o.soft_max_leg_vel_turns_per_sec;
+      updateVelReadout();
+      $('vel-hard-ceiling').innerText =
+        `(hard max ${o.hard_max_leg_vel_turns_per_sec.toFixed(2)} t/s)`;
+      syncJogSliderBounds(o.soft_max_leg_vel_turns_per_sec);
+      velCapInitialized = true;
+    } catch (e) { console.error(e); }
+  }, err => {
+    // Silent on first few failures — /status topic will seed the slider
+    // anyway within a tick or two if this service path is unreliable.
+    if (attempt < 4 && !velCapInitialized) {
+      setTimeout(() => fetchSpeedCap(attempt + 1), 1500);
+    }
+  });
+}
+
+function syncJogSliderBounds(cap) {
+  // Clamp the dead-man jog slider to +/- cap. If it's currently above the
+  // new cap, snap to 0 (safety).
+  const s = $('vel-jog-slider');
+  s.min = (-cap).toFixed(2);
+  s.max = (+cap).toFixed(2);
+  if (Math.abs(parseFloat(s.value)) > cap) {
+    s.value = 0;
+    $('vel-jog-readout').innerText = '0.00 t/s';
+    publishJogVel(0);
+  }
+}
+
+// --- homing ---
+function buildHomingRequest() {
+  const targetKind = $('h-target-kind').value;
+  const targetVal = $('h-target-value').value.trim();
+  const req = {
+    node: targetKind === 'node' ? parseInt(targetVal) : -1,
+    nodes: targetKind === 'nodes' ? targetVal : '',
+    vel:  parseFloat($('h-vel').value),
+    current: parseFloat($('h-current').value),
+    vel_limit: parseFloat($('h-vel-limit').value),
+    travel_cap: parseFloat($('h-travel-cap').value),
+    stall_vel_frac: parseFloat($('h-stall-vel-frac').value),
+    free_motion_frac: parseFloat($('h-free-motion-frac').value),
+    stall_dur: parseFloat($('h-stall-dur').value),
+    pre_roll: parseFloat($('h-pre-roll').value),
+    baseline: parseFloat($('h-baseline').value),
+    retract: parseFloat($('h-retract').value),
+    retract_mode: $('h-retract-mode').value,
+    retract_vel: parseFloat($('h-retract-vel').value),
+    retract_current: parseFloat($('h-retract-current').value),
+    distance: parseFloat($('h-distance').value),
+    dry_run: $('h-dry-run').checked,
+    collect: $('h-collect').checked,
+    no_stall: $('h-no-stall').checked,
+    go_to_rest: $('h-go-to-rest').checked,
+    no_park: $('h-no-park').checked,
+    measure_stroke: $('h-measure-stroke').checked,
+    apply_to_all_legs: $('h-apply-to-all-legs').checked,
+    manual_capture: $('h-manual-capture').checked,
+  };
+  return new ROSLIB.ServiceRequest(req);
+}
+
+// --- leg selection for homing ---
+function buildHomingLegCheckboxes() {
+  const wrap = $('home-leg-cbs');
+  wrap.innerHTML = '';
+  for (let i = 0; i < 6; i++) {
+    const l = document.createElement('label');
+    l.className =
+      'flex items-center justify-center gap-1 bg-slate-900 ' +
+      'border border-slate-700 rounded py-1 text-xs cursor-pointer';
+    l.innerHTML =
+      `<input type="checkbox" id="home-leg-cb-${i}" checked> L${i}`;
+    wrap.appendChild(l);
+  }
+}
+
+function getSelectedHomingLegs() {
+  const legs = [];
+  for (let i = 0; i < 6; i++) {
+    const el = $(`home-leg-cb-${i}`);
+    if (el && el.checked) legs.push(i);
+  }
+  return legs;
+}
+
+function applyLegSelectionToPayload(payload) {
+  const legs = getSelectedHomingLegs();
+  if (legs.length === 0) return false;
+  if (legs.length === 1) {
+    payload.node = legs[0];
+    payload.nodes = '';
+  } else {
+    payload.node = -1;
+    payload.nodes = legs.join(',');
+  }
+  return true;
+}
+
+// Read every flag from the form into a homing payload.
+function readHomingForm() {
+  return {
+    vel:              parseFloat($('h-vel').value),
+    current:          parseFloat($('h-current').value),
+    vel_limit:        parseFloat($('h-vel-limit').value),
+    travel_cap:       parseFloat($('h-travel-cap').value),
+    stall_vel_frac:   parseFloat($('h-stall-vel-frac').value),
+    free_motion_frac: parseFloat($('h-free-motion-frac').value),
+    stall_dur:        parseFloat($('h-stall-dur').value),
+    pre_roll:         parseFloat($('h-pre-roll').value),
+    baseline:         parseFloat($('h-baseline').value),
+    retract:          parseFloat($('h-retract').value),
+    retract_mode:     $('h-retract-mode').value,
+    retract_vel:      parseFloat($('h-retract-vel').value),
+    retract_current:  parseFloat($('h-retract-current').value),
+    distance:         parseFloat($('h-distance').value),
+    dry_run:           $('h-dry-run').checked,
+    collect:           $('h-collect').checked,
+    no_stall:          $('h-no-stall').checked,
+    go_to_rest:        $('h-go-to-rest').checked,
+    no_park:           $('h-no-park').checked,
+    measure_stroke:    $('h-measure-stroke').checked,
+    apply_to_all_legs: $('h-apply-to-all-legs').checked,
+    manual_capture:    $('h-manual-capture').checked,
+  };
+}
+
+function startHoming() {
+  if (!ros) return;
+  const payload = { cmd: 'start_homing', ...readHomingForm() };
+  if (!applyLegSelectionToPayload(payload)) {
+    alert('Tick at least one leg to home');
+    return;
+  }
+  $('homing-log').innerText = '';
+  publishCmd(payload);
+}
+
+function cancelHoming() {
+  publishCmd({ cmd: 'cancel_homing' });
+}
+
+// --- "1. Stall-home selected legs (bottom)" ---
+// Reads the form for all flag values (form is pre-filled with user's known-
+// good defaults but fully editable). Legs come from the checkbox row.
+// Forces stall-home mode by clearing the competing mode flags.
+function homeBottomEndstops() {
+  if (!ros) return;
+  const payload = { cmd: 'start_homing', ...readHomingForm() };
+  if (!applyLegSelectionToPayload(payload)) {
+    alert('Tick at least one leg to home');
+    return;
+  }
+  payload.measure_stroke = false;
+  payload.manual_capture = false;
+  payload.go_to_rest = false;
+  payload.collect = false;
+  payload.no_stall = false;
+  $('homing-log').innerText = '';
+  publishCmd(payload);
+}
+
+// --- "2. Capture top of stroke (manual, all 6)" ---
+// Overrides form mode flags for manual top-of-stroke capture. The user
+// physically positions each leg at the top limit and presses [ENTER]
+// in the stdin box to record.
+function captureTopOfStroke() {
+  if (!ros) return;
+  const payload = { cmd: 'start_homing', ...readHomingForm() };
+  payload.node = -1;
+  payload.nodes = '0,1,2,3,4,5';
+  payload.no_stall = true;
+  payload.measure_stroke = true;
+  payload.apply_to_all_legs = true;
+  payload.manual_capture = true;
+  payload.no_park = true;
+  payload.go_to_rest = false;
+  payload.collect = false;
+  $('homing-log').innerText = '';
+  publishCmd(payload);
+}
+
+// --- errors panel ---
+function renderErrors(nodes) {
+  const el = $('errors-grid');
+  if (!Array.isArray(nodes) || nodes.length === 0) { return; }
+  el.innerHTML = '';
+  for (const n of nodes) {
+    const row = document.createElement('div');
+    row.className = 'border border-slate-700 rounded px-2 py-1 ' +
+      (!n.available ? 'text-slate-500' :
+       (n.active_errors ? 'bg-red-950 text-red-200 border-red-700' :
+                          'text-emerald-300'));
+    if (!n.available) {
+      row.innerText = `L${n.node}: no response`;
+    } else {
+      row.innerHTML =
+        `<div>L${n.node}: ` +
+        (n.active_errors
+          ? `active=0x${n.active_errors.toString(16).padStart(8,'0')} ` +
+            `<span class="text-red-300">(${n.active_decoded})</span>`
+          : 'OK') + `</div>` +
+        (n.disarm_reason
+          ? `<div class="text-amber-300">disarm=${n.disarm_decoded}</div>`
+          : '');
+    }
+    el.appendChild(row);
+  }
+}
+
+function sendHomingStdin() {
+  const input = $('homing-stdin');
+  const line = input.value;  // empty string is allowed — it's a bare Enter
+  topic.homing_stdin_in.publish(new ROSLIB.Message({ data: line }));
+  $('homing-log').innerText += `> ${line || '[ENTER]'}\n`;
+  input.value = '';
+}
+
+// --- wire UI ---
+// Fires every second; if /status hasn't landed recently, show why.
+// Also refreshes the per-topic age readouts in the Diagnostics panel.
+setInterval(() => {
+  const box = $('status-box');
+  if (box) {
+    if (lastStatusMs === 0) {
+      box.innerText = ros && ros.isConnected
+        ? '(connected but no /status message received yet — '
+          + 'is stewart_control_node running? Click Probe in Diagnostics.)'
+        : '(not connected to rosbridge — click Reconnect in Diagnostics.)';
+    } else {
+      const age = (Date.now() - lastStatusMs) / 1000;
+      if (age > 2) box.innerText = `(/status stale: ${age.toFixed(1)} s ago)`;
+    }
+  }
+  // Diagnostics panel readouts
+  const wsEl = $('diag-ws');
+  if (wsEl) wsEl.innerText = ros && ros.isConnected ? 'up' : 'down';
+  const fmt = (ms) => ms === 0 ? 'never'
+    : ((Date.now() - ms) / 1000).toFixed(1) + 's';
+  const ages = { status: 'diag-status-age', encoders: 'diag-enc-age',
+                 rpy: 'diag-rpy-age', currents: 'diag-cur-age' };
+  for (const [k, id] of Object.entries(ages)) {
+    const el = $(id);
+    if (el) el.innerText = fmt(lastRxMs[k]);
+  }
+}, 1000);
+
+function probeRosGraph() {
+  const out = $('diag-output');
+  if (!out) return;
+  if (!ros || !ros.isConnected) {
+    out.innerText = 'not connected to rosbridge';
+    return;
+  }
+  out.innerText = 'probing (via /control_cmd → control node rclpy)...';
+  publishCmd({ cmd: 'probe_graph' });
+}
+
+function reconnectRosbridge() {
+  const out = $('diag-output');
+  if (out) out.innerText = 'reconnecting...';
+  try { if (ros) ros.close(); } catch (e) {}
+  // Clear per-topic freshness so diagnostics shows 'never' if reconnect fails
+  lastStatusMs = 0;
+  for (const k of Object.keys(lastRxMs)) lastRxMs[k] = 0;
+  setTimeout(connect, 250);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  buildJogGrid();
+  buildLegArmGrid();
+  buildHomingLegCheckboxes();
+  buildPoseSliders();
+  wireDeadManSlider();
+
+  $('connect-btn').addEventListener('click', connect);
+  $('estop-btn').addEventListener('click', () => publishCmd({ cmd: 'e_stop' }));
+  $('arm-btn').addEventListener('click', () => publishCmd({ cmd: 'activate' }));
+  $('disarm-btn').addEventListener('click', () => publishCmd({ cmd: 'deactivate' }));
+  $('rest-btn').addEventListener('click', () => publishCmd({ cmd: 'go_to_rest' }));
+  $('level-on-btn').addEventListener('click', () =>
+    publishCmd({ cmd: 'enable_level', enable: true }));
+  $('level-off-btn').addEventListener('click', () =>
+    publishCmd({ cmd: 'enable_level', enable: false }));
+
+  // --- Routines panel ---
+  $('rec-start-btn').addEventListener('click', () =>
+    publishCmd({ cmd: 'start_recording' }));
+  $('rec-add-btn').addEventListener('click', () =>
+    publishCmd({ cmd: 'record_keyframe' }));
+  $('rec-clear-btn').addEventListener('click', () =>
+    publishCmd({ cmd: 'clear_recording' }));
+  $('rec-save-btn').addEventListener('click', () => {
+    const name = $('rec-save-name').value.trim();
+    if (!name) { toast('routine-msg', 'enter a routine name', false); return; }
+    publishCmd({
+      cmd: 'save_recording',
+      name: name,
+      loop: $('rec-save-loop').checked,
+    });
+  });
+  $('play-refresh-btn').addEventListener('click', () =>
+    publishCmd({ cmd: 'list_routines' }));
+  $('play-btn').addEventListener('click', () => {
+    const name = $('play-routine-select').value;
+    if (!name) { toast('routine-msg', 'pick a routine', false); return; }
+    publishCmd({ cmd: 'play_routine', name: name,
+                 loop: $('play-loop').checked,
+                 record: $('play-record').checked });
+  });
+  $('play-stop-btn').addEventListener('click', () =>
+    publishCmd({ cmd: 'stop_routine' }));
+  $('play-delete-btn').addEventListener('click', () => {
+    const name = $('play-routine-select').value;
+    if (!name) return;
+    if (!confirm(`Delete routine "${name}"?`)) return;
+    publishCmd({ cmd: 'delete_routine', name: name });
+  });
+  // Initial routine list populate shortly after connect
+  setTimeout(() => publishCmd({ cmd: 'list_routines' }), 500);
+
+  // --- Rolling ball demo generator ---
+  $('rb-generate-btn').addEventListener('click', () => {
+    publishCmd({
+      cmd: 'generate_rolling_ball_routine',
+      radius_m: parseFloat($('rb-radius').value) / 1000.0,  // mm → m
+      period_s: parseFloat($('rb-period').value),
+      ramp_up_s: parseFloat($('rb-rampup').value),
+      hold_cycles: parseInt($('rb-cycles').value),
+      ramp_down_s: parseFloat($('rb-rampdown').value),
+      center_hold_s: parseFloat($('rb-center').value),
+      center_z_mm: parseFloat($('rb-z').value),
+      max_tilt_deg: parseFloat($('rb-max-tilt').value),
+      min_tilt_deg: parseFloat($('rb-min-tilt').value),
+      tilt_multiplier: parseFloat($('rb-tilt-mult').value),
+    });
+  });
+
+  // --- Stabilization panel ---
+  $('stab-arm-btn').addEventListener('click',
+    () => publishCmd({ cmd: 'activate' }));
+  $('stab-disarm-btn').addEventListener('click',
+    () => publishCmd({ cmd: 'deactivate' }));
+  $('stab-level-on-btn').addEventListener('click',
+    () => publishCmd({ cmd: 'enable_level', enable: true }));
+  $('stab-level-off-btn').addEventListener('click',
+    () => publishCmd({ cmd: 'enable_level', enable: false }));
+  const stabZ = $('stab-z-slider');
+  const stabZr = $('stab-z-readout');
+  stabZ.addEventListener('input', () => {
+    stabZr.innerText = stabZ.value + ' mm';
+  });
+  // Debounce so a long drag doesn't flood the bus.
+  let stabZTimer = null;
+  stabZ.addEventListener('input', () => {
+    if (stabZTimer) clearTimeout(stabZTimer);
+    stabZTimer = setTimeout(() => {
+      publishCmd({ cmd: 'set_pose',
+        x: 0, y: 0, z: parseFloat(stabZ.value),
+        roll: 0, pitch: 0, yaw: 0 });
+    }, 60);
+  });
+
+  $('vel-cap-slider').addEventListener('input', updateVelReadout);
+  $('vel-cap-slider').addEventListener('change', commitVelCap);
+
+  // Per-leg current limit. Applies to all armed legs via SET_LIMITS.
+  const curSlider = $('leg-current-slider');
+  const curReadout = $('leg-current-readout');
+  const updateCurReadout = () => {
+    curReadout.innerText = parseFloat(curSlider.value).toFixed(1) + ' A';
+  };
+  curSlider.addEventListener('input', updateCurReadout);
+  curSlider.addEventListener('change', () => {
+    publishCmd({ cmd: 'set_leg_current', value: parseFloat(curSlider.value) });
+  });
+
+  $('jog-step').addEventListener('input', () => {
+    const t = parseFloat($('jog-step').value);
+    if (!isNaN(t)) $('jog-mm-equiv').innerText = `~${(t*71.047).toFixed(1)} mm`;
+  });
+
+  $('pose-send').addEventListener('click', sendPose);
+  $('pose-zero').addEventListener('click', zeroPose);
+
+  $('home-bottom-btn').addEventListener('click', homeBottomEndstops);
+  $('home-top-btn').addEventListener('click', captureTopOfStroke);
+  $('homing-start').addEventListener('click', startHoming);
+  $('homing-cancel').addEventListener('click', cancelHoming);
+  $('err-read-btn').addEventListener('click',
+    () => publishCmd({ cmd: 'read_errors' }));
+  $('err-clear-btn').addEventListener('click',
+    () => publishCmd({ cmd: 'clear_errors' }));
+  $('diag-probe-btn').addEventListener('click', probeRosGraph);
+  $('diag-reconnect-btn').addEventListener('click', reconnectRosbridge);
+  $('diag-daemon-btn').addEventListener('click', () => {
+    const out = $('diag-output');
+    if (out) out.innerText = 'restarting ros2 daemon...';
+    publishCmd({ cmd: 'restart_ros2_daemon' });
+  });
+
+  // Hard reset + Launch go through the local HTTP server (gui_server.py),
+  // NOT through rosbridge. This is the escape hatch for when rosbridge is
+  // dead. The fetch URLs are relative, so this only works if the page was
+  // served by gui_server.py (not `python3 -m http.server`).
+  $('diag-hardreset-btn').addEventListener('click', async () => {
+    const out = $('diag-output');
+    if (out) out.innerText = 'hard reset: killing stewart processes + restarting daemon (up to 30 s)...';
+    try {
+      const r = await fetch('/reset', { method: 'POST' });
+      const j = await r.json();
+      if (out) out.innerText =
+        `reset rc=${j.rc}\n--- stdout ---\n${j.stdout}\n--- stderr ---\n${j.stderr || '(none)'}`;
+    } catch (e) {
+      if (out) out.innerText =
+        'reset FAILED: ' + e + '\n\n'
+        + 'Hint: this endpoint needs gui_server.py, not the bare http.server. '
+        + 'Stop "python3 -m http.server" and start with:\n'
+        + '  python3 ~/ros2_ws/src/stewart_bringup/scripts/gui_server.py';
+    }
+  });
+
+  $('diag-launch-btn').addEventListener('click', async () => {
+    const out = $('diag-output');
+    if (out) out.innerText = 'launching stack in background...';
+    try {
+      const r = await fetch('/launch', { method: 'POST' });
+      const j = await r.json();
+      if (out) out.innerText =
+        `launch pid=${j.pid}. Log: ${j.log}\n`
+        + `Wait ~5 s, then click "Reconnect rosbridge" above.`;
+    } catch (e) {
+      if (out) out.innerText = `launch FAILED: ${e}`;
+    }
+  });
+
+  $('diag-launchlog-btn').addEventListener('click', async () => {
+    const out = $('diag-output');
+    if (out) out.innerText = 'fetching launch log...';
+    try {
+      const r = await fetch('/launch_status');
+      const j = await r.json();
+      const tail = (j.log_tail || '(empty)').trim();
+      const lines = tail.split('\n').slice(-40).join('\n');
+      if (out) out.innerText =
+        `launch running: ${j.running}  pid: ${j.pid || 'n/a'}\n`
+        + `--- last_launch.log tail (last 40 lines) ---\n`
+        + lines;
+    } catch (e) {
+      if (out) out.innerText = `fetch failed: ${e}\n`
+        + 'Make sure gui_server.py is running (not plain http.server).';
+    }
+  });
+
+  $('can-reset-btn').addEventListener('click', () => {
+    const el = $('can-reset-msg');
+    el.innerText = 'starting reset...';
+    el.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap';
+    publishCmd({ cmd: 'reset_can' });
+  });
+  $('homing-send-stdin').addEventListener('click', sendHomingStdin);
+  $('homing-stdin').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendHomingStdin(); }
+  });
+
+  // auto-connect on load
+  connect();
+});
+</script>
+</body>
+</html>

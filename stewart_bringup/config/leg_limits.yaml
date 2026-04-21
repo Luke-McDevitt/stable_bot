@@ -1,0 +1,30 @@
+axis_0:
+  homed_at: '2026-04-21T03:31:19+00:00'
+  max_pos_turns: -2.7628047466278076
+  min_pos_turns: 0.632388710975647
+  rest_pos_turns: 0.41782277822494507
+axis_1:
+  homed_at: '2026-04-21T03:31:31+00:00'
+  max_pos_turns: -2.5417488515377045
+  min_pos_turns: 0.6031830906867981
+  rest_pos_turns: 0.3113972544670105
+axis_2:
+  homed_at: '2026-04-21T03:31:52+00:00'
+  max_pos_turns: -2.483370542526245
+  min_pos_turns: 0.5023331642150879
+  rest_pos_turns: 0.3008423149585724
+axis_3:
+  homed_at: '2026-04-21T03:32:03+00:00'
+  max_pos_turns: -2.7268169224262238
+  min_pos_turns: 0.5004402995109558
+  rest_pos_turns: 0.3145941495895386
+axis_4:
+  homed_at: '2026-04-21T03:32:14+00:00'
+  max_pos_turns: -2.754242569208145
+  min_pos_turns: 0.4880969524383545
+  rest_pos_turns: 0.3442288041114807
+axis_5:
+  homed_at: '2026-04-21T03:32:24+00:00'
+  max_pos_turns: -2.695987895131111
+  min_pos_turns: 0.49369901418685913
+  rest_pos_turns: 0.27616584300994873

@@ -1,0 +1,33 @@
+captured_at: '2026-04-20T07:55:16Z'
+delta_turns_used: 0.2
+z_lift_mm: 30.0
+pre_level_s: 20.0
+ref_roll_deg: -0.23985430617574913
+ref_pitch_deg: 0.22840111014211895
+imu_topic: /platform/imu/data
+method: all-legs-armed symmetric +/-delta at leveled baseline
+leg_gains:
+  axis_0:
+    d_roll_deg_per_turn: -1.5098415870534077
+    d_pitch_deg_per_turn: -7.007788662207235
+    basis: actual travel +0.364 turns
+  axis_1:
+    d_roll_deg_per_turn: 5.9279627360272675
+    d_pitch_deg_per_turn: 4.31529161971364
+    basis: actual travel +0.370 turns
+  axis_2:
+    d_roll_deg_per_turn: 6.649548076906728
+    d_pitch_deg_per_turn: 1.8993305249626717
+    basis: actual travel +0.367 turns
+  axis_3:
+    d_roll_deg_per_turn: -5.791350651658667
+    d_pitch_deg_per_turn: 2.762027436678056
+    basis: actual travel +0.366 turns
+  axis_4:
+    d_roll_deg_per_turn: -4.925606124687087
+    d_pitch_deg_per_turn: 5.01697454251353
+    basis: actual travel +0.353 turns
+  axis_5:
+    d_roll_deg_per_turn: 0.5684223256802523
+    d_pitch_deg_per_turn: -6.7658951694042075
+    basis: actual travel +0.376 turns

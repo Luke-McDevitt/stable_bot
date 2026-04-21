@@ -1,0 +1,33 @@
+# Mirrors stall_home.py flags. Empty string / NaN / false = use script default.
+# 'nodes' is a comma-separated list like "0,1,2,3,4,5" or "" for all; 'node' is
+# a single-leg override. Exactly one of node/nodes must be non-empty.
+
+int16 node                   # -1 = use 'nodes' instead
+string nodes                 # "" = use 'node' instead
+
+float32 vel                  # required (turns/s, signed: negative = down)
+float32 current              # required (A)
+float32 vel_limit            # 0 = use default 1.5
+float32 travel_cap           # 0 = use default 5.0
+float32 stall_vel_frac       # 0 = use default 0.2
+float32 free_motion_frac     # 0 = use default 0.5
+float32 stall_dur            # 0 = use default 0.15
+float32 pre_roll             # 0 = use default 0.5
+float32 baseline             # 0 = use default 0.5
+float32 retract              # NaN = use default 0.5
+string retract_mode          # "" = default 'pos'; else 'pos' or 'vel'
+float32 retract_vel          # 0 = use default 0.5
+float32 retract_current      # 0 = use default (None => script decides)
+float32 distance             # 0 = use default (None)
+
+bool dry_run
+bool collect
+bool no_stall
+bool go_to_rest
+bool no_park
+bool measure_stroke
+bool apply_to_all_legs
+bool manual_capture          # default should be TRUE for top-of-stroke capture
+---
+bool accepted
+string message

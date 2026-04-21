@@ -1,0 +1,22 @@
+[Unit]
+Description=Stable-Bot ROS 2 stack (Xsens IMUs + control node + rosbridge)
+After=network-online.target stable_bot_gui.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sorak
+Group=sorak
+WorkingDirectory=/home/sorak/ros2_ws
+Environment=HOME=/home/sorak
+ExecStart=/bin/bash -c 'source /opt/ros/kilted/setup.bash && \
+                        source /home/sorak/ros2_ws/install/local_setup.bash && \
+                        exec ros2 launch stewart_bringup stewart_gui_launch.py'
+Restart=on-failure
+RestartSec=3
+# Flush stdout/stderr to journald — no in-memory buffering.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

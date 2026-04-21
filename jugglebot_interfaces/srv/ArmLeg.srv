@@ -1,0 +1,10 @@
+# Per-leg arming / mode change.
+# leg: 0..5
+# mode: "pos" (position-control, CLOSED_LOOP, PASSTHROUGH)
+#       "vel" (velocity-control, CLOSED_LOOP, VEL_RAMP — used by dead-man jog)
+#       "idle" (STATE_IDLE, no control)
+int8 leg
+string mode
+---
+bool success
+string message

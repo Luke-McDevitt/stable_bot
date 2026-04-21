@@ -1,0 +1,14 @@
+# Single source of truth for every speed/accel cap on the Stewart platform.
+# Every node, CLI, and GUI surface MUST load this file and clamp outgoing
+# motion commands to min(soft_max, hard_max). See bringup_plan.md
+# "Global speed caps" for the three-layer enforcement rationale.
+
+# Hard ceilings - changing these requires a rebuild + reboot
+hard_max_leg_vel_turns_per_sec: 4.0      # ~285 mm/s leg speed @ 71 mm/rev; raised from 2.0 so rolling-ball routines can track micro-motions without the pos loop falling behind
+hard_max_leg_accel_turns_per_sec2: 3.0
+hard_max_tilt_rate_deg_per_sec: 15.0     # platform rotational rate
+hard_max_translation_rate_mm_per_sec: 30.0
+
+# Default soft-cap (user can lower in GUI, but never raise above hard_max)
+default_soft_max_leg_vel_turns_per_sec: 1.0   # ~10 mm/s leg speed - comfortable for bench dev
+default_soft_max_tilt_rate_deg_per_sec: 8.0

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+install/
+log/
+.pytest_cache/
+stewart_bringup/logs/
+.DS_Store
+Thumbs.db
+.vscode/
+*.swp
