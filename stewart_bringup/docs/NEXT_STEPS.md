@@ -1,148 +1,145 @@
 # Next Steps — Closed-loop rolling-ball demo with vision
 
-Current state (2026-04-22): the platform can execute a **scripted** rolling-ball
-routine — the ball's path is precomputed in platform coordinates and the tilt
-commands are open-loop. The demo looks right as long as nothing perturbs the
-ball. Any disturbance (bump, spin-up wobble, off-center release) and the
-controller has no idea.
+**Current state (2026-04-22)**: the platform can execute a *scripted*
+rolling-ball routine (open-loop — the trajectory is precomputed and the
+controller doesn't know where the ball actually is). Professor's
+assignment requires a real closed loop. Extra-credit target: tilt the
+platform so the ball can be driven to any requested (x, y) point on the
+disk.
 
-The next piece of work is to **measure where the ball actually is** in
-real time and close the loop: the control node gets the ball's (x, y)
-position on the disk, compares to the desired trajectory, and tilts the
-platform to correct. That turns the demo from "choreography" into actual
-stabilization.
+Hardware has been purchased and the plan is now concrete.
 
-This doc sketches the path.
+## Hardware
 
-## What the system needs
+- **Luxonis OAK-D-PRO-AF** — stereo + 12 MP color + IR dot projector +
+  Movidius Myriad X VPU. The VPU runs ball detection onboard, so the Pi
+  never touches raw frames. USB3-powered from the Pi (put it on a
+  *different* USB3 port than the CAN adapter — they share a bus).
+- **4-ft aluminum extrusion / bar** for an overhead-angled camera mount,
+  rigid to the world (not to the platform). A shallow oblique angle
+  (~30–45° off vertical) lets the camera see the ball all the way to
+  the rim without the platform edge hiding it.
+- **Matte vinyl sticker paper** (8.5×11, inkjet-compatible) for the
+  ArUco ring. Matte is critical — glossy vinyl specular-highlights under
+  the OAK's IR projector and ruins corner detection.
 
-- Ball position on the disk plane, (x, y) in mm, at ≥ 60 Hz, with ≤ 30 ms
-  end-to-end latency (lens → image → detection → control node → ODrive
-  command).
-- Reasonable robustness to: ambient light changes, users' hands coming
-  into frame, the platform itself moving under the camera (camera sees
-  the disk from above, ideally mounted rigid-to-world, not rigid-to-platform).
-- Localisation accuracy of a few mm — the disk is ~200–300 mm across and
-  the ball is ~40 mm, so mm-level is the right scale.
+## Platform-pose tracking: ArUco ring on the top plate
 
-## Hardware options (ranked by how much work they save you)
+Rather than trying to infer the platform's pose from each leg's encoder
+(which is valid but sensitive to any compliance or backlash), we use
+vision directly: a ring of ArUco markers around the platform's top
+surface. The camera solves for the ring's pose every frame, giving the
+disk's orientation and translation in the camera frame. The ball's
+image-plane position is then projected onto that plane.
 
-1. **Luxonis OAK-D Lite / OAK-D S2** — stereo + onboard Movidius VPU. The
-   camera runs the detection (YOLO, blob, or a custom pipeline) and publishes
-   just the ball's 3D position to the Pi over USB. The Pi 4 doesn't have
-   to burn CPU on disparity maps. This is the path of least resistance.
-   ROS 2 driver: [`depthai-ros`](https://github.com/luxonis/depthai-ros).
-   ~$150–$300.
+**Spec**:
+- Dictionary: `DICT_4X4_50` (bigger inner cells → reliable from an
+  oblique overhead view).
+- ~6–8 markers arranged on a circle of radius ~120 mm (just inside
+  the platform edge), 50 mm per side.
+- All markers at the same orientation (local +y = platform +y) — makes
+  the board layout trivial.
+- Detected as an **ArUco board** (`cv.aruco.estimatePoseBoard`), not as
+  independent markers. The board solver uses all visible markers jointly
+  → sub-pixel corner refinement → much better pose than averaging.
+  Partial occlusion (ball over a marker, leg shadow) is handled gracefully
+  as long as ≥ 3 markers stay visible.
 
-2. **Intel RealSense D435 / D435i** — active IR stereo. Excellent depth
-   quality on low-texture surfaces, which matters if the disk is a solid
-   color. ROS 2 driver: `realsense2_camera`. The Pi 4 can just barely
-   handle 640×480 @ 30 Hz if you don't ask for point clouds.
-   ~$250.
+**Print workflow**: the generator script
+(`scripts/generate_aruco_ring.py`) produces the ring image, splits it
+into 8.5×11 pages with registration marks and a `marker_layout.yaml`
+describing every marker's (id, x_mm, y_mm). Print at 100 %, cut, align,
+stick. The YAML is what the vision node feeds to `estimatePoseBoard`.
 
-3. **DIY two-USB-cam stereo + OpenCV** — cheapest (~$40 total) but you
-   build the calibration, rectification, and detection pipeline yourself.
-   Only reasonable if you want the learning experience.
+## Ball detection: onboard the OAK's VPU
 
-4. **Top-down monocular + known ball diameter** — skip stereo entirely.
-   Mount a single camera rigidly above the disk looking straight down.
-   Because the ball always sits on the disk plane, a single image plus
-   camera intrinsics gives (x, y) via a homography. Much simpler than
-   stereo, and 2D is all the controller actually needs for a rolling-ball
-   demo. This is probably where I'd start.
+Do not try to detect the ball on the Pi — you'll burn CPU decoding
+1080p frames that you then throw away. Run a small detection pipeline
+on the OAK itself; publish only the ball's (cx, cy) and a detection
+confidence to the Pi.
 
-## Making the ball easy to see (the IR angle)
+Two viable approaches:
 
-Even a good camera struggles with a black ball on a black mat under
-fluorescent office lighting. Two mechanical tricks that turn a hard CV
-problem into a trivial one:
+1. **Color threshold on a known-color ball** — paint / tape a ball in a
+   color that doesn't appear anywhere else in frame (a saturated orange
+   works well against carbon fiber and black markers). Convert to HSV on
+   the VPU, threshold, biggest contour, centroid. ~1 ms inference, ~0
+   training effort. This is where I'd start.
+2. **YOLO-nano trained on ~100 labeled frames** — drop-in robustness to
+   lighting and clutter. The OAK's Myriad X runs YOLOv5-nano at >30 FPS.
+   Worth doing once the color-threshold version is working, if robustness
+   matters.
 
-- **Retroreflective ball + IR ring light**. Stick a strip of
-  retroreflective tape (the stuff on running shoes / bike jackets) on the
-  ball. Surround the camera lens with an IR LED ring (~850 nm). Add an
-  850 nm bandpass filter on the camera. The ball lights up like a flare
-  and *nothing else in the room does*. Detection becomes: threshold at
-  ~200, find the biggest blob, centroid = ball position. Rock-solid under
-  any ambient lighting, and users in frame don't confuse it.
-- **Active IR LED inside the ball**. Drill a 3D-printed ball hollow,
-  drop in a coin cell + a single IR LED, glue it shut. Same principle but
-  self-powered — useful if the camera can't be lens-on-axis with the
-  disk.
+Either way, publish `/ball_pixel` (cx, cy, confidence) from the camera.
+The node on the Pi takes the image-plane point + the ArUco board pose +
+camera intrinsics, and projects the pixel ray onto the platform plane to
+get (x_mm, y_mm) on the disk. That's `/ball_xy`.
 
-IR is the trick professional motion-capture rigs use (OptiTrack, Vicon).
-You get their robustness for ~$20 in parts.
+## Package layout
 
-## ROS 2 integration sketch
-
-New package `stewart_vision` (separate from `stewart_bringup`):
+New ROS 2 package `stewart_vision` (kept separate from `stewart_bringup`):
 
 ```
 stewart_vision/
   stewart_vision/
-    ball_tracker_node.py   # subscribes to camera, publishes /ball_xy
-    calibrator.py          # one-shot: find the disk center + radius in pixels
+    oak_driver_node.py       # starts OAK pipeline, publishes /ball_pixel
+    platform_pose_node.py    # subscribes to OAK image, solves ArUco board pose, publishes /platform_pose
+    ball_projector_node.py   # combines /ball_pixel + /platform_pose → /ball_xy
   config/
-    camera_intrinsics.yaml
-    disk_homography.yaml
+    marker_layout.yaml       # generated by generate_aruco_ring.py
+    oak_intrinsics.yaml      # from OAK factory calibration
   launch/
-    ball_tracker_launch.py
+    stewart_vision_launch.py
 ```
 
-Topic contract:
+The existing `stewart_control_node` gains a new level-loop mode
+`BALL_TRACK` that subscribes to `/ball_xy`, runs a 2-axis PID on
+(x, y) error vs. a `/ball_ref` target, and writes tilt (roll, pitch)
+commands. For the extra-credit mode, `/ball_ref` comes from a click on
+the GUI's live camera feed; for the base demo, it's the precomputed
+rolling trajectory.
 
-- **Input**: `/image_raw` (sensor_msgs/Image) from whatever camera driver
-  you pick.
-- **Output**: `/ball_xy` (geometry_msgs/PointStamped) in the platform's
-  top-surface frame, with `frame_id='platform'` and a timestamp matching
-  the camera exposure.
-- **Output**: `/ball_state` (std_msgs/String JSON) with `{detected: bool,
-  latency_ms: N, quality: 0.0–1.0}` so the GUI can show a health indicator.
+## Latency budget
 
-The `stewart_control_node` gains a new level-loop mode `BALL_TRACK` that
-subscribes to `/ball_xy`, runs a PID on (x, y) error, and writes a tilt
-(roll, pitch) target. The existing tilt→leg-target pipeline stays the
-same — vision just replaces the precomputed trajectory.
+Everything must close in under ~30 ms to avoid wobble:
 
-## Putting it on the Pi
+| Stage                              | Target |
+|------------------------------------|--------|
+| OAK exposure + on-chip detection   | ≤ 15 ms |
+| USB3 → Pi + ROS topic hop          | ≤ 3 ms  |
+| `/ball_pixel` + pose → `/ball_xy`  | ≤ 2 ms  |
+| Control loop tick (already 50 Hz)  | ≤ 20 ms |
+| **Total** (worst case)             | **≤ 40 ms** |
 
-- The Pi 4 can't do dense stereo in real time. If you pick RealSense or
-  DIY stereo, the Pi 5 is basically required. An OAK-D offloads the work
-  and makes a Pi 4 fine.
-- Camera power: USB3 is mandatory for any stereo camera doing meaningful
-  frame rates. The Pi 4's USB3 ports share a single bus — don't put the
-  CAN adapter on the same hub.
-- Add `ball_tracker.service` as a third systemd unit so it starts/stops
-  with the rest of the stack.
+Measure this before tuning gains — if the budget is blown, lowering PID
+gains just hides the instability.
 
-## Milestones (suggested order)
+## Milestones
 
-1. **Static test**: mount camera, drop the ball on the disk, publish
-   `/ball_xy` at 30 Hz from a laptop. Verify coordinates match a ruler.
-2. **Latency measurement**: time from LED flash → `/ball_xy` message.
-   Budget: 30 ms. Measure before you try to close the loop.
-3. **Closed-loop ball-centering** (easier than trajectory tracking):
-   level the disk, drop the ball off-center, platform tilts to push it to
-   the middle. This is the "ball balancer" classic demo and is a great
-   sanity check.
-4. **Trajectory tracking**: replace the scripted rolling-ball routine's
-   feed-forward trajectory with a reference `(x_ref(t), y_ref(t))` and
-   a PID on (ball - ref). Now the demo is robust to perturbations.
-5. **Robustness**: add IR filter + retroreflective ball, retune, demo
-   with people waving at the camera.
+1. **Print + stick the ArUco ring.** Use `generate_aruco_ring.py`.
+2. **OAK-D driver up.** Stream RGB on the Pi; verify frames land.
+3. **Ring pose working.** Publish `/platform_pose` at ≥ 30 Hz. Move the
+   platform by hand; confirm roll/pitch match the IMU reading within
+   a degree.
+4. **Ball detection on VPU.** Publish `/ball_pixel`. Drop the ball in
+   frame and watch the pixel coordinates track it.
+5. **Ball-in-disk-frame.** `/ball_xy` in mm. Measure against a ruler.
+6. **Closed-loop ball-centering.** Disk level, drop ball off-center,
+   platform tilts to push it to the middle. PID tuning starts here.
+7. **Click-to-move (extra credit).** Click anywhere on the GUI video
+   feed; platform drives the ball to that spot.
+8. **Trajectory tracking (base demo).** Replace the scripted
+   rolling-ball feed-forward with real-time reference tracking.
 
-## Things to decide before starting
+## Open questions / decisions to make before writing code
 
-- Mount the camera on the platform (moves with tilt) or on a fixed
-  frame looking down (moves with the world)? Fixed-frame is much easier —
-  the disk appears as an ellipse in image space and the homography is
-  nearly constant.
-- Which coordinate frame does `/ball_xy` live in — image pixels, disk
-  mm, or world mm? **Disk mm** makes the PID trivial and lets you tune
-  gains without re-thinking units.
-- Do you want the ball-tracker node to auto-detect the disk each frame
-  (robust to camera drift) or only at startup (simpler, requires rigid
-  mount)?
-
-None of these decisions are permanent. Start with the simplest choice in
-each category (fixed top-down monocular, disk-mm coordinates, calibrate
-at startup) and complicate only when something specifically breaks.
+- **Camera mount angle**: straight-down or oblique? Oblique (30–45°) lets
+  you see the ball at the rim, but the projection math is uglier. Pick
+  one and commit before calibrating — recalibrating every time the mount
+  moves is expensive.
+- **Coordinate frame**: report `/ball_xy` in platform-frame mm (rotates
+  with the disk) or world-frame mm (fixed)? Platform-frame is what the
+  controller wants.
+- **When does `/ball_xy` become stale?** If the ArUco ring is fully
+  occluded, the last good pose is held, but for how long? Default:
+  drop to level-only mode after 500 ms of no detection.
