@@ -7,12 +7,14 @@ Wants=network-online.target
 Type=simple
 User=sorak
 Group=sorak
-WorkingDirectory=/home/sorak/ros2_ws/src/stewart_bringup
+WorkingDirectory=/home/sorak/ros2_ws
 # --host 0.0.0.0 so the laptop on the same WiFi can reach it. The
 # /reset and /launch endpoints are still local-only in spirit; if your
 # WiFi is untrusted, add a firewall rule or keep on --host 127.0.0.1
 # and access via an SSH tunnel.
-ExecStart=/usr/bin/python3 /home/sorak/ros2_ws/src/stewart_bringup/scripts/gui_server.py --host 0.0.0.0 --port 8080
+# gui_server.py auto-detects either ~/ros2_ws/src/stewart_bringup (WSL laptop)
+# or ~/ros2_ws/src/stable_bot/stewart_bringup (Pi, repo-clone layout).
+ExecStart=/bin/bash -c 'if [ -d /home/sorak/ros2_ws/src/stewart_bringup ]; then D=/home/sorak/ros2_ws/src/stewart_bringup; else D=/home/sorak/ros2_ws/src/stable_bot/stewart_bringup; fi; exec /usr/bin/python3 $D/scripts/gui_server.py --host 0.0.0.0 --port 8080'
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal

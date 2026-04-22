@@ -239,8 +239,131 @@ when happy:
 ```bash
 rsync -av --delete \
   ~/ros2_ws/src/stewart_bringup/ \
-  sorak@stablebot.local:/home/sorak/ros2_ws/src/stewart_bringup/
+  sorak@stablebot.local:/home/sorak/ros2_ws/src/stable_bot/stewart_bringup/
 ssh sorak@stablebot.local \
   "cd ~/ros2_ws && colcon build --packages-select stewart_bringup --symlink-install && \
    sudo systemctl restart stable_bot.service"
 ```
+
+---
+
+## Post-migration lessons learned (2026-04-21 → 22)
+
+Everything below was discovered while actually migrating. The steps above were the plan; the notes below are reality.
+
+### Pi apt sources ship bare
+
+Pi Imager's Ubuntu 24.04 image enables only `noble` and `noble-security` — no
+`noble-updates`. You'll see `bzip2 : Depends: libbz2-1.0 (= 1.0.8-5.1) but
+1.0.8-5.1build0.1 is to be installed` on the first `apt install`. Fix:
+
+```bash
+echo 'deb http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse' | \
+  sudo tee /etc/apt/sources.list.d/noble-updates.list
+sudo apt update
+```
+
+### ROS 2 base vs. dev-tools
+
+`ros-kilted-ros-base` is *runtime only*. To build the workspace you also need
+`ros-dev-tools`, `ros-kilted-ament-cmake`, `ros-kilted-ament-cmake-auto`, and
+`ros-kilted-rosidl-default-generators`.
+
+### Xsens driver must be rebuilt for arm64
+
+The Xsens driver ships prebuilt amd64 `.a` libs under
+`lib/xspublic/{xscontroller,xscommon,xstypes}/`. If you rsync from an x86_64
+laptop they come along for the ride and the Pi's linker rejects them with
+`skipping incompatible ... libxscontroller.a`. Before the first `colcon build`
+on the Pi:
+
+```bash
+cd ~/ros2_ws/src/Xsens_MTi_ROS_Driver_and_Ntrip_Client/src/xsens_mti_ros2_driver/lib/xspublic
+make clean && make
+```
+
+### Repo layout mismatch bit us twice
+
+The Pi clones into `~/ros2_ws/src/stable_bot/stewart_bringup/`, not the
+laptop's flat `~/ros2_ws/src/stewart_bringup/`. Two places had hardcoded paths
+that assumed the laptop layout and silently misbehaved on the Pi:
+
+- `stewart_control_node.py` — the `LEG_LIMITS_PATH` and sibling config paths.
+  Now use `_find_stewart_bringup_dir()` which looks for a real `package.xml`
+  before picking a candidate dir.
+- `stall_home.py` (outside the ROS package, at
+  `~/Getting the robot working/Spin Motor Over CAN Test/`) — wrote homing
+  results to a phantom directory the control node never read. Now uses the
+  same resolver. **This file lives outside the repo** — after pulling on
+  a new machine, copy `stall_home.py` manually if you need homing.
+
+### Systemd on the Pi vs. `/launch` button in the GUI
+
+On the Pi the stack is managed by `stable_bot.service` — systemd keeps it
+running and restarts it on failure. The Diagnostics panel's green **(Re)launch
+stack** button spawns its own copy via `gui_server.py`'s `/launch` endpoint,
+which *duplicates* the stack. Symptoms:
+
+- Two `stewart_control_node` processes — every topic message published twice.
+- Two rosbridges — the second retry-loops on `[Errno 98] Address already in
+  use` for port 9090, forever, filling the launch log.
+- Two stacks fighting over the CAN bus and DDS discovery.
+
+`gui_server.py` now refuses a `/launch` request if anything already owns
+port 9090. On the Pi, **don't click that button** — use **Hard reset stack**
+(red) instead. It kills everything cleanly; systemd brings the service back
+up by itself.
+
+### Reset script needs a longer budget on the Pi
+
+`ros2 daemon start` can easily take >10s cold on a Pi 4. The reset script's
+step 4 now waits up to 30s and is non-fatal (the daemon is only a CLI cache —
+the stack runs fine without it). The gui_server's `/reset` HTTP timeout was
+bumped from 30s → 90s for the same reason.
+
+### Homing-prompt duplicate publish
+
+An early bug where every homing line showed up twice turned out to be the
+same duplicate-stack issue above, not a pump bug. Once you ensure there's
+only one `stewart_control_node` running, each line appears once.
+
+---
+
+## Connecting your laptop (or phone) to the running Pi
+
+Assumes `stable_bot.service` and `stable_bot_gui.service` are enabled —
+the stack starts automatically on boot.
+
+1. Turn on your phone's hotspot.
+2. Power the Pi. Wait ~45 s for it to join the hotspot and boot the stack.
+3. Open the hotspot's "Connected devices" list — you should see `stablebot`
+   and its IP (e.g. `10.31.1.98`).
+4. On any device sharing the hotspot:
+   - **Browser GUI**: <http://stablebot.local:8080/> (or
+     `http://<pi-ip>:8080/` if mDNS doesn't resolve on your OS).
+   - **Rosbridge websocket URL** inside the GUI: `ws://stablebot.local:9090`
+     (this is the field the GUI's "ws url" input points at — change it on
+     first connect if it still says `localhost`).
+   - **SSH**: `ssh sorak@stablebot.local`.
+
+### When mDNS doesn't work
+
+Some Windows setups and most WSL2 installs can't resolve `.local` names.
+Fall back to the raw IP for both the page URL and the websocket URL.
+
+### Daily startup / shutdown
+
+Nothing to do — `systemctl enable --now stable_bot{,_gui}.service` was done
+during migration, so the Pi brings everything up by itself.
+
+```bash
+# Check health from any SSH session:
+systemctl status stable_bot stable_bot_gui --no-pager
+journalctl -u stable_bot -n 50 --no-pager
+
+# Clean shutdown:
+sudo shutdown -h now
+```
+
+See also `stable_bot_startup.txt` in the home directory for a short cheat
+sheet.

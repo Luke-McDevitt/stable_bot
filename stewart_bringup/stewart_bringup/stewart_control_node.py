@@ -65,18 +65,23 @@ from jugglebot_interfaces.srv import (
 
 
 # ---------------- Constants -------------------------------------------
-LEG_LIMITS_PATH = os.path.expanduser(
-    '~/ros2_ws/src/stewart_bringup/config/leg_limits.yaml')
-GLOBAL_LIMITS_PATH = os.path.expanduser(
-    '~/ros2_ws/src/stewart_bringup/config/global_limits.yaml')
-LEVEL_CAL_PATH = os.path.expanduser(
-    '~/ros2_ws/src/stewart_bringup/config/platform_level.yaml')
+def _find_stewart_bringup_dir():
+    # Check for package.xml as the signature of a real package dir
+    # (a phantom dir created by stall_home will only contain config/).
+    for cand in ('~/ros2_ws/src/stewart_bringup',
+                 '~/ros2_ws/src/stable_bot/stewart_bringup'):
+        p = os.path.expanduser(cand)
+        if os.path.isfile(os.path.join(p, 'package.xml')):
+            return p
+    return os.path.expanduser('~/ros2_ws/src/stewart_bringup')
+_BRINGUP_DIR = _find_stewart_bringup_dir()
+LEG_LIMITS_PATH = os.path.join(_BRINGUP_DIR, 'config/leg_limits.yaml')
+GLOBAL_LIMITS_PATH = os.path.join(_BRINGUP_DIR, 'config/global_limits.yaml')
+LEVEL_CAL_PATH = os.path.join(_BRINGUP_DIR, 'config/platform_level.yaml')
 STALL_HOME_SCRIPT = os.path.expanduser(
     '~/Getting the robot working/Spin Motor Over CAN Test/stall_home.py')
-ROUTINES_DIR = os.path.expanduser(
-    '~/ros2_ws/src/stewart_bringup/config/routines')
-ROUTINE_LOGS_DIR = os.path.expanduser(
-    '~/ros2_ws/src/stewart_bringup/logs')
+ROUTINES_DIR = os.path.join(_BRINGUP_DIR, 'config/routines')
+ROUTINE_LOGS_DIR = os.path.join(_BRINGUP_DIR, 'logs')
 SAFETY_MARGIN_TURNS = 0.05
 
 # IK geometry (match robot_geometry.py)
@@ -2330,10 +2335,15 @@ class StewartControlNode(Node):
         buf = b''
         last_data = time.monotonic()
         IDLE_FLUSH_S = 0.15
+        last_partial = None  # last partial-line publish, to suppress duplicates
 
-        def _publish(text):
+        def _publish(text, partial=False):
             if not text:
                 return
+            nonlocal last_partial
+            if partial and text == last_partial:
+                return  # skip duplicate idle-flush of same prompt
+            last_partial = text if partial else None
             m = String()
             m.data = text
             self.pub_homing_out.publish(m)
@@ -2363,7 +2373,7 @@ class StewartControlNode(Node):
                 # content that's been idle a moment, it's probably a
                 # prompt waiting for input → flush it so the GUI shows it.
                 if buf and (time.monotonic() - last_data) > IDLE_FLUSH_S:
-                    _publish(buf.decode('utf-8', errors='replace'))
+                    _publish(buf.decode('utf-8', errors='replace'), partial=True)
                     buf = b''
                 if not alive:
                     break

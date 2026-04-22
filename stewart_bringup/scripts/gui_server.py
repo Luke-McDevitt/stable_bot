@@ -32,15 +32,36 @@ import sys
 import threading
 import time
 
-DEFAULT_WEB_DIR = os.path.expanduser('~/ros2_ws/src/stewart_bringup/web')
-RESET_SCRIPT = os.path.expanduser(
-    '~/ros2_ws/src/stewart_bringup/scripts/reset_stewart_stack.py')
-LAUNCH_LOG = os.path.expanduser(
-    '~/ros2_ws/src/stewart_bringup/logs/last_launch.log')
+def _find_stewart_bringup_dir():
+    for cand in ('~/ros2_ws/src/stewart_bringup',
+                 '~/ros2_ws/src/stable_bot/stewart_bringup'):
+        p = os.path.expanduser(cand)
+        if os.path.isfile(os.path.join(p, 'package.xml')):
+            return p
+    return os.path.expanduser('~/ros2_ws/src/stewart_bringup')
+_BRINGUP_DIR = _find_stewart_bringup_dir()
+DEFAULT_WEB_DIR = os.path.join(_BRINGUP_DIR, 'web')
+RESET_SCRIPT = os.path.join(_BRINGUP_DIR, 'scripts/reset_stewart_stack.py')
+LAUNCH_LOG = os.path.join(_BRINGUP_DIR, 'logs/last_launch.log')
 
 # Global launch subprocess state (guarded by a lock)
 _launch_lock = threading.Lock()
 _launch_proc = None
+
+
+def _rosbridge_already_running():
+    """True if anything is listening on TCP 9090 (rosbridge default port).
+    Catches stacks started outside this gui_server (notably systemd on Pi)."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.3)
+    try:
+        s.connect(('127.0.0.1', 9090))
+        return True
+    except Exception:
+        return False
+    finally:
+        s.close()
 
 
 def _run_launch():
@@ -50,6 +71,11 @@ def _run_launch():
     with _launch_lock:
         if _launch_proc is not None and _launch_proc.poll() is None:
             return _launch_proc   # already running
+        if _rosbridge_already_running():
+            raise RuntimeError(
+                "rosbridge already listening on :9090 (probably started by "
+                "systemd). Refusing to spawn a duplicate stack — use "
+                "`sudo systemctl restart stable_bot.service` instead.")
         os.makedirs(os.path.dirname(LAUNCH_LOG), exist_ok=True)
         log_f = open(LAUNCH_LOG, 'w')
         # Use bash -c so we can source ROS before launching. PATH may not
@@ -136,7 +162,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 r = subprocess.run(
                     ['python3', RESET_SCRIPT],
-                    capture_output=True, text=True, timeout=30)
+                    capture_output=True, text=True, timeout=90)
                 self._send_json({
                     'rc': r.returncode,
                     'stdout': r.stdout[-4000:],

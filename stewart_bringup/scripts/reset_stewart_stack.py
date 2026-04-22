@@ -179,12 +179,16 @@ def main():
 
     if not args.no_daemon:
         header("step 4: start fresh ros2 daemon")
-        rc, out, err = run([ROS2_BIN, 'daemon', 'start'], timeout=10)
+        rc, out, err = run([ROS2_BIN, 'daemon', 'start'], timeout=30)
         if rc == 0:
             print("  started")
         else:
-            print(f"  start FAILED rc={rc}: {err.strip() or out.strip()}")
-            sys.exit(1)
+            # Daemon is only a CLI introspection cache — the stack runs fine
+            # without it. On slow hosts (Pi) cold-start can exceed our timeout.
+            # Don't bail; just warn so the rest of the reset still completes.
+            print(f"  start WARN rc={rc}: {err.strip() or out.strip()}")
+            print("  (continuing anyway — daemon is only for `ros2 topic` "
+                  "etc., not for the running stack)")
 
     header("step 5: verify nothing stale is still running")
     leftover = []
