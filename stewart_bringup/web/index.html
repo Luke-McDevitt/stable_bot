@@ -833,45 +833,65 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
       </div>
 
       <!-- Manual endstop capture (RECOMMENDED) — replaces automatic stall-homing.
-           User physically positions all 6 legs at one endstop, captures, repeats
-           for the other endstop, then writes leg_limits.yaml. No motor movement,
-           no slamming. -->
+           User physically positions selected legs at one endstop, captures
+           (per-leg or per-group), repeats as needed, then writes
+           leg_limits.yaml. No motor movement, no slamming. Saving with
+           only bottom captured derives top via default_stroke_turns. -->
       <div class="mb-3 border border-emerald-700 bg-emerald-900/20 rounded p-2">
         <div class="text-xs uppercase text-emerald-300 font-semibold mb-1">
           Manual endstop capture <span class="text-slate-400 normal-case">(recommended)</span>
         </div>
         <p class="text-xs text-slate-400 mb-2">
-          No motor movement — physically position the legs and click. Replaces
-          the automatic stall-homing flow below; no risk of slamming into
-          endstops.
+          No motor movement. Pick which legs to capture (you can do them
+          one-by-one or in groups — useful when the platform is unstable
+          with all legs at the same extreme), capture BOTTOM and/or TOP,
+          press Save. Captures merge with existing
+          <span class="mono">leg_limits.yaml</span> — already-saved legs
+          aren't clobbered when you save a new group.
         </p>
-        <ol class="text-xs text-slate-400 list-decimal pl-5 mt-1 mb-2 space-y-0.5">
-          <li>Position all 6 legs at the BOTTOM (resting on foam blocks, just above the actual endstop).</li>
-          <li>Click <b>📍 Capture BOTTOM</b>.</li>
-          <li>Position all 6 legs at the TOP (fully extended upward).</li>
-          <li>Click <b>📍 Capture TOP</b>.</li>
-          <li>Adjust the rest-offset slider if needed (default 0.20 turns ≈ 1 mm above bottom).</li>
-          <li>Click <b>💾 Save limits</b> — writes <span class="mono">leg_limits.yaml</span>, no homing script needed.</li>
-        </ol>
+
+        <div class="text-xs text-slate-400 mb-1">Legs to capture:</div>
+        <div class="grid grid-cols-6 gap-1 mb-2">
+          <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="cap-leg-0" checked> L0</label>
+          <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="cap-leg-1" checked> L1</label>
+          <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="cap-leg-2" checked> L2</label>
+          <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="cap-leg-3" checked> L3</label>
+          <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="cap-leg-4" checked> L4</label>
+          <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="cap-leg-5" checked> L5</label>
+        </div>
+        <div class="grid grid-cols-3 gap-1 text-xs mb-2">
+          <button id="cap-leg-all" class="bg-slate-700 hover:bg-slate-600 rounded py-1">all</button>
+          <button id="cap-leg-none" class="bg-slate-700 hover:bg-slate-600 rounded py-1">none</button>
+          <button id="cap-leg-invert" class="bg-slate-700 hover:bg-slate-600 rounded py-1">invert</button>
+        </div>
+
         <div class="grid grid-cols-2 gap-2 mb-2">
           <button id="capture-bottom-btn"
                   class="bg-emerald-700 hover:bg-emerald-600 rounded py-2 text-sm font-semibold">
-            📍 Capture BOTTOM
+            📍 Capture BOTTOM (selected)
           </button>
           <button id="capture-top-btn"
                   class="bg-indigo-700 hover:bg-indigo-600 rounded py-2 text-sm font-semibold">
-            📍 Capture TOP
+            📍 Capture TOP (selected)
           </button>
         </div>
-        <label class="text-xs text-slate-400 block mb-2">
-          Rest offset above BOTTOM endstop (turns):
+
+        <label class="text-xs text-slate-400 block mb-1">
+          Rest offset above BOTTOM (turns):
           <div class="flex items-center gap-2">
-            <input id="rest-offset-slider" type="range" min="0.05" max="0.50" step="0.01" value="0.20"
-                   class="flex-1">
+            <input id="rest-offset-slider" type="range" min="0.05" max="0.50" step="0.01" value="0.20" class="flex-1">
             <span id="rest-offset-readout" class="mono text-sm w-16 text-right">0.20</span>
           </div>
-          <span class="text-slate-500">~1 mm above bottom on stock Stewart hardware. Increase if leg sags into endstop after Arm.</span>
         </label>
+        <label class="text-xs text-slate-400 block mb-2">
+          Default stroke when only BOTTOM captured (turns):
+          <div class="flex items-center gap-2">
+            <input id="stroke-turns-input" type="number" step="0.01" value="3.00"
+                   class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+          </div>
+          <span class="text-slate-500">Used to derive max_pos = min_pos − stroke when TOP isn't captured. Your prior leg_limits had ~3.20 turns.</span>
+        </label>
+
         <div class="grid grid-cols-2 gap-2">
           <button id="save-limits-btn"
                   class="bg-blue-600 hover:bg-blue-500 rounded py-2 text-sm font-semibold">
@@ -879,12 +899,13 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
           </button>
           <button id="clear-endstops-btn"
                   class="bg-slate-600 hover:bg-slate-500 rounded py-2 text-sm">
-            Clear captures
+            Clear captures (selected)
           </button>
         </div>
-        <div class="grid grid-cols-2 gap-x-3 text-xs mt-2 mono">
-          <div>BOTTOM: <span id="cap-bot-status" class="text-slate-500">not captured</span></div>
-          <div>TOP: <span id="cap-top-status" class="text-slate-500">not captured</span></div>
+
+        <div class="text-xs mt-2 mono">
+          <div>BOTTOM: <span id="cap-bot-status" class="text-slate-500">none</span></div>
+          <div>TOP:    <span id="cap-top-status" class="text-slate-500">none</span></div>
         </div>
         <p id="endstop-capture-msg" class="text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap"></p>
       </div>
@@ -1993,29 +2014,51 @@ window.addEventListener('DOMContentLoaded', () => {
   $('rest-offset-slider').addEventListener('input', (e) => {
     $('rest-offset-readout').innerText = parseFloat(e.target.value).toFixed(2);
   });
+  // Leg-selection helpers
+  $('cap-leg-all').addEventListener('click', () => {
+    [0,1,2,3,4,5].forEach(n => $(`cap-leg-${n}`).checked = true);
+  });
+  $('cap-leg-none').addEventListener('click', () => {
+    [0,1,2,3,4,5].forEach(n => $(`cap-leg-${n}`).checked = false);
+  });
+  $('cap-leg-invert').addEventListener('click', () => {
+    [0,1,2,3,4,5].forEach(n => {
+      const cb = $(`cap-leg-${n}`); cb.checked = !cb.checked;
+    });
+  });
   $('capture-bottom-btn').addEventListener('click', () => {
+    const legs = getSelectedLegs();
+    if (!legs.length) { toast('endstop-capture-msg', 'no legs selected', false); return; }
     const msgEl = $('endstop-capture-msg');
-    if (msgEl) { msgEl.innerText = 'capturing BOTTOM...'; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap'; }
-    publishCmd({ cmd: 'capture_endstop', which: 'bottom' });
+    if (msgEl) { msgEl.innerText = `capturing BOTTOM for legs ${legs}...`; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap'; }
+    publishCmd({ cmd: 'capture_endstop', which: 'bottom', legs });
   });
   $('capture-top-btn').addEventListener('click', () => {
+    const legs = getSelectedLegs();
+    if (!legs.length) { toast('endstop-capture-msg', 'no legs selected', false); return; }
     const msgEl = $('endstop-capture-msg');
-    if (msgEl) { msgEl.innerText = 'capturing TOP...'; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap'; }
-    publishCmd({ cmd: 'capture_endstop', which: 'top' });
+    if (msgEl) { msgEl.innerText = `capturing TOP for legs ${legs}...`; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap'; }
+    publishCmd({ cmd: 'capture_endstop', which: 'top', legs });
   });
   $('save-limits-btn').addEventListener('click', () => {
     const offset = parseFloat($('rest-offset-slider').value);
+    const stroke = parseFloat($('stroke-turns-input').value) || 3.0;
     if (!confirm(
-      `Write leg_limits.yaml from the captured endstops?\n\n` +
-      `rest = bottom + ${offset.toFixed(3)} turns above each endstop\n\n` +
-      `After this, /set_pose, /jog_leg, and Arm work normally — ` +
-      `the limits supersede any captured rest positions.`)) return;
+      `Write leg_limits.yaml?\n\n` +
+      `rest_offset_turns = ${offset.toFixed(3)}\n` +
+      `default_stroke_turns = ${stroke.toFixed(3)} (used when TOP isn't captured)\n\n` +
+      `Captures merge with the existing leg_limits.yaml — already-saved ` +
+      `legs without new captures are preserved.\n\n` +
+      `After save, /set_pose, /jog_leg, and Arm use the new limits.`)) return;
     const msgEl = $('endstop-capture-msg');
     if (msgEl) { msgEl.innerText = 'writing leg_limits.yaml...'; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap'; }
-    publishCmd({ cmd: 'save_limits', rest_offset_turns: offset });
+    publishCmd({ cmd: 'save_limits',
+      rest_offset_turns: offset,
+      default_stroke_turns: stroke });
   });
   $('clear-endstops-btn').addEventListener('click', () => {
-    publishCmd({ cmd: 'clear_endstops' });
+    const legs = getSelectedLegs();
+    publishCmd({ cmd: 'clear_endstops', legs });
   });
   $('home-bottom-btn').addEventListener('click', homeBottomEndstops);
   $('home-top-btn').addEventListener('click', captureTopOfStroke);
@@ -2102,6 +2145,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // -----------------------------------------------------------------------
   initVisionGUI();
   initBallConfig();
+  initCollapsiblePanels();
 
   // Persist the WS URL across reloads (spec v8 Q1).
   (function persistWsUrl() {
@@ -2117,23 +2161,89 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 // ===========================================================================
+// Universal collapsible panels: every <div class="bg-slate-800 rounded-lg
+// p-4 border border-slate-700"> at top level inside a <section> gets a
+// small −/+ toggle in the top-right that hides everything except the
+// <h2> title. Collapsed state persists per panel in localStorage so the
+// user's layout survives page reloads.
+//
+// <details>-based panels (Vision Debug, Calibration, etc.) keep their
+// native browser collapse and aren't touched.
+// ===========================================================================
+
+function initCollapsiblePanels() {
+  const panels = document.querySelectorAll(
+    'section > div.bg-slate-800.rounded-lg.p-4.border.border-slate-700');
+  panels.forEach((panel, idx) => {
+    const h2 = panel.querySelector(':scope > h2');
+    if (!h2) return;
+    // Stable id for localStorage keying — derived from the title.
+    const titleSlug = (h2.textContent || `panel-${idx}`).trim()
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+    const lsKey = `stable-bot-panel-collapsed-${titleSlug}`;
+
+    panel.classList.add('relative');
+
+    // Toggle button — top-right corner of the panel.
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.title = 'collapse / expand';
+    btn.className = 'absolute top-2 right-2 w-6 h-6 rounded ' +
+      'text-slate-400 hover:text-slate-100 hover:bg-slate-700 ' +
+      'text-base leading-none flex items-center justify-center';
+    panel.appendChild(btn);
+
+    // Children to hide on collapse: everything except the <h2> and the button.
+    const hideable = Array.from(panel.children).filter(
+      c => c !== h2 && c !== btn);
+
+    function applyState(collapsed) {
+      hideable.forEach(c => { c.style.display = collapsed ? 'none' : ''; });
+      btn.innerText = collapsed ? '+' : '−';
+      // Tighten spacing when collapsed so the panel becomes a thin header.
+      panel.style.paddingTop = collapsed ? '0.5rem' : '';
+      panel.style.paddingBottom = collapsed ? '0.5rem' : '';
+      h2.style.marginBottom = collapsed ? '0' : '';
+    }
+
+    let collapsed = localStorage.getItem(lsKey) === '1';
+    applyState(collapsed);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      collapsed = !collapsed;
+      localStorage.setItem(lsKey, collapsed ? '1' : '0');
+      applyState(collapsed);
+    });
+  });
+}
+
+// ===========================================================================
 // Endstop-capture status indicators (manual homing flow)
 // ===========================================================================
 
 function updateEndstopStatus(captured) {
-  const fmt = (arr) => arr === null
-    ? '<span class="text-slate-500">not captured</span>'
-    : '<span class="text-emerald-400">' +
-        arr.map((v, i) => `L${i}=${v >= 0 ? '+' : ''}${v.toFixed(4)}`).join(' ') +
-      '</span>';
+  // captured.bottom and captured.top are each arrays of length 6, with
+  // null for un-captured legs and float (turns) for captured ones.
+  const fmt = (arr) => {
+    if (!arr) return '<span class="text-slate-500">none</span>';
+    const parts = arr.map((v, i) => v === null
+      ? `<span class="text-slate-600">L${i}—</span>`
+      : `<span class="text-emerald-400">L${i}=${v >= 0 ? '+' : ''}${v.toFixed(3)}</span>`
+    );
+    const numCap = arr.filter(v => v !== null).length;
+    return `(${numCap}/6) ` + parts.join(' ');
+  };
   const botEl = document.getElementById('cap-bot-status');
   const topEl = document.getElementById('cap-top-status');
-  if (botEl) botEl.innerHTML = captured.bottom === null
-    ? '<span class="text-slate-500">not captured</span>'
-    : '<span class="text-emerald-400">captured (' + captured.bottom.length + ' legs)</span>';
-  if (topEl) topEl.innerHTML = captured.top === null
-    ? '<span class="text-slate-500">not captured</span>'
-    : '<span class="text-emerald-400">captured (' + captured.top.length + ' legs)</span>';
+  if (botEl) botEl.innerHTML = fmt(captured.bottom);
+  if (topEl) topEl.innerHTML = fmt(captured.top);
+}
+
+function getSelectedLegs() {
+  return [0, 1, 2, 3, 4, 5].filter(n => {
+    const cb = document.getElementById(`cap-leg-${n}`);
+    return cb && cb.checked;
+  });
 }
 
 // ===========================================================================

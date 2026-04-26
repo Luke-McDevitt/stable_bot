@@ -560,13 +560,15 @@ class StewartControlNode(Node):
         self.captured_rest_positions = None
 
         # Manual endstop captures (alternative to automatic stall-homing).
-        # User physically positions all 6 legs at one endstop, presses
-        # the corresponding GUI button, then repeats for the other endstop.
-        # When both are captured, the user clicks "Save limits" and
-        # leg_limits.yaml is written + reloaded — no motor movement
-        # required, no risk of slamming into endstops. Each entry is None
-        # before capture, or a list of 6 floats (turns).
-        self.captured_endstops = {'bottom': None, 'top': None}
+        # Per-leg, so the user can capture in groups (e.g., the platform may
+        # be unstable with all 6 legs at the top simultaneously, so they
+        # capture top one or two legs at a time). Each slot is None before
+        # capture, or a float (turns). Save merges with existing leg_limits.yaml
+        # so previously-saved legs aren't clobbered.
+        self.captured_endstops = {
+            'bottom': [None] * 6,
+            'top':    [None] * 6,
+        }
 
         # per-leg armed state (True iff the leg is in CLOSED_LOOP, in either
         # pos or vel mode).
@@ -878,87 +880,136 @@ class StewartControlNode(Node):
             f"captured rest positions: {formatted}. Now press the regular "
             f"Arm button to lock the legs at these positions."), enc
 
-    def _capture_endstop(self, which):
+    def _capture_endstop(self, which, legs=None):
         """Snapshot current encoder readings as one of the two endstops.
+
         which in {'bottom', 'top'}.
+        legs: list of leg indices (0–5) to capture, or None for all 6.
 
-        User flow: physically position all 6 legs at the desired endstop
-        (e.g., bottom = each leg resting on its foam block, just above
-        the actual endstop), then call this. No motor movement.
-
-        Capture is non-destructive — the user can call it again with
-        legs in slightly different positions and the latest reading
-        wins. To clear, call clear_endstops.
+        User flow: physically position the SELECTED legs at the desired
+        endstop (e.g., bottom = each leg resting on its foam block above
+        the actual endstop), then call this. No motor movement. Captures
+        are stored per-leg and merge — capturing legs [0, 1] then [2, 3]
+        gives you bottom captures for all four; captures for legs not in
+        `legs` are left untouched.
         """
         if which not in ('bottom', 'top'):
             return False, f"which must be 'bottom' or 'top'; got {which!r}", None
+        if legs is None:
+            legs = list(range(6))
+        else:
+            legs = list(legs)
+        bad = [n for n in legs if not (0 <= n <= 5)]
+        if bad:
+            return False, f"invalid leg indices: {bad}", None
+        if not legs:
+            return False, "no legs selected", None
         if self.bus is None:
             if not self._open_bus_and_start_threads():
                 return False, "can't open can0", None
         if self.listener is None:
             return False, "encoder listener not running", None
         enc = self.listener.get_all(max_age_s=1.0)
-        missing = [n for n in range(6) if enc[n] is None]
+        missing = [n for n in legs if enc[n] is None]
         if missing:
             return False, (
                 f"capture refused: legs {missing} have no fresh encoder "
                 f"reading. Power-cycle the ODrive(s) and try again."), None
-        self.captured_endstops[which] = list(enc)
+        for n in legs:
+            self.captured_endstops[which][n] = float(enc[n])
         formatted = ", ".join(
-            f"L{n}={enc[n]:+.4f}" for n in range(6))
-        other = 'top' if which == 'bottom' else 'bottom'
-        next_step = ("Now capture the OTHER endstop, then press "
-                     "'Save limits'."
-                     if self.captured_endstops[other] is None
-                     else "Both endstops captured — press 'Save limits' to "
-                     "write leg_limits.yaml.")
+            f"L{n}={enc[n]:+.4f}" for n in legs)
         return True, (
-            f"captured {which.upper()} endstop: {formatted}.\n{next_step}"), enc
+            f"captured {which.upper()} endstop for legs {legs}: {formatted}. "
+            f"Capture more legs or press 'Save limits' to write the file."), enc
 
-    def _save_limits_from_captures(self, rest_offset_turns=0.20):
-        """Once both endstops have been captured, derive rest position
-        and write leg_limits.yaml in the same schema the existing code
-        expects.
+    def _save_limits_from_captures(self, rest_offset_turns=0.20,
+                                   default_stroke_turns=3.0):
+        """Write leg_limits.yaml from per-leg captures.
 
-        rest = bottom + sign(top - bottom) * rest_offset_turns
+        For each leg:
+          - If only BOTTOM captured: derive top = bottom - default_stroke_turns
+            (assumes positive=down per the user's encoder convention; project
+            memory: 'Per-leg motion sign conventions — Node 0: positive vel
+            = downward'). The 'fixed_stroke_turns' approach is the documented
+            homing strategy — see project_jugglebot_homing_strategy.md.
+          - If only TOP captured: derive bottom = top + default_stroke_turns.
+          - If both captured: use them directly.
+          - If neither: skip — the leg's existing entry in leg_limits.yaml
+            (if any) is preserved.
 
-        The sign-of-direction handling means this works regardless of
-        per-leg encoder polarity (some legs may have positive=down,
-        others positive=up).
+        rest_offset_turns:    rest = bottom + sign-toward-top * offset
+        default_stroke_turns: |top - bottom| used when only one endstop is
+                              captured for a given leg.
 
-        After writing, self.limits is reloaded so /set_pose and
-        /jog_leg start working immediately. captured_rest_positions
-        is also cleared since limits supersedes it.
+        After writing, self.limits is reloaded.
         """
-        bot = self.captured_endstops['bottom']
-        top = self.captured_endstops['top']
-        if bot is None or top is None:
-            missing = [k for k, v in self.captured_endstops.items()
-                       if v is None]
-            return False, (
-                f"missing captures: {missing}. Capture both endstops "
-                f"before saving.")
         if rest_offset_turns <= 0:
             return False, "rest_offset_turns must be > 0"
-        out = {}
+        if default_stroke_turns <= 0:
+            return False, "default_stroke_turns must be > 0"
+        bot = self.captured_endstops['bottom']
+        top = self.captured_endstops['top']
+
+        # Load existing leg_limits so legs without new captures are preserved.
+        existing = {}
+        if os.path.isfile(LEG_LIMITS_PATH):
+            try:
+                with open(LEG_LIMITS_PATH) as f:
+                    existing = yaml.safe_load(f) or {}
+            except Exception:
+                existing = {}
+
+        out = dict(existing)  # start from existing, override per-leg as we go
+        legs_written = []
+        legs_skipped = []
+        legs_derived = []  # legs where one endstop was derived from default_stroke
         ts = datetime.datetime.utcnow().isoformat(timespec='seconds') + '+00:00'
         for n in range(6):
-            delta = top[n] - bot[n]
-            if abs(delta) < 0.01:
-                return False, (
-                    f"leg {n}: bottom and top capture are too close "
-                    f"({delta:+.4f} turns). Did you capture them at the "
-                    f"same physical position?")
-            direction = 1.0 if delta > 0 else -1.0
-            rest = bot[n] + direction * rest_offset_turns
+            b, t = bot[n], top[n]
+            if b is None and t is None:
+                # Nothing captured for this leg — preserve any existing entry
+                # (already there in `out` from the existing dict).
+                if f'axis_{n}' in out:
+                    legs_skipped.append(n)
+                continue
+
+            # Default sign convention from project memory: positive=down,
+            # so up direction = negative. If both captured, use observed sign.
+            if b is not None and t is not None:
+                if abs(t - b) < 0.01:
+                    return False, (
+                        f"leg {n}: bottom and top capture are too close "
+                        f"({t - b:+.4f} turns). Did you capture them at "
+                        f"the same physical position?")
+                up_dir = 1.0 if (t - b) > 0 else -1.0
+            else:
+                # Convention assumption: positive encoder = leg extended
+                # downward → top is in the negative direction from bottom.
+                up_dir = -1.0
+                if b is not None:
+                    t = b + up_dir * default_stroke_turns
+                else:  # t is not None, b is None
+                    b = t - up_dir * default_stroke_turns
+                legs_derived.append(n)
+
+            rest = b + up_dir * rest_offset_turns
             out[f'axis_{n}'] = {
-                'min_pos_turns': float(bot[n]),
-                'max_pos_turns': float(top[n]),
+                'min_pos_turns': float(b),
+                'max_pos_turns': float(t),
                 'rest_pos_turns': float(rest),
                 'homed_at': ts,
                 'source': 'manual_endstop_capture',
                 'rest_offset_turns': float(rest_offset_turns),
+                'derived_top': n in legs_derived if t is not None and bot[n] is not None and top[n] is None else False,
             }
+            legs_written.append(n)
+
+        if not legs_written:
+            return False, (
+                "no new captures — capture at least one leg's BOTTOM or "
+                "TOP before saving.")
+
         try:
             with open(LEG_LIMITS_PATH, 'w') as f:
                 yaml.safe_dump(out, f, sort_keys=False)
@@ -972,15 +1023,20 @@ class StewartControlNode(Node):
         if self.limits is None:
             return False, (
                 f"wrote {LEG_LIMITS_PATH} but it failed validation on "
-                f"reload — check the file.")
-        # Limits now supersede captured_rest_positions.
+                f"reload — check the file (perhaps an axis is missing).")
+        # Limits supersede captured_rest_positions.
         self.captured_rest_positions = None
-        # Don't auto-clear captured_endstops — user might want to recompute
-        # with a different rest_offset_turns without re-capturing.
-        return True, (
-            f"leg_limits.yaml written ({len(out)} legs). rest = bottom + "
-            f"{rest_offset_turns:.3f} turns above each endstop. Limits "
-            f"reloaded — pose / jog / arm now work normally.")
+        msg_parts = [
+            f"leg_limits.yaml written: {len(legs_written)} legs updated "
+            f"({legs_written}); {len(legs_skipped)} preserved from existing "
+            f"file; rest_offset = {rest_offset_turns:.3f} turns."
+        ]
+        if legs_derived:
+            msg_parts.append(
+                f"Top derived for legs {legs_derived} via default_stroke = "
+                f"{default_stroke_turns:.2f} turns (positive=down convention).")
+        msg_parts.append("Limits reloaded — pose / jog / arm now work normally.")
+        return True, " ".join(msg_parts)
 
     def _safe_arm_in_place(self, current=6.0, vel_limit=None):
         """Arm all 6 legs at their current encoder positions, bypassing
@@ -1210,25 +1266,64 @@ class StewartControlNode(Node):
                 ok, reply_msg = self._arm_all_in_pos_mode()
             elif cmd == 'capture_endstop':
                 # Manual endstop capture for leg_limits.yaml without
-                # automatic stall-homing. Payload: {"which":"bottom"|"top"}.
+                # automatic stall-homing. Payload:
+                #   {"which": "bottom"|"top", "legs": [0,1,...]}
+                # legs is optional; omit / null = all 6 legs.
                 which = (d.get('which') or '').strip().lower()
-                ok, reply_msg, encs = self._capture_endstop(which)
+                legs_arg = d.get('legs')
+                if legs_arg is not None:
+                    try:
+                        legs_arg = [int(x) for x in legs_arg]
+                    except Exception:
+                        legs_arg = None
+                ok, reply_msg, encs = self._capture_endstop(which, legs=legs_arg)
                 if encs is not None:
                     extra['positions'] = list(encs)
                 extra['captured'] = {
-                    k: (list(v) if v is not None else None)
-                    for k, v in self.captured_endstops.items()
+                    k: list(v) for k, v in self.captured_endstops.items()
                 }
             elif cmd == 'save_limits':
                 # Compute rest = bottom + offset, write leg_limits.yaml,
-                # reload self.limits. Payload: {"rest_offset_turns": <float>}
-                # — defaults to 0.20 turns (≈1 mm for the user's hardware).
+                # reload self.limits. Payload:
+                #   {"rest_offset_turns": <float>,
+                #    "default_stroke_turns": <float>}
+                # If only bottom captured, top = bottom - default_stroke_turns
+                # (positive=down convention per project memory).
                 offset = float(d.get('rest_offset_turns', 0.20))
+                stroke = float(d.get('default_stroke_turns', 3.0))
                 ok, reply_msg = self._save_limits_from_captures(
-                    rest_offset_turns=offset)
+                    rest_offset_turns=offset,
+                    default_stroke_turns=stroke)
+                # Echo the captured state so the GUI can update its
+                # status indicators after save.
+                extra['captured'] = {
+                    k: list(v) for k, v in self.captured_endstops.items()
+                }
             elif cmd == 'clear_endstops':
-                self.captured_endstops = {'bottom': None, 'top': None}
-                ok, reply_msg = True, "cleared captured endstops"
+                # Clear all captures, OR a specific endstop, OR specific legs.
+                # Payload (all optional):
+                #   {"which": "bottom"|"top",  // default: both
+                #    "legs": [0,1,...]}        // default: all
+                which_clear = (d.get('which') or '').strip().lower()
+                whichs = [which_clear] if which_clear in ('bottom', 'top') \
+                    else ['bottom', 'top']
+                legs_clear = d.get('legs')
+                if legs_clear is not None:
+                    try:
+                        legs_clear = [int(x) for x in legs_clear]
+                    except Exception:
+                        legs_clear = list(range(6))
+                else:
+                    legs_clear = list(range(6))
+                for w in whichs:
+                    for n in legs_clear:
+                        if 0 <= n <= 5:
+                            self.captured_endstops[w][n] = None
+                ok, reply_msg = True, (
+                    f"cleared {whichs} captures for legs {legs_clear}")
+                extra['captured'] = {
+                    k: list(v) for k, v in self.captured_endstops.items()
+                }
             elif cmd == 'capture_rest':
                 # Snapshot current encoder readings into captured_rest_positions.
                 # Doesn't arm — user presses regular Arm afterward, which
