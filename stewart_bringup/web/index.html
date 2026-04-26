@@ -831,8 +831,71 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
         </div>
         <p id="capture-rest-msg" class="text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap"></p>
       </div>
-      <div class="space-y-2 mb-2">
-        <div>
+
+      <!-- Manual endstop capture (RECOMMENDED) — replaces automatic stall-homing.
+           User physically positions all 6 legs at one endstop, captures, repeats
+           for the other endstop, then writes leg_limits.yaml. No motor movement,
+           no slamming. -->
+      <div class="mb-3 border border-emerald-700 bg-emerald-900/20 rounded p-2">
+        <div class="text-xs uppercase text-emerald-300 font-semibold mb-1">
+          Manual endstop capture <span class="text-slate-400 normal-case">(recommended)</span>
+        </div>
+        <p class="text-xs text-slate-400 mb-2">
+          No motor movement — physically position the legs and click. Replaces
+          the automatic stall-homing flow below; no risk of slamming into
+          endstops.
+        </p>
+        <ol class="text-xs text-slate-400 list-decimal pl-5 mt-1 mb-2 space-y-0.5">
+          <li>Position all 6 legs at the BOTTOM (resting on foam blocks, just above the actual endstop).</li>
+          <li>Click <b>📍 Capture BOTTOM</b>.</li>
+          <li>Position all 6 legs at the TOP (fully extended upward).</li>
+          <li>Click <b>📍 Capture TOP</b>.</li>
+          <li>Adjust the rest-offset slider if needed (default 0.20 turns ≈ 1 mm above bottom).</li>
+          <li>Click <b>💾 Save limits</b> — writes <span class="mono">leg_limits.yaml</span>, no homing script needed.</li>
+        </ol>
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <button id="capture-bottom-btn"
+                  class="bg-emerald-700 hover:bg-emerald-600 rounded py-2 text-sm font-semibold">
+            📍 Capture BOTTOM
+          </button>
+          <button id="capture-top-btn"
+                  class="bg-indigo-700 hover:bg-indigo-600 rounded py-2 text-sm font-semibold">
+            📍 Capture TOP
+          </button>
+        </div>
+        <label class="text-xs text-slate-400 block mb-2">
+          Rest offset above BOTTOM endstop (turns):
+          <div class="flex items-center gap-2">
+            <input id="rest-offset-slider" type="range" min="0.05" max="0.50" step="0.01" value="0.20"
+                   class="flex-1">
+            <span id="rest-offset-readout" class="mono text-sm w-16 text-right">0.20</span>
+          </div>
+          <span class="text-slate-500">~1 mm above bottom on stock Stewart hardware. Increase if leg sags into endstop after Arm.</span>
+        </label>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="save-limits-btn"
+                  class="bg-blue-600 hover:bg-blue-500 rounded py-2 text-sm font-semibold">
+            💾 Save limits
+          </button>
+          <button id="clear-endstops-btn"
+                  class="bg-slate-600 hover:bg-slate-500 rounded py-2 text-sm">
+            Clear captures
+          </button>
+        </div>
+        <div class="grid grid-cols-2 gap-x-3 text-xs mt-2 mono">
+          <div>BOTTOM: <span id="cap-bot-status" class="text-slate-500">not captured</span></div>
+          <div>TOP: <span id="cap-top-status" class="text-slate-500">not captured</span></div>
+        </div>
+        <p id="endstop-capture-msg" class="text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap"></p>
+      </div>
+
+      <!-- Legacy automatic stall-homing (kept as fallback / advanced option) -->
+      <details class="space-y-2 mb-2">
+        <summary class="text-xs uppercase text-slate-400 cursor-pointer select-none">
+          Automatic stall-homing
+          <span class="text-amber-400 normal-case text-xs">(advanced — use only if manual capture isn't an option)</span>
+        </summary>
+        <div class="mt-2">
           <div class="text-xs text-slate-400 mb-1">Legs to home:</div>
           <div id="home-leg-cbs" class="grid grid-cols-6 gap-1"></div>
         </div>
@@ -850,7 +913,7 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
                 class="w-full bg-indigo-600 hover:bg-indigo-500 rounded py-2 text-sm">
           2. Capture top of stroke (manual, all 6)
         </button>
-      </div>
+      </details>
 
       <form id="homing-form" class="grid grid-cols-2 gap-2 text-xs mb-2">
         <!-- Key tuned flags (pre-filled with user's known-good defaults) -->
@@ -1113,6 +1176,16 @@ function setupROSInterface() {
       }
       if (r.cmd === 'capture_rest' || r.cmd === 'clear_rest' || r.cmd === 'safe_arm') {
         toast('capture-rest-msg', line, r.success);
+        return;
+      }
+      if (r.cmd === 'capture_endstop' || r.cmd === 'save_limits' || r.cmd === 'clear_endstops') {
+        toast('endstop-capture-msg', line, r.success);
+        // Update the captured-status indicators when capture-endstop reports back.
+        if (r.cmd === 'capture_endstop' && r.captured) {
+          updateEndstopStatus(r.captured);
+        } else if (r.cmd === 'clear_endstops') {
+          updateEndstopStatus({ bottom: null, top: null });
+        }
         return;
       }
       if (r.cmd === 'probe_graph') {
@@ -1915,6 +1988,35 @@ window.addEventListener('DOMContentLoaded', () => {
   $('clear-rest-btn').addEventListener('click', () => {
     publishCmd({ cmd: 'clear_rest' });
   });
+
+  // --- Manual endstop capture (recommended homing flow) ---
+  $('rest-offset-slider').addEventListener('input', (e) => {
+    $('rest-offset-readout').innerText = parseFloat(e.target.value).toFixed(2);
+  });
+  $('capture-bottom-btn').addEventListener('click', () => {
+    const msgEl = $('endstop-capture-msg');
+    if (msgEl) { msgEl.innerText = 'capturing BOTTOM...'; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap'; }
+    publishCmd({ cmd: 'capture_endstop', which: 'bottom' });
+  });
+  $('capture-top-btn').addEventListener('click', () => {
+    const msgEl = $('endstop-capture-msg');
+    if (msgEl) { msgEl.innerText = 'capturing TOP...'; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap'; }
+    publishCmd({ cmd: 'capture_endstop', which: 'top' });
+  });
+  $('save-limits-btn').addEventListener('click', () => {
+    const offset = parseFloat($('rest-offset-slider').value);
+    if (!confirm(
+      `Write leg_limits.yaml from the captured endstops?\n\n` +
+      `rest = bottom + ${offset.toFixed(3)} turns above each endstop\n\n` +
+      `After this, /set_pose, /jog_leg, and Arm work normally — ` +
+      `the limits supersede any captured rest positions.`)) return;
+    const msgEl = $('endstop-capture-msg');
+    if (msgEl) { msgEl.innerText = 'writing leg_limits.yaml...'; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap'; }
+    publishCmd({ cmd: 'save_limits', rest_offset_turns: offset });
+  });
+  $('clear-endstops-btn').addEventListener('click', () => {
+    publishCmd({ cmd: 'clear_endstops' });
+  });
   $('home-bottom-btn').addEventListener('click', homeBottomEndstops);
   $('home-top-btn').addEventListener('click', captureTopOfStroke);
   $('homing-start').addEventListener('click', startHoming);
@@ -2013,6 +2115,26 @@ window.addEventListener('DOMContentLoaded', () => {
   // auto-connect on load
   connect();
 });
+
+// ===========================================================================
+// Endstop-capture status indicators (manual homing flow)
+// ===========================================================================
+
+function updateEndstopStatus(captured) {
+  const fmt = (arr) => arr === null
+    ? '<span class="text-slate-500">not captured</span>'
+    : '<span class="text-emerald-400">' +
+        arr.map((v, i) => `L${i}=${v >= 0 ? '+' : ''}${v.toFixed(4)}`).join(' ') +
+      '</span>';
+  const botEl = document.getElementById('cap-bot-status');
+  const topEl = document.getElementById('cap-top-status');
+  if (botEl) botEl.innerHTML = captured.bottom === null
+    ? '<span class="text-slate-500">not captured</span>'
+    : '<span class="text-emerald-400">captured (' + captured.bottom.length + ' legs)</span>';
+  if (topEl) topEl.innerHTML = captured.top === null
+    ? '<span class="text-slate-500">not captured</span>'
+    : '<span class="text-emerald-400">captured (' + captured.top.length + ' legs)</span>';
+}
 
 // ===========================================================================
 // Ball-type configuration (spec v9 §9, Q47)
