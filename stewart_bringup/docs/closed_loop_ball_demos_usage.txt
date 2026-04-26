@@ -1,0 +1,439 @@
+Closed-Loop Ball Demos — Operator Usage Guide
+
+How to USE the system. The companion design spec at
+closed_loop_ball_demos.md covers WHY each piece exists.
+
+Read this when you’re about to drive the robot. Read the spec when
+you want to know why a particular choice was made.
+
+This guide assumes the v7 GUI changes are live. The cold-start
+sequence below mirrors the existing stable_bot_startup.txt
+reference card; everything else is new with the vision pipeline.
+
+------------------------------------------------------------------------
+
+1. Cold start (≈ 5 minutes from power-off to first demo)
+
+1.1 Pre-flight check
+
+-   ☐ Pixel 9 hotspot is on; laptop is connected to it.
+-   ☐ Stable-Bot sits on a stable, level workbench.
+-   ☐ OAK-D Pro AF is on its camera arm, pointed at the platform,
+    cable plugged into the Pi’s blue USB-A 3.0 port (NOT
+    USB-C — that’s power-only on the Pi 5).
+-   ☐ Both MTi-630 IMUs and the USB-CAN adapter are plugged in.
+-   ☐ No ball on the platform yet.
+
+1.2 Power on
+
+1.  Plug Stable-Bot’s power into the wall.
+2.  Wait ~45 seconds for the Pi to boot. Two systemd services
+    auto-launch:
+    -   stable_bot.service — ROS 2 nodes (control, IMU, vision)
+    -   stable_bot_gui.service — gui_server.py + rosbridge_websocket
+
+1.3 Connect the laptop browser
+
+1.  Open http://stablebot.local:8080/ in your browser.
+    (Hotspot mDNS sometimes flakes — if mDNS doesn’t resolve,
+    look up the IP in the Pixel hotspot’s “Connected devices”
+    page next to stablebot and use http://<pi-ip>:8080/.)
+2.  The page should load. The header connection dot turns green
+    within ~5 seconds.
+3.  The header WS URL field defaults to ws://stablebot.local:9090.
+    It is sticky (last successful URL is remembered). If you needed
+    to use a hotspot IP for HTTP, also override the WS URL to match.
+4.  If you see “no /status received” for > 10 seconds, click the red
+    RESET button in the Diagnostics panel. The whole stack
+    restarts; wait 30 seconds and try again.
+
+1.4 Arm + level the platform
+
+1.  Arm — click the green Arm button (left column, Arming
+    panel). All six legs go to CLOSED_LOOP_CONTROL.
+2.  Go to rest — settles the top plate to neutral pose.
+3.  Level ON — IMU-based level loop holds the plate flat
+    (within ~0.2°).
+
+If anything misbehaves (Errors panel turns red, motors won’t arm),
+use Diagnostics → Hard reset stack. That kills and re-launches
+everything from a clean slate.
+
+------------------------------------------------------------------------
+
+2. Camera calibration (Stage C only — once per camera arm move)
+
+The OAK ships factory-calibrated for intrinsics and stereo
+extrinsics, and the GUI uses those by default. The only thing you
+re-run is Stage C — the camera-to-platform pose — and only when
+the camera arm physically moves.
+
+If the camera hasn’t moved since your last calibration, skip this
+section.
+
+2.1 Pre-flight
+
+-   ☐ Platform is leveled (Level ON; confirm IMU readout shows
+    roll and pitch within ±0.1°).
+-   ☐ ArUco ring sticker is intact, all 8 markers visible from the
+    current camera angle.
+-   ☐ Lighting is even on the ring (no glare from the IR projector).
+
+2.2 Capture + solve in the GUI
+
+1.  In the Vision Debug panel (left column, top), expand the
+    Calibration (Stage C) sub-panel.
+2.  Confirm the live left-eye feed shows the ArUco markers with
+    green corner overlays drawn on each. The “markers visible”
+    count should read 8 / 8 (or at minimum 3 / 8 to proceed).
+3.  Click Capture frame. A toast reports e.g. “frame 1
+    accepted — 8/8 markers, reproj 0.74 px”. If reprojection > 2 px
+    or markers < 3, the frame is rejected; adjust angle/lighting
+    and retry.
+4.  (Optional) capture 2-3 more frames at slightly varied platform
+    states for better averaging — not necessary on a stable
+    leveled platform but doesn’t hurt.
+5.  Click Solve. The system runs cv2.aruco.estimatePoseBoard
+    over the captured frames, averages, and writes
+    oak_extrinsics.yaml into the package’s share directory.
+6.  Confirm the toast: “oak_extrinsics.yaml written — 1 frame,
+    mean reproj 0.74 px. Buffer cleared.”
+
+You’re done. The platform_pose node picks up the new extrinsics
+on its next pose update; no restart required.
+
+2.3 If something fails
+
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Toast / error                    Cause                                                                                   Fix
+  -------------------------------- --------------------------------------------------------------------------------------- -------------------------------------------------------------------------------------------------------------------------------------------------
+  “no intrinsics loaded”           First-time setup — factory cal hasn’t been read yet                                     SSH to the Pi: python3 ~/<repo>/stewart_vision/scripts/calibrate_oak.py --stage factory. Reads OAK EEPROM, writes oak_intrinsics.yaml in < 2 s.
+
+  “only N/8 markers visible”       Ring partially out of frame, glare, or lighting                                         Improve lighting, rotate camera arm, or rotate the platform manually so all 8 markers are in view.
+
+  “reproj exceeds 2 px gate”       Platform isn’t actually leveled, or marker_layout.yaml doesn’t match the printed ring   Re-level (Level ON; check IMU). Verify the ring radius matches marker_layout.yaml (ring_radius_mm: 120.0).
+
+  “estimatePoseBoard returned 0”   Detection geometry is degenerate (rare)                                                 Reset, capture a different angle.
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+2.4 Advanced (CLI on the Pi only)
+
+Stages A and B (custom intrinsics + stereo recalibration) override
+the OAK’s factory tuning and are deliberately not in the GUI —
+a misclick could replace a working factory cal with a half-baked
+custom one.
+
+If you genuinely need them:
+
+    ssh sorak@stablebot.local
+    cd ~/<your-workspace>/src/stewart_vision/scripts
+    python3 calibrate_oak.py --stage A    # ~30 chessboard captures
+    python3 calibrate_oak.py --stage B    # stereo extrinsics
+
+These are rare maintenance operations. The factory calibration is
+within OAK’s published spec (≤ 0.3 px reprojection); your custom
+one might be slightly tighter, but the demo is not bottlenecked by
+this.
+
+------------------------------------------------------------------------
+
+3. The Vision Debug panel
+
+Top of the left column. Collapsible — collapse it during demos to
+keep the screen clean; expand it whenever something looks wrong.
+
+3.1 Live camera feed
+
+-   15 fps JPEG-compressed RGB stream.
+-   Frames drop silently when the hotspot link is congested. The
+    control loop is unaffected — it runs at full rate on the Pi
+    regardless of what the laptop sees.
+-   FPS indicator shows the actual delivered rate. If it drops
+    below ~5 fps, the laptop link is your bottleneck — close any
+    bandwidth-heavy apps.
+
+Toggles:
+
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Toggle                              Effect
+  ----------------------------------- ------------------------------------------------------------------------------------------------------------------------------------------------
+  Show stereo                         Replaces the RGB feed with side-by-side rectified left + right pair. Useful for verifying rectification (epipolar lines should be horizontal).
+
+  Show disparity                      Replaces the feed with the OAK’s color-mapped SGBM disparity map. Useful for verifying depth coverage of the platform.
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+3.2 Telemetry strip
+
+  ----------------------------------------------------------------------------------------------------------------------
+  Indicator               What it means                                                   Healthy range
+  ----------------------- --------------------------------------------------------------- ------------------------------
+  ArUco markers visible   Markers detected by platform_pose_node (n / 8)                  6+ during demos; 8 / 8 ideal
+
+  KF NIS                  Normalized Innovation Squared from ball_kf_node                 0.5 – 5 most of the time
+
+  End-to-end latency      OAK exposure → /ball_state on the laptop                        < 40 ms
+
+  OAK-vs-mono             mm error between OAK truth and classical mono ray-plane         green < 5 mm
+
+  OAK-vs-stereo           mm error between OAK truth and classical stereo triangulation   green < 5 mm
+
+  mono-vs-stereo          mm disagreement between the two classical methods               green < 5 mm
+  ----------------------------------------------------------------------------------------------------------------------
+
+Color coding for the three method-comparison KPIs:
+
+-   green — |error| < 5 mm — methods agree.
+-   yellow — 5 mm ≤ |error| < 15 mm — minor disagreement; keep
+    watching but no action needed.
+-   red — |error| ≥ 15 mm — significant disagreement; one
+    method has an issue. The CONTROL loop is unaffected (it only
+    uses OAK truth) but you should investigate after the run.
+
+------------------------------------------------------------------------
+
+4. Demo 1 — Orbit at fixed radius
+
+The ball orbits the platform center at a user-set radius and
+period.
+
+4.1 Pre-flight
+
+-   ☐ Calibration is fresh (Stage C done since last camera move).
+-   ☐ Platform is armed and Level ON.
+-   ☐ Vision Debug shows ≥ 6 ArUco markers visible.
+-   ☐ Foam ball placed on the platform anywhere outside the red
+    dead-zone disk.
+
+4.2 Run the demo
+
+1.  Open the Demo 1 — Orbit panel (middle column).
+2.  Set:
+    -   Radius (35 to ~195 mm)
+    -   Period (1 to 10 s — one full orbit)
+    -   Direction (CW / CCW)
+3.  Click Start. The platform first drives the ball to the
+    orbit radius (acquisition phase, ~2-4 s), then engages the
+    orbit reference. The mini-SVG disk shows the reference circle
+    and the measured ball trail.
+4.  Mid-orbit you can press the UNO-reverse button (yellow,
+    two curved arrows) to flip direction. The ball decelerates
+    through zero and accelerates the other way — a good visual
+    stress test of the controller.
+5.  Click Stop when done. The platform drops to LEVEL_HOLD.
+
+4.3 What to expect
+
+-   Tracking error should be ≤ 5 mm RMS once warmed up.
+-   Latency in the Vision Debug strip should stay < 40 ms.
+-   If the ball wanders, check latency and KF NIS first.
+
+------------------------------------------------------------------------
+
+5. Demo 2 — Click-to-Goto
+
+The ball stays put until you click somewhere on the SVG disk; then
+the controller drives the ball to that point and holds.
+
+5.1 Pre-flight
+
+Same as Demo 1.
+
+5.2 Run the demo
+
+1.  Open the Demo 2 — Click-to-Goto panel.
+2.  Click Start to arm goto mode.
+3.  Click anywhere on the SVG disk that’s:
+    -   Inside the platform circle (200 mm radius).
+    -   Outside the red dead-zone (~30 mm-radius disk at center).
+4.  The ball drives to that point and holds. Current target is a
+    hollow blue ring; ball is the filled blue dot.
+5.  Click another spot — the ball cancels and re-targets
+    immediately. No queueing.
+6.  Cancel target clears the reference (ball stays put,
+    LEVEL_HOLD).
+7.  Stop disarms Demo 2 mode.
+
+5.3 Toggles
+
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+  Control                             Effect
+  ----------------------------------- ----------------------------------------------------------------------------------------------------------
+  Predicted path (default off)        Dashed line from current ball position to target. Useful for debugging the PID’s approach trajectory.
+
+  Z-height slider                     Pure heave on the top plate (no tilt). 0 to 80 mm above neutral. Adjustable while a goto is in progress.
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+
+5.4 Failure handling
+
+If the ball is bumped off the platform mid-demo, the off-platform
+watchdog fires (see §7).
+
+------------------------------------------------------------------------
+
+6. Demo 3 — Path drawing (stretch goal)
+
+You draw a freehand path on the SVG disk; the ball follows it.
+
+6.1 Drawing a path
+
+1.  Open the Demo 3 — Path drawing panel.
+2.  Click Draw mode to enable freehand drawing on the SVG.
+3.  Click and drag across the disk to trace a path. Sampling rate
+    is ~30 ms per point.
+4.  As you draw, valid segments render in green; segments that
+    cross the dead-zone or go off-platform render in red.
+5.  Release the mouse to finish. If any red segments exist, Start
+    stays disabled — re-draw to clean up.
+
+6.2 Running the path
+
+1.  Set:
+    -   Loop — checkbox; closes the path with a smooth join and
+        repeats indefinitely until Stop.
+    -   Traversal speed — slider, default 80 mm/s.
+2.  Click Start. The ball drives to the path’s start (using
+    Demo 2’s goto law), then traverses the path at the set speed.
+3.  UNO-reverse mid-traversal flips the direction at the ball’s
+    current path position. Trail-erase state resets on reverse.
+4.  Stop drops to LEVEL_HOLD. The drawn path is preserved —
+    pressing Start again resumes from the start.
+
+6.3 Display modes
+
+  --------------------------------------------------------------------------------------------------------------------
+  Mode                                Effect
+  ----------------------------------- --------------------------------------------------------------------------------
+  Trail-erase (default)               Segment behind the ball greys out as the ball passes. Best “you are here” cue.
+
+  Static green                        Whole polyline stays bright green throughout. Toggle in the panel.
+
+  Predicted direction                 Faint arrows along the polyline indicate traversal direction.
+  --------------------------------------------------------------------------------------------------------------------
+
+6.4 Save / load / export
+
+-   Save to a named slot in browser localStorage. Survives
+    page reloads and browser restarts.
+-   Load picks a saved slot; the path appears on the disk
+    ready to Start.
+-   Export downloads the current path as .json (schema_version 1).
+    Check it into git, share via email, etc.
+-   Import uploads a .json and loads it as the current path.
+
+------------------------------------------------------------------------
+
+7. Safety system
+
+7.1 Dead-zone (the red disk at the center)
+
+Represents the ball’s no-go zone. The IMU bolt protrudes through
+the platform’s geometric center; the ball must never touch it.
+The disk’s radius is 30 mm (10 mm clearance + 20 mm ball radius).
+
+-   Demo 2 clicks inside the dead-zone flash and are ignored.
+-   Demo 3 paths that cross the dead-zone are rejected with a re-draw
+    prompt.
+-   Demo 1 orbit radius is silently clamped to ≥ 35 mm.
+-   Soft repulsion in the controller adds an outward tilt term
+    if the measured ball strays into the dead-zone + margin —
+    this kicks in BEFORE the ball can touch the bolt, even if the
+    reference is somehow trying to drive it inward.
+
+7.2 Off-platform watchdog
+
+If the measured ball position has radius > 200 mm from center
+(off the platform) OR both detectors lose it for > 500 ms:
+
+1.  Platform drops to LEVEL_HOLD immediately (silent).
+2.  GUI body background strobes red ~3 Hz for 3 seconds.
+3.  Background settles to a dim red tint until you re-arm.
+4.  A toast appears: “Ball lost — platform leveling. Replace ball
+    on platform and press Start to re-arm.”
+
+To re-arm:
+
+1.  Place the ball back on the platform within the 180 mm
+    hysteresis radius.
+2.  Wait ~1 second for the detection to confirm (the strobe
+    dims).
+3.  Press Start in whichever demo panel was active.
+
+Re-arm is manual by design — automatic resume while your hand
+is still on the platform would be surprising.
+
+7.3 Emergency stop
+
+The big red E-STOP button at the top of the GUI calls
+/e_stop. All six leg drives go to IDLE immediately. Use this if
+anything looks wrong — runaway motion, smoke, unexpected geometry,
+etc.
+
+E-STOP requires manual recovery: arm again from scratch.
+
+------------------------------------------------------------------------
+
+8. Shutdown
+
+Always shut the Pi down cleanly before pulling power, or you’ll
+corrupt the SD card.
+
+    ssh sorak@stablebot.local
+    sudo shutdown -h now
+
+Wait for the Pi’s green activity LED to stop blinking (~10 s),
+then unplug power.
+
+------------------------------------------------------------------------
+
+9. Troubleshooting
+
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Symptom                                          Likely cause                                                   Fix
+  ------------------------------------------------ -------------------------------------------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Page loads but “no /status received”             Stack didn’t fully start                                       Click Diagnostics → Hard reset stack. Wait 30 s.
+
+  Connection dot stays red after Connect           WS URL wrong, mDNS blocked, or rosbridge down                  Use IP-based URL; if still red, SSH and systemctl status stable_bot_gui.
+
+  OAK not detected on the Pi                       USB cable / port issue                                         SSH and lsusb should show 03e7:f63b (Movidius MyriadX). Reseat cable into the blue USB-A 3.0 port.
+
+  ArUco markers detected but Stage C won’t solve   Platform not actually leveled OR marker_layout.yaml mismatch   Re-level (Level ON; IMU within 0.1°). Verify marker_layout.yaml ring radius matches your printed ring.
+
+  Demo 1 orbit oscillates / wobbles                Hotspot link congested or PID tuning                           Check Vision Debug latency. If > 50 ms, drop period to 5 s. If link is fine, may need to retune PID gains.
+
+  GUI clicks don’t respond                         Connection state stale                                         Click Connect to force reconnect.
+
+  Strobing red won’t clear                         Re-arm condition not met                                       Place ball within 180 mm radius, wait 1 s, press Start.
+
+  FPS readout shows 0 / very low                   Hotspot bandwidth                                              Restart hotspot. Or, if just debugging on a desk near the Pi, switch the laptop to Pi’s WiFi if available.
+
+  Method-comparison KPIs all red                   Bad calibration extrinsics                                     Re-run Stage C calibration.
+
+  KF NIS consistently > 10                         Q or R noise mismatched                                        Check Vision Debug latency — high latency often masquerades as bad noise tuning. If latency is fine, the ball state KF needs Q/R retuning (advanced; see spec §8).
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+10. Cheat sheet (one-page reference)
+
+    Cold start:
+        Hotspot on → Pi power → wait 45 s → http://stablebot.local:8080/
+        Connect → Arm → Go to rest → Level ON
+
+    Calibration (only after camera arm moves):
+        Vision Debug → Calibration sub-panel
+        8/8 markers visible → Capture frame → Solve
+
+    Demo 1 (Orbit):
+        Set radius / period / direction → Start
+        UNO-reverse mid-orbit if you want to flip
+        Stop
+
+    Demo 2 (Click-to-Goto):
+        Start → click any safe point → ball goes there → click again to retarget
+        Stop / Cancel target
+
+    Demo 3 (Path):
+        Draw mode → trace a path → Loop? → set speed → Start → Stop
+
+    If ball falls off → page strobes red → put ball back → Start to re-arm
+    Anything looks wrong → E-STOP → diagnose → re-arm from scratch
