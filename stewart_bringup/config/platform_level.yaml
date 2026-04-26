@@ -1,7 +1,7 @@
-captured_at: '2026-04-20T07:04:55Z'
+captured_at: '2026-04-25T00:00:00Z'
 imu_topic: /platform/imu/data
-ref_roll_deg: -0.23985430617574913
-ref_pitch_deg: 0.22840111014211895
-sample_count: 50
-roll_spread_deg: 0.007537132567997928
-pitch_spread_deg: 0.005699909781470197
+ref_roll_deg: 0.0
+ref_pitch_deg: 0.0
+sample_count: 0
+roll_spread_deg: 0.0
+pitch_spread_deg: 0.0
