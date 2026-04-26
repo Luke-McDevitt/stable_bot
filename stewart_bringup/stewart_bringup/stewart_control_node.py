@@ -409,7 +409,7 @@ class ODriveFeeder:
         'idle' -> send nothing (axis is in STATE_IDLE, watchdog not active)
     This unifies the pose-mode holding loop and the dead-man velocity jog."""
 
-    def __init__(self, bus, initial_targets, period=0.02):
+    def __init__(self, bus, initial_targets, period=0.02, safety_check=None):
         self.bus = bus
         self.period = period
         self.lock = threading.Lock()
@@ -418,6 +418,13 @@ class ODriveFeeder:
         self.modes = ['idle'] * 6
         self.stop_flag = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
+        # Final-line-of-defense safety hook. Called every tick before any
+        # CAN frame is sent. Receives (modes, vel, pos_targets) and returns
+        # (safe_vel, safe_pos_targets). Lets the Node enforce position
+        # clamps + position-aware velocity safety against current encoder
+        # readings — even if a malformed /control_cmd or buggy code path
+        # ever sets pos_targets/vel directly. None = pass-through.
+        self.safety_check = safety_check
 
     def start(self):
         self.thread.start()
@@ -489,6 +496,23 @@ class ODriveFeeder:
                 modes = list(self.modes)
                 pos_t = self.pos_targets.copy()
                 vel = self.vel_target
+            # SAFETY GATE: every tick, give the Node a chance to clamp
+            # pos_t per-leg to the current soft limits and zero vel if any
+            # vel-mode leg is about to drive past an endstop. This is the
+            # last line of defense — any code path that bypasses the
+            # higher-level checks still gets caught here before the CAN
+            # frame is sent.
+            if self.safety_check is not None:
+                try:
+                    safe_vel, safe_pos = self.safety_check(modes, vel, pos_t)
+                    vel = float(safe_vel)
+                    pos_t = np.asarray(safe_pos, dtype=float).copy()
+                except Exception:
+                    # Safety check is best-effort; never crash the feeder
+                    # if the Node hands us a bad lambda. Silent fall-through
+                    # to unclamped command — but the Node's higher-level
+                    # checks should still cover it.
+                    pass
             # Compute finite-difference velocity (turns/s) of the target
             if prev_pos_t is not None and prev_t is not None:
                 dt = t0 - prev_t
@@ -707,7 +731,9 @@ class StewartControlNode(Node):
                     (0, 0, 0), (0, 0, 0), self.geom, self.limits)
             else:
                 rest_targets = np.zeros(6)
-            self.feeder = ODriveFeeder(self.bus, rest_targets)
+            self.feeder = ODriveFeeder(
+                self.bus, rest_targets,
+                safety_check=self._feeder_safety_check)
             self.feeder.start()
             self.listener = EncoderListener(self.bus)
             self.listener.start()
@@ -1170,6 +1196,79 @@ class StewartControlNode(Node):
         self.leg_armed = [False] * 6
         self._stop_level_loop()
 
+    # ---- Feeder safety hook (last line of defense) ----
+    # Buffer (turns) inside soft limits where vel-mode commands toward the
+    # limit get zeroed. At MM_PER_REV = 71.047, 0.02 turns ≈ 1.4 mm — close
+    # enough to react before the soft limit, far enough to allow normal
+    # operation away from the edge.
+    VEL_LIMIT_BUFFER_TURNS = 0.02
+    _last_safety_warn = 0.0
+
+    def _feeder_safety_check(self, modes, vel, pos_targets):
+        """Called by ODriveFeeder every 20 ms (50 Hz) before any CAN frame
+        is sent. Returns (safe_vel, safe_pos_targets) with:
+          - pos targets clamped to per-leg [lo, hi] from leg_limits.yaml
+          - vel zeroed if ANY vel-mode leg is at/past a soft limit and the
+            commanded vel direction would push it further past
+
+        This catches motion regardless of which higher-level path commanded
+        it. Without this, a velocity jog could happily drive the leg past
+        the soft endstop until something mechanical stops it.
+        """
+        if self.limits is None:
+            return vel, pos_targets
+
+        # Position clamp — per-leg, only for legs in pos mode.
+        safe_pos = list(pos_targets)
+        for n in range(6):
+            if modes[n] != 'pos':
+                continue
+            lo = self.limits[n]['lo']
+            hi = self.limits[n]['hi']
+            if safe_pos[n] < lo:
+                safe_pos[n] = lo
+            elif safe_pos[n] > hi:
+                safe_pos[n] = hi
+
+        # Velocity safety — only relevant if any leg is in vel mode and we
+        # have a fresh encoder reading to check against.
+        safe_vel = vel
+        if vel != 0.0 and self.listener is not None:
+            any_vel = any(m == 'vel' for m in modes)
+            if any_vel:
+                enc = self.listener.get_all(max_age_s=0.5)
+                buf = self.VEL_LIMIT_BUFFER_TURNS
+                blocked_leg = None
+                for n in range(6):
+                    if modes[n] != 'vel' or enc[n] is None:
+                        continue
+                    lo = self.limits[n]['lo']
+                    hi = self.limits[n]['hi']
+                    # +vel drives encoder more positive → toward hi.
+                    # -vel drives encoder more negative → toward lo.
+                    if vel > 0 and enc[n] >= hi - buf:
+                        blocked_leg = n
+                        break
+                    if vel < 0 and enc[n] <= lo + buf:
+                        blocked_leg = n
+                        break
+                if blocked_leg is not None:
+                    safe_vel = 0.0
+                    # Throttle warnings to once per second so the log
+                    # doesn't fill up while the user holds the slider.
+                    now = time.monotonic()
+                    if now - self._last_safety_warn > 1.0:
+                        self._last_safety_warn = now
+                        self.get_logger().warn(
+                            f"feeder safety: leg {blocked_leg} at limit "
+                            f"(enc={enc[blocked_leg]:+.3f}, "
+                            f"lo={self.limits[blocked_leg]['lo']:+.3f}, "
+                            f"hi={self.limits[blocked_leg]['hi']:+.3f}); "
+                            f"refusing vel={vel:+.3f} that would drive "
+                            f"past the limit.")
+
+        return safe_vel, safe_pos
+
     # ---- IMU ----
     def _imu_cb(self, msg):
         q = msg.orientation
@@ -1537,29 +1636,60 @@ class StewartControlNode(Node):
         self.pub_control_result.publish(rm)
 
     # ---- command helpers (shared by service handlers and /control_cmd) ----
+    # Per-step jog cap — never let a single click move a leg by more
+    # than this magnitude. At MM_PER_REV = 71.047, 0.5 turns ≈ 35 mm.
+    # If the GUI sends something bigger, it's almost certainly a typo
+    # (or a misclick on a button with a too-large delta).
+    MAX_JOG_DELTA_TURNS = 0.5
+
     def _do_jog_leg(self, n, delta_turns):
-        """Position-mode jog on one leg. Auto-switches the leg into POS
-        mode if it isn't already (from IDLE or VEL) — the target is
-        seeded from the current encoder reading so there's no lurch on
-        mode switch. That makes per-leg jog work regardless of whether
-        the user last used the velocity slider or arm-all."""
+        """Position-mode jog on one leg.
+
+        Seeds the new target from the leg's CURRENT encoder reading
+        (not the stale pos_target) plus the requested delta. This is
+        safer than the previous behavior, which added delta to whatever
+        was last commanded — if a previous command was uncompleted, that
+        baseline could be far from where the leg actually is.
+
+        Auto-switches the leg into POS mode if it isn't already.
+        """
         if self.limits is None:
             return False, "no leg_limits.yaml"
         if not 0 <= n <= 5:
             return False, f"leg {n} out of range"
         if self.feeder is None:
             return False, "feeder not running"
+        if self.listener is None:
+            return False, "encoder listener not running"
+        delta = float(delta_turns)
+        # Per-step magnitude cap.
+        if abs(delta) > self.MAX_JOG_DELTA_TURNS:
+            return False, (
+                f"jog delta {delta:+.3f} turns exceeds per-step cap "
+                f"{self.MAX_JOG_DELTA_TURNS:.2f} turns "
+                f"(~{self.MAX_JOG_DELTA_TURNS * MM_PER_REV:.0f} mm). "
+                f"Click the smaller-step button or jog repeatedly.")
+        # Use current encoder as the baseline, not pos_target.
+        enc = self.listener.get_all(max_age_s=1.0)
+        if enc[n] is None:
+            return False, (
+                f"jog refused: leg {n} has no fresh encoder reading. "
+                f"Power-cycle the ODrive(s) and retry.")
         modes = self.feeder.get_modes()
         if modes[n] != 'pos':
             ok, msg = self._arm_leg_internal(n, 'pos')
             if not ok:
                 return False, f"auto-arm POS failed: {msg}"
-        cur = self.feeder.get_pos_targets()
-        new_target = float(cur[n]) + float(delta_turns)
+        new_target = float(enc[n]) + delta
         lo, hi = self.limits[n]['lo'], self.limits[n]['hi']
         clamped = False
-        if new_target < lo: new_target = lo; clamped = True
-        elif new_target > hi: new_target = hi; clamped = True
+        if new_target < lo:
+            new_target = lo
+            clamped = True
+        elif new_target > hi:
+            new_target = hi
+            clamped = True
+        cur = self.feeder.get_pos_targets()
         cur[n] = new_target
         self.feeder.set_pos_targets(cur)
         return True, (f"clamped at {new_target:+.4f}" if clamped
