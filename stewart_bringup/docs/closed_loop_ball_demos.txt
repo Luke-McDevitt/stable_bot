@@ -5,11 +5,11 @@ Scope: Replace the open-loop rolling-ball demo with a vision-driven
 closed loop. Three demos: orbit (Demo 1), click-to-position (Demo 2),
 and path-drawing follow (Demo 3, stretch goal).
 Authors: Luke McDevitt + Claude (Opus 4.7).
-Last revised: 2026-04-26 (v9 — 3D viewer design captured (scaffolded
-only, full implementation deferred); plate-parented vs world-frame
-trail toggle locked in; post-deployment iteration plan written down
-in §16 so we know exactly which backend to flesh out next after the
-first hardware test).
+Last revised: 2026-04-26 (v9 — 3D viewer scaffolded with deferred
+full implementation (§11.6); post-deployment iteration plan in §16;
+ball-type dropdown in the GUI header captures foam vs ping-pong into
+every bag (Q47); pytest unit-test scaffold added for pure-math + config
+schemas (Q48).
 
 This plan supersedes the relevant sections of
 stewart_bringup/docs/NEXT_STEPS.md. It pulls in lecture material from
@@ -1191,6 +1191,22 @@ Trigger
   Off-platform watchdog fires during a recording   Bag is renamed with a _fault suffix on close so faulty runs are easy to filter for the post-mortem.
   ------------------------------------------------------------------------------------------------------------------------------------------------------
 
+Recovering the ball type from a bag
+
+Per Q47, /control_cmd is captured by default and includes
+ball_config: payloads (every 5 s + on every dropdown change + at
+every demo Start). Two ways to read which ball was in use during a
+recorded run:
+
+    # Latest ball_config message before the run started:
+    ros2 bag info ~/stable_bot_bags/<run>.bag/   # confirm /control_cmd is in the bag
+    ros2 bag play ~/stable_bot_bags/<run>.bag/ \
+        --topics /control_cmd | grep ball_config | head -1
+
+Or programmatically in plot_demo_run.py — read the last
+ball_config: payload before the first mode:BALL_TRACK_* and
+annotate the report with “Ball: foam (α=0.71)”.
+
 Topic allowlist (default — small messages only)
 
     /encoders, /platform_rpy, /imu/data, /odrive_errors,
@@ -1486,15 +1502,19 @@ Resolved in v8 (2026-04-26)
 
 Resolved in v9 (2026-04-26)
 
-  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   #                       Question                                    Decision
-  ----------------------- ------------------------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  ----------------------- ------------------------------------------- -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   Q44                     3D viewer trail coordinate frame            User-toggle: plate-parented (default, trail painted on disc and tilts with it) vs world-frame (trail stays where ball physically was in space). Both rendered from the same /ball_state samples.
 
   Q45                     3D viewer scope (now vs later)              Scaffolded only in v8.1: collapsible panel with placeholder canvas + the trail-frame toggle visible-but-disabled. Full Three.js implementation deferred to post-deployment iteration (§16 step 13–14).
 
   Q46                     Iteration order after first hardware test   Locked in §16. The 14-step ladder is gated by physical observation; don’t advance past a step until its DONE-WHEN condition (§14) is green.
-  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+  Q47                     Ball-type tracking                          New <select> in the GUI header (foam vs ping-pong). Selection persists in localStorage and publishes ball_config:<json> on /control_cmd, repeating every 5 s for late subscribers. Each demo Start payload also embeds the current ball config under a ball key. Bag captures both via /control_cmd allowlist. Single source of truth: stewart_vision/_ball_physics.BALL_PRESETS.
+
+  Q48                     Test policy                                 Yes, but pragmatic: pytest unit tests for pure-math + config schemas (ball physics, ArUco YAML loader, ball_safety.yaml, marker_layout.yaml). No CI; no hardware-loop tests. Run pytest stewart_vision/test/ locally before each push. v9 baseline: 35 passing, 3 cv2-dependent skips on the laptop, all passing on the Pi where opencv-contrib is installed.
+  -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 Still open
 

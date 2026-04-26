@@ -52,8 +52,21 @@ the robot:
 -   ☐ Run the Stage-C calibration flow (§2). Confirm
     oak_extrinsics.yaml gets written.
 
-Once all five checkboxes pass, you’re at step 1 of the iteration
-ladder in spec §16.
+-   ☐ Pick the ball type in the GUI header dropdown (“Ball:
+    foam” vs “Ball: ping-pong”) to match the physical ball you’re
+    about to use. Persists across reloads. Affects PID feedforward
+    (α=5/7 solid vs 3/5 hollow) and is captured in every bag.
+
+-   ☐ Optional: run the unit tests on your laptop before pushing:
+
+        cd ~/stable_bot_repo/stewart_vision
+        python3 -m pytest test/ -v
+
+    35 should pass; up to 3 cv2-aruco-dependent tests will skip if
+    opencv-contrib isn’t installed in the env you’re testing from.
+
+Once all checkboxes pass, you’re at step 1 of the iteration ladder
+in spec §16.
 
 ------------------------------------------------------------------------
 

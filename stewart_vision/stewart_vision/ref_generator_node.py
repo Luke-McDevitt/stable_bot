@@ -39,6 +39,8 @@ from std_msgs.msg import String
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav_msgs.msg import Path
 
+from stewart_vision._ball_physics import BALL_PRESETS, get_preset
+
 
 def _share_dir() -> str:
     from ament_index_python.packages import get_package_share_directory
@@ -67,6 +69,12 @@ class RefGeneratorNode(Node):
         self.t0 = time.monotonic()
         self.path: Optional[Path] = None
 
+        # Ball-config state (spec v9 §9, Q47). Default to foam until the
+        # GUI publishes its first ball_config: payload. The actual control
+        # feedforward lives in stewart_control_node (stewart_bringup); we
+        # just track + log here so the bag has the value at run start.
+        self.ball_cfg: dict = get_preset('foam')
+
         self.create_subscription(String, '/control_cmd',
                                  self._on_control_cmd, 10)
         self.create_subscription(Path, '/ball_path/upload',
@@ -90,6 +98,25 @@ class RefGeneratorNode(Node):
         key, _, payload = text.partition(':')
         key = key.strip()
         payload = payload.strip()
+        if key == 'ball_config':
+            try:
+                cfg = json.loads(payload)
+                # Accept any preset-shaped dict; minimal validation.
+                if 'type' not in cfg or 'alpha' not in cfg:
+                    self.get_logger().warn(
+                        f"ball_config missing required keys: {cfg}")
+                    return
+                changed = (cfg.get('type') != self.ball_cfg.get('type'))
+                self.ball_cfg = cfg
+                if changed:
+                    self.get_logger().info(
+                        f"Ball config → {cfg['type']} "
+                        f"(α={cfg.get('alpha', '?'):.4f}, "
+                        f"density={cfg.get('density', '?')})")
+            except json.JSONDecodeError as e:
+                self.get_logger().warn(f"Bad ball_config JSON: {e}")
+            return
+
         if key == 'mode':
             # Payload is "MODE_NAME" or "MODE_NAME <JSON>"
             parts = payload.split(maxsplit=1)
@@ -105,10 +132,13 @@ class RefGeneratorNode(Node):
             except json.JSONDecodeError as e:
                 self.get_logger().warn(f"Bad JSON params: {e}")
                 self.params = {}
+            # Pick up ball config if it was embedded in the start payload.
+            if isinstance(self.params.get('ball'), dict):
+                self.ball_cfg = self.params['ball']
             self.mode = mode
             self.t0 = time.monotonic()
             self.get_logger().info(
-                f"Mode → {mode} params={self.params}")
+                f"Mode → {mode} params={self.params} ball={self.ball_cfg.get('type')}")
 
     def _on_path(self, msg: Path):
         if msg.header.frame_id != 'platform':

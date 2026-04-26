@@ -38,6 +38,18 @@
       <span id="mode-label"
             class="text-xs mono px-2 py-0.5 rounded bg-slate-700 text-slate-300"
             title="active demo mode">LEVEL_HOLD</span>
+      <!-- Ball type (spec v9 §9, Q47): selected once before each run; persisted
+           to localStorage; published as `ball_config:<json>` on /control_cmd
+           so the bag captures which ball was in use. -->
+      <label class="text-xs text-slate-400 flex items-center gap-1">
+        Ball:
+        <select id="ball-type-select"
+                class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-0.5"
+                title="Affects controller feedforward (α=5/7 solid vs 3/5 hollow). Set this BEFORE starting a run.">
+          <option value="foam">foam (solid, α=0.71)</option>
+          <option value="ping_pong">ping-pong (hollow, α=0.60)</option>
+        </select>
+      </label>
       <input id="ws-url" value="ws://stablebot.local:9090"
              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-56"
              title="ws://stablebot.local works on most hotspots; if mDNS fails, use ws://<pi-ip>:9090">
@@ -1887,6 +1899,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // Closed-loop ball demos (spec v8 §11)
   // -----------------------------------------------------------------------
   initVisionGUI();
+  initBallConfig();
 
   // Persist the WS URL across reloads (spec v8 Q1).
   (function persistWsUrl() {
@@ -1900,6 +1913,53 @@ window.addEventListener('DOMContentLoaded', () => {
   // auto-connect on load
   connect();
 });
+
+// ===========================================================================
+// Ball-type configuration (spec v9 §9, Q47)
+// Mirror of stewart_vision._ball_physics.BALL_PRESETS — keep in sync.
+// ===========================================================================
+
+const BALL_PRESETS = {
+  foam: {
+    type: 'foam',
+    label: 'Foam (40 mm, mass-matched, solid)',
+    diameter_mm: 40.0, radius_mm: 20.0, mass_g: 2.7,
+    density: 'solid', moi_factor: 2/5, alpha: 5/7,
+  },
+  ping_pong: {
+    type: 'ping_pong',
+    label: 'Ping-pong (40 mm, hollow)',
+    diameter_mm: 40.0, radius_mm: 20.0, mass_g: 2.7,
+    density: 'hollow', moi_factor: 2/3, alpha: 3/5,
+  },
+};
+
+function currentBallConfig() {
+  const sel = document.getElementById('ball-type-select');
+  const key = (sel && sel.value) || 'foam';
+  return BALL_PRESETS[key] || BALL_PRESETS.foam;
+}
+
+function publishBallConfig() {
+  if (!topic.control_cmd) return;
+  const cfg = currentBallConfig();
+  publishCmdRaw('ball_config:' + JSON.stringify(cfg));
+}
+
+function initBallConfig() {
+  const sel = document.getElementById('ball-type-select');
+  if (!sel) return;
+  // Restore last-used selection from localStorage.
+  const saved = localStorage.getItem('stable-bot-ball-type');
+  if (saved && BALL_PRESETS[saved]) sel.value = saved;
+  sel.addEventListener('change', () => {
+    localStorage.setItem('stable-bot-ball-type', sel.value);
+    publishBallConfig();   // push immediately on change
+  });
+  // Re-publish every 5 s so any subscriber that came up after the last
+  // change still sees the current value (poor man's transient_local).
+  setInterval(() => { if (ros && topic.control_cmd) publishBallConfig(); }, 5000);
+}
 
 // ===========================================================================
 // Closed-loop ball demos — state, SVG renderer, dispatch
@@ -2192,11 +2252,13 @@ function maybeRecordImages(prefix) {
 
 function startDemo1() {
   maybeRecordImages('d1');
+  publishBallConfig();   // ensure ball type is in the bag at run start
   const params = {
     radius_mm: parseFloat($('d1-radius').value),
     period_s:  parseFloat($('d1-period').value),
     dir:       $('d1-dir').value,
     phase_rad: 0,
+    ball:      currentBallConfig(),   // also embedded for direct readout
   };
   publishCmdRaw('mode:BALL_TRACK_TRAJECTORY ' + JSON.stringify(params));
   setActiveDemo(1);
@@ -2209,8 +2271,10 @@ function reverseDemo1() {
 
 function startDemo2() {
   maybeRecordImages('d2');
+  publishBallConfig();
   // Goto mode armed but with no target yet — first click in the SVG sets one.
-  publishCmdRaw('mode:BALL_TRACK_GOTO {}');
+  publishCmdRaw('mode:BALL_TRACK_GOTO ' +
+    JSON.stringify({ ball: currentBallConfig() }));
   setActiveDemo(2);
 }
 
@@ -2233,6 +2297,7 @@ function startDemo3() {
     return;
   }
   maybeRecordImages('d3');
+  publishBallConfig();
 
   // Publish path (nav_msgs/Path).
   const stamp = { sec: Math.floor(Date.now() / 1000),
@@ -2254,6 +2319,7 @@ function startDemo3() {
   const params = {
     speed_mm_s: parseFloat($('d3-speed').value),
     loop:       $('d3-loop').checked,
+    ball:       currentBallConfig(),
   };
   publishCmdRaw('mode:BALL_TRACK_PATH ' + JSON.stringify(params));
   setActiveDemo(3);
