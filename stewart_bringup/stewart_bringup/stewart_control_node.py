@@ -1566,12 +1566,16 @@ class StewartControlNode(Node):
                       else f"L{n} → {new_target:+.4f}")
 
     # Hard safety cap on per-leg motion commanded by a single pose. At
-    # MM_PER_REV = 71.047, 0.5 turns ≈ 35 mm of leg extension; anything
-    # bigger usually means a sign error in leg_limits.yaml, a stale
-    # encoder reading, or commanding a pose far outside the reachable
-    # workspace. Refusing rather than executing avoids slamming an
-    # endstop. Bypass this only with an explicit unsafe override.
-    MAX_POSE_DELTA_TURNS = 0.5
+    # MM_PER_REV = 71.047, 0.1 turns ≈ 7 mm of leg extension. Tightened
+    # from 0.5 → 0.1 after the 2026-04-26 second slam: per-leg sign
+    # conventions in leg_limits.yaml may be inconsistent (project memory
+    # only confirms +vel=down for node 0; nodes 1-5 are TBD), so even a
+    # 0.5-turn limit can produce a 35 mm slam in the wrong direction.
+    # Until each leg's direction is empirically nailed down (capture
+    # both endstops at least once), this cap stays small.
+    # Bypass with allow_large=True only after every leg has both
+    # endstops captured and you've verified motion direction by hand.
+    MAX_POSE_DELTA_TURNS = 0.1
 
     def _do_set_pose(self, x, y, z, r, p, yw, allow_large=False):
         if not self.armed:
