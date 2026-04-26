@@ -5,12 +5,12 @@
 closed loop. Three demos: orbit (Demo 1), click-to-position (Demo 2),
 and path-drawing follow (Demo 3, stretch goal).
 **Authors:** Luke McDevitt + Claude (Opus 4.7).
-**Last revised:** 2026-04-26 (v9.1 — Active Stabilization (Ball-Hold)
-mode scaffolded for v10 (§11.7): GUI panel with disabled controls,
-mode token `BALL_HOLD` reserved in `ref_generator_node`, feedforward
-+ saturation math added to `_ball_physics.py` with unit tests. Full
-implementation (controller-side base-IMU feedforward) deferred — see
-§16 step 8.5).
+**Last revised:** 2026-04-26 (v9.2 — closed out the four open
+Ball-Hold UX questions (Q52–Q55) with the recommended defaults:
+standalone mode, refuse-on-no-ball, click-to-retarget allowed,
+text+color saturation feedback only. Spec is now fully locked
+through v10 — when controller-side base-IMU feedforward is added,
+no further design decisions remain).
 
 This plan supersedes the relevant sections of
 `stewart_bringup/docs/NEXT_STEPS.md`. It pulls in lecture material from
@@ -1514,40 +1514,19 @@ Each milestone has an explicit "DONE WHEN" gate, in the same style as
 | Q50 | New mode token | `BALL_HOLD` reserved in `ref_generator_node._on_control_cmd`. Payload: `mode:BALL_HOLD {x_mm, y_mm, ball}`. |
 | Q51 | Saturation graceful degradation | 4th watchdog layer (§10): saturation < 0.80 GREEN; 0.80–0.95 YELLOW + toast; ≥0.95 sustained 100 ms drops to LEVEL_HOLD with toast. Math via `_ball_physics.saturation_fraction`. |
 
-### Still open (Ball-Hold detail decisions, blocking spec §11.7)
+### Resolved in v9.2 (2026-04-26)
 
-The scaffold reserves the mode and ships the math, but four UX
-details for the v10 implementation aren't locked yet. Recommended
-defaults are below; confirm or override:
+| # | Question | Decision |
+|---|---|---|
+| Q52 | Standalone Ball-Hold or Demo-2 toggle? | **Standalone** — separate `BALL_HOLD` mode that captures the current ball position when Engage is pressed. Clean mental model; simplest UX. A "World-frame hold" toggle on Demos 1/2/3 can be added later if it proves valuable, but isn't required for v10. |
+| Q53 | Behavior when Engage is pressed but no ball is detected | **Refuse** with a clear toast: "no ball detected — place a ball on the platform first". Avoids silent "what's happening" states. Re-engage requires the operator to add a ball + press Engage again. |
+| Q54 | Click-on-SVG to update the hold target while engaged | **Yes** — clicks are treated like Demo 2's retarget but with the base-IMU feedforward layer still on. Lets the operator say "hold the ball *there* now" without disengaging. The Recapture button shortcut is a redundant convenience for "use the ball's current position as the new target". |
+| Q55 | Saturation visual feedback granularity | **Text + color only** (green / yellow / red on saturation %). No audio chirp; no border pulse. Stays consistent with the no-beep precedent from the off-platform watchdog. The strobing-red animation remains reserved exclusively for off-platform aborts. |
 
-1. **Standalone Ball-Hold OR a toggle on Demo 2?** Two ways to expose
-   the base-IMU feedforward layer:
-   - (a) standalone: separate Ball-Hold mode, captures current ball
-     position as target. **(recommended for v10)** — clean mental
-     model, simplest UX.
-   - (b) layered: a "World-frame hold" checkbox on Demo 2 that adds
-     the same feedforward to a clicked goto target. Could also
-     extend to Demos 1 and 3 for orbit/path tracking that rejects
-     base motion.
+### Still open
 
-2. **What if no ball is detected when Engage is clicked?**
-   - (a) refuse; toast "no ball detected — place a ball on the
-     platform first" **(recommended)**.
-   - (b) wait; engage hold once ball appears.
-
-3. **While in Ball-Hold, can the operator click on the SVG to update
-   the hold target without disengaging?**
-   - (a) yes: clicking is treated like Demo 2's retarget, just with
-     base-IMU feedforward layered on. **(recommended)**
-   - (b) no: target is locked at engage time; must Recapture or
-     Disengage to change.
-
-4. **Saturation visual feedback granularity.**
-   - (a) status text + color (green/yellow/red) on saturation %
-     **(recommended; consistent with no-beep policy)**.
-   - (b) also a non-strobing border pulse on the GUI's Ball-Hold
-     panel when YELLOW.
-   - (c) audio chirp on YELLOW. (would break the no-beep precedent)
+None — spec locked at v9.2 (2026-04-26). All design decisions
+through v10 (Active Stabilization implementation) are nailed.
 
 ---
 
