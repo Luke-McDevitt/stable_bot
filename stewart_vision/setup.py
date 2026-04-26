@@ -32,6 +32,7 @@ setup(
             'ball_kf_node = stewart_vision.ball_kf_node:main',
             'ref_generator_node = stewart_vision.ref_generator_node:main',
             'calibration_node = stewart_vision.calibration_node:main',
+            'bag_recorder_node = stewart_vision.bag_recorder_node:main',
         ],
     },
 )

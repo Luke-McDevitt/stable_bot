@@ -5,10 +5,10 @@
 closed loop. Three demos: orbit (Demo 1), click-to-position (Demo 2),
 and path-drawing follow (Demo 3, stretch goal).
 **Authors:** Luke McDevitt + Claude (Opus 4.7).
-**Last revised:** 2026-04-26 (v7 — GUI calibration button is Stage C
-only; Stages A/B are CLI-only to prevent operators accidentally
-overriding factory tuning; clarified that the existing
-`web/index.html` is already three-column).
+**Last revised:** 2026-04-26 (v8 — bag recording subsystem added;
+auto-record on every demo Start, fault-tag bags when the off-platform
+watchdog fires; image topics opt-in; closes the loop with the demo
+plotter).
 
 This plan supersedes the relevant sections of
 `stewart_bringup/docs/NEXT_STEPS.md`. It pulls in lecture material from
@@ -1059,6 +1059,100 @@ Also identifies which classical method would have been the viable
 fallback had the OAK failed — useful "what if" answer for any
 "why didn't you use stereo triangulation directly?" question.
 
+## 13.6 Bag recording (added v8)
+
+Every demo run automatically produces a rosbag2 bag for offline
+analysis, plotter consumption, regression testing, and
+reproducibility. `bag_recorder_node` (in `stewart_vision`) listens
+to `/control_cmd` for mode transitions and runs `ros2 bag record`
+as a managed subprocess.
+
+### Trigger
+
+| Transition | Action |
+|---|---|
+| `LEVEL_HOLD` → `BALL_TRACK_*` | Start recording on a fixed topic allowlist. |
+| `BALL_TRACK_*` → `LEVEL_HOLD` | SIGINT the recorder so rosbag2 flushes cleanly. |
+| Off-platform watchdog fires during a recording | Bag is renamed with a `_fault` suffix on close so faulty runs are easy to filter for the post-mortem. |
+
+### Topic allowlist (default — small messages only)
+
+```
+/encoders, /platform_rpy, /imu/data, /odrive_errors,
+/control_cmd, /control_result,
+/platform_pose, /platform_pose/markers_visible,
+/ball_state, /ball_state/cov, /ball_ref,
+/ball_xy_oak, /ball_xy_mono, /ball_xy_stereo,
+/method_comparison,
+/oak/ball/diagnostic, /oak/ball/v0/rgb_pixel, /oak/ball/v0/diagnostic,
+/oak/ball/v1/rgb_pixel,
+/ball_path/active
+```
+
+Total bandwidth: typically < 50 KB/s = < 3 MB / minute.
+
+### Image-recording opt-in
+
+Image topics (~50 MB/min) are excluded by default. When a run is
+going into the formal report and you need raw frames, publish
+`record_images:on` to `/control_cmd` BEFORE starting the demo. The
+toggle persists until you publish `record_images:off` or restart
+the node. The GUI will surface this as a checkbox in each demo
+panel.
+
+Topics added when image recording is on:
+```
+/oak/rgb/image_compressed, /oak/left/image_compressed,
+/oak/right/image_compressed, /oak/disparity_compressed
+```
+
+### Storage
+
+Bags land in `~/stable_bot_bags/` on the Pi:
+```
+~/stable_bot_bags/
+  20260426T103015Z_trajectory.bag/        # Demo 1
+  20260426T103420Z_goto.bag/              # Demo 2
+  20260426T103820Z_path.bag/              # Demo 3
+  20260426T104235Z_goto_fault.bag/        # ball fell off mid-demo
+```
+
+`mcap` storage format (modern rosbag2 default; better random-access
+seeking and smaller than sqlite3 for our schema). The plotter
+(§13.5) opens these directly.
+
+### Disk usage and rotation
+
+A typical demo run is 10–60 seconds. Without images, bags are
+~1–3 MB each. The Pi has a 32 GB+ SD card, so even 1000 demo runs
+fits comfortably without rotation. **No automatic deletion** — the
+operator clears `~/stable_bot_bags/` manually when needed. (We
+don't want a "we lost the great demo run" footgun from a too-eager
+auto-rotate.)
+
+### Plotter consumption
+
+```bash
+# On the Pi, after a run:
+ros2 run stewart_vision plot_demo_run \
+    --bag ~/stable_bot_bags/20260426T103015Z_trajectory.bag \
+    --demo 1 \
+    --out ~/stable_bot_reports/20260426T103015Z/
+```
+
+The plotter writes the HTML index + per-panel PNGs + comparison.csv
++ summary.json into `--out` (see §13.5).
+
+### Tier-2 GUI integration (deferred until GUI work)
+
+When the index.html additions land, each demo panel will get a
+"Logging" sub-section with:
+- "Record bag" toggle (default ON) — feeds `record_images:off|on`
+  to /control_cmd before Start.
+- "View last bag" link — shows the most recent bag's path + offers
+  a "Generate report" button that runs the plotter remotely and
+  serves the resulting HTML.
+
 ### Plotter interface
 
 ```bash
@@ -1228,9 +1322,20 @@ Each milestone has an explicit "DONE WHEN" gate, in the same style as
 | Q36 | GUI calibration scope | Stage C ONLY (camera-to-world ArUco ring). Stages A/B never reachable from the GUI — they override factory tuning and live behind the CLI flow on the Pi to prevent operator misclicks. |
 | Q37 | Existing `web/index.html` layout | Already three-column (`lg:grid-cols-3`); the vision work *adds panels into* the existing structure rather than restructuring. |
 
+### Resolved in v8 (2026-04-26)
+
+| # | Question | Decision |
+|---|---|---|
+| Q38 | Bag recording | Auto-record on every demo Start; fault-tag bags when the off-platform watchdog fires. Default allowlist excludes images. mcap storage in `~/stable_bot_bags/`. |
+| Q39 | Image-topic recording | Opt-in via `record_images:on` on /control_cmd. GUI will expose this as a per-demo checkbox once the index.html work lands. |
+| Q40 | Bag retention | No automatic rotation. Operator clears `~/stable_bot_bags/` manually. Avoids the "we deleted the great run" footgun. |
+| Q41 | Vision Debug placement (GUI) | Top of left column — horizontally adjacent to the new demo panels at the top of the middle column. Visible whenever demos are running. |
+| Q42 | Demo SVG canvas | Single shared SVG at the top of the middle column. Active demo's panel border + SVG border change color (Demo 1 = blue, Demo 2 = green, Demo 3 = purple, LEVEL_HOLD = grey). |
+| Q43 | Demo activation interlock | Soft interlock: pressing Start on demo X automatically stops whatever was running and transitions through LEVEL_HOLD. Fewer clicks than a hard interlock or modal prompt. |
+
 ### Still open
 
-None — spec locked at v7 (2026-04-26).
+None — spec locked at v8 (2026-04-26).
 
 ---
 
