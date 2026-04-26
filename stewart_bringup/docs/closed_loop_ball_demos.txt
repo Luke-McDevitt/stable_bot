@@ -5,10 +5,10 @@ Scope: Replace the open-loop rolling-ball demo with a vision-driven
 closed loop. Three demos: orbit (Demo 1), click-to-position (Demo 2),
 and path-drawing follow (Demo 3, stretch goal).
 Authors: Luke McDevitt + Claude (Opus 4.7).
-Last revised: 2026-04-26 (v5 — Pi 5 16 GB migration locked in;
-OAK depth = truth, classical lecture techniques run in parallel for
-comparison only; calibrate-via-GUI-button flow; chessboard generator
-shipped).
+Last revised: 2026-04-26 (v6 — factory-calibration shortcut for
+Stages A/B; expanded list of shadowed-on-OAK comparisons; CSV + PNG
+exports from the plotter; KPI color thresholds locked at
+green < 5 mm / yellow < 15 mm / red ≥ 15 mm).
 
 This plan supersedes the relevant sections of
 stewart_bringup/docs/NEXT_STEPS.md. It pulls in lecture material from
@@ -220,7 +220,21 @@ chessboard.yaml produced by generate_chessboard.py so changing
 the printed board doesn’t require code edits.
 
 scripts/calibrate_oak.py runs in three independent stages so that
-moving the camera only invalidates the cheap stage.
+moving the camera only invalidates the cheap stage. Stages A and B
+are optional now (v6 default): the OAK ships with factory-calibrated
+intrinsics and stereo extrinsics stored on its EEPROM, accessible via
+Device.readCalibration(). The default flow uses those directly:
+
+    # Default — write factory cal into oak_intrinsics.yaml in seconds
+    python3 scripts/calibrate_oak.py --stage factory
+
+Re-doing Stages A/B manually only buys you a slightly tighter
+comparison-vs-truth baseline (your own chessboard captures may
+out-perform the factory <0.3 px reprojection target by a small
+margin). For the demo, use factory; document this in the report.
+
+Stage C (camera-to-world via the ArUco ring) is always done
+ourselves — the OAK has no idea where the platform is.
 
 Stage A — Intrinsics, per eye (slow; do once per camera, ever)
 
@@ -356,6 +370,40 @@ and rolled up post-run by the plotter into the comparison section
 of the demo’s HTML report (§13.5). Per-frame error vs OAK truth
 (mm), Bland-Altman plots, and a histogram of disagreements per
 method.
+
+Other OAK-on-chip computations we shadow with Lecture-6 techniques
+
+Beyond the ball-position estimators above, the OAK does several other
+things on-chip that we can replicate manually with classical methods.
+Each goes in the comparison artifact as another “we built it ourselves
+even though the camera does it” line. Recommended tier indicates
+implementation cost vs Lecture-6 demonstration value.
+
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  OAK on-chip                                    Manual equivalent                                                                                                                                                                           Recommended?
+  ---------------------------------------------- ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ---------------------------------------------------------------------------------------------
+  Stereo rectification (factory maps)            cv2.stereoRectify from our (or the factory’s) K + R + T → our own rectification maps; render both left/right pairs side-by-side with horizontal epipolar lines drawn (Lecture 6 slide 28)   Yes — one-shot, big visual proof, ~50 lines
+
+  Disparity (SGBM on Myriad X, real-time)        cv2.StereoSGBM_create on the host applied to the OAK’s rectified pair; per-pixel difference heatmap                                                                                         Yes — a debug pane in the GUI is a great slide
+
+  Depth from disparity (Q matrix on-chip)        depth = (f · baseline) / disparity per-pixel using our own Q from cv2.stereoRectify; agreement scatter                                                                                      Optional — implicit in disparity comparison
+
+  3-D point at ROI (SpatialLocationCalculator)   Sample our own depth map at the ball pixel, project via K^-1 · pixel · depth; this is /ball_xy_stereo already                                                                               Already in the plan
+
+  Camera intrinsics (factory K, dist)            Stage-A chessboard cv2.calibrateCamera; compare K element-wise + reprojection error histograms                                                                                              Optional (skipped for v6 default); only do if Stage A captures happen for some other reason
+
+  Stereo extrinsics (factory R, t)               cv2.stereoCalibrate after our own intrinsics; compare baseline length and rotation Euler angles                                                                                             Optional; tied to Stage B
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Fallback story (extreme failure scenarios). If the OAK’s depth
+fails for some reason but raw frames keep flowing (e.g. stereo
+mismatch in heavy IR contamination), the classical mono ray-plane
+estimator (/ball_xy_mono) can take over control authority — same
+node already runs, just toggle which topic feeds ball_kf_node.
+The ArUco-ring pose recovery is independent of any depth path, so
+that survives. If the OAK device dies (USB drop, firmware lock-up),
+nothing recovers — the watchdog drops to LEVEL_HOLD; the operator
+power-cycles the OAK.
 
 ------------------------------------------------------------------------
 
@@ -611,7 +659,10 @@ Vision Debug (top of left column, collapsible):
     -   Tracker confidence (KF NIS, color-coded)
     -   End-to-end latency (stamp_now − stamp_capture)
     -   Method comparison (live, mm): OAK-vs-mono, OAK-vs-stereo,
-        mono-vs-stereo discrepancies. Color-coded green/yellow/red.
+        mono-vs-stereo discrepancies. Color-coded:
+        -   green when |error| < 5 mm
+        -   yellow when 5 mm ≤ |error| < 15 mm
+        -   red when |error| ≥ 15 mm
 
 Calibration controls (collapsible sub-panel, hidden during demos):
 
@@ -1020,13 +1071,27 @@ Plotter interface
     ros2 run stewart_vision plot_demo_run \
         --bag <bag_dir> --demo {1|2|3} --out <out_dir>
 
-Reads the bag once, classifies events, emits PNG panels + an HTML
-index that opens in a browser with the cover plot, summary stats,
-and links to the per-panel images. Latency, fault, and detector-
-agreement panels are common to all three demo types so the
-boilerplate is shared in _common_panels.py.
+Reads the bag once, classifies events, and emits three artifact
+families under <out_dir> (decision: 2026-04-26):
 
-The HTML index is the artifact you take into the review meeting.
+1.  index.html — browser-friendly summary with embedded
+    thumbnails, per-section nav, and inline summary stats. The
+    artifact you take into the review meeting.
+2.  panels/*.png — full-resolution per-panel images so you can
+    pull individual plots into a slide deck or a paper without
+    parsing the HTML.
+3.  comparison.csv — one row per frame, columns for OAK truth
+    (x, y, z), each classical method (x, y, z), per-axis errors, and
+    the chosen-method tag. Easier for grading scripts, Excel
+    pivots, or feeding into another notebook.
+
+Plus a summary.json with the rolled-up statistics (RMS errors,
+settling-time medians, lap repeatability, latency p50/p95) for
+machine consumption.
+
+Latency, fault, method-comparison, and detector-agreement panels
+are common to all three demo types so the boilerplate is shared in
+_common_panels.py.
 
 ------------------------------------------------------------------------
 
@@ -1160,27 +1225,43 @@ Q23 | Strobe-red trigger scope | Off-platform watchdog only. In-bounds disturban
 
 Resolved in v5 (2026-04-26)
 
-  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   #                       Question                   Decision
-  ----------------------- -------------------------- -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  ----------------------- -------------------------- -----------------------------------------------------------------------------------------------------------------------------------------------------------------
   Q24                     Compute platform           Raspberry Pi 5, 16 GB RAM, ROS 2 Kilted. Phase 8 migration complete. systemd auto-launch.
 
   Q25                     OAK USB port               Blue USB-A 3.0 on the Pi 5 (USB-C is power-only on Pi 5).
 
   Q26                     Network                    Same-LAN via Pixel 9 hotspot. GUI at http://<pi-ip>:8080/. Hostname stablebot.
 
-  Q27                     Vision strategy            OAK onboard depth = ground truth (controller closes on it). Lecture-6 classical methods (homography, F/E + 8-point, triangulation, SfM) run in parallel as comparison estimators with no control authority.
+  Q27                     Vision strategy            OAK onboard depth = ground truth (controller closes on it). Lecture-6 classical methods run in parallel as comparison estimators only.
 
   Q28                     Comparison artifact        Live /method_comparison JSON @ 30 Hz for the GUI’s vision-debug strip; rolled up post-run by plot_demo_run.py into a dedicated section of the demo HTML report.
 
-  Q29                     Calibration capture flow   GUI buttons (Capture / Solve / Reset) calling Pi-side ROS services — Pi is headless so terminal cv2.imshow is a non-starter. Live corner overlay in the GUI’s existing left-eye feed.
+  Q29                     Calibration capture flow   GUI buttons (Capture / Solve / Reset) calling Pi-side ROS services — Pi is headless.
 
-  Q30                     Chessboard generator       Shipped (stewart_vision/scripts/generate_chessboard.py). Default 10x7 squares (9x6 internal corners), 25 mm/square, fits letter landscape.
-  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Q30                     Chessboard generator       Shipped (stewart_vision/scripts/generate_chessboard.py).
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Resolved in v6 (2026-04-26)
+
+  -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  #                       Question                          Decision
+  ----------------------- --------------------------------- ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Q31                     Calibration shortcut              Default to --stage factory — read OAK EEPROM via Device.readCalibration() and write to oak_intrinsics.yaml. Stages A/B remain available for users who want a tighter custom baseline.
+
+  Q32                     Plotter outputs                   HTML index + panels/*.png + comparison.csv + summary.json. CSV columns documented in §13.5 plotter section.
+
+  Q33                     Live KPI thresholds               green < 5 mm, yellow ∈ [5, 15) mm, red ≥ 15 mm — applied to all three method-comparison numbers in the vision-debug strip.
+
+  Q34                     Additional shadowed comparisons   Add custom rectification + custom SGBM disparity as recommended Lecture-6 demonstrations (§7 table). Custom intrinsics/extrinsics deferred (tied to Stages A/B which we’re skipping).
+
+  Q35                     Failure-mode fallbacks            OAK depth fail → toggle controller to /ball_xy_mono (already running, just no control authority by default). OAK device fail → watchdog to LEVEL_HOLD; operator power-cycles.
+  -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 Still open
 
-None — spec locked at v5 (2026-04-26).
+None — spec locked at v6 (2026-04-26).
 
 ------------------------------------------------------------------------
 

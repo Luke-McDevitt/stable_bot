@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
-"""calibrate_oak.py — three-stage OAK-D Pro AF calibration.
+"""calibrate_oak.py — OAK-D Pro AF calibration.
 
 Usage:
-  python3 calibrate_oak.py --stage A          # intrinsics, both eyes
-  python3 calibrate_oak.py --stage B          # stereo extrinsics + rectification
+  python3 calibrate_oak.py --stage factory    # DEFAULT (v6): read EEPROM
+  python3 calibrate_oak.py --stage A          # custom intrinsics, both eyes
+  python3 calibrate_oak.py --stage B          # custom stereo extrinsics
   python3 calibrate_oak.py --stage C          # camera-to-world via ArUco ring
-  python3 calibrate_oak.py --stage all        # A then B then C
+  python3 calibrate_oak.py --stage all        # factory then C
   python3 calibrate_oak.py --report           # regenerate calibration_report.html
 
-Stage A and B are slow (~30 captures, 5–10 minutes); they almost never
-need to be re-run. Stage C is fast (~30 seconds) and MUST be re-run
-every time the camera arm is repositioned.
+The OAK ships with factory-calibrated intrinsics and stereo extrinsics
+on its EEPROM. `--stage factory` reads those out via DepthAI's
+Device.readCalibration() and writes them to oak_intrinsics.yaml in
+seconds — no chessboard captures required. This is the default flow
+for v6.
+
+Stages A/B are kept for users who want their own chessboard-based
+calibration (tighter reprojection error, useful for the comparison
+artifact). They are slow (~30 captures, 5–10 min). Skip them unless
+you specifically want a tighter baseline.
+
+Stage C (camera-to-world via the platform's ArUco ring) is always
+done ourselves — the OAK has no idea where the platform is. It is
+fast (~30 s) and MUST be re-run every time the camera arm moves.
 
 Outputs:
   config/oak_intrinsics.yaml    (A + B)
@@ -34,6 +46,39 @@ from __future__ import annotations
 import argparse
 import sys
 import textwrap
+
+
+def stage_factory():
+    """Read the OAK's factory calibration from EEPROM and write
+    oak_intrinsics.yaml. v6 default — fastest path to a working
+    pipeline.
+
+    Implementation sketch (TODO: turn into real code):
+        import depthai as dai
+        with dai.Device() as device:
+            cal = device.readCalibration()
+            K_l = cal.getCameraIntrinsics(dai.CameraBoardSocket.CAM_B,
+                                          resizeWidth=1280, resizeHeight=800)
+            K_r = cal.getCameraIntrinsics(dai.CameraBoardSocket.CAM_C, ...)
+            d_l = cal.getDistortionCoefficients(dai.CameraBoardSocket.CAM_B)
+            d_r = cal.getDistortionCoefficients(dai.CameraBoardSocket.CAM_C)
+            extr = cal.getCameraExtrinsics(dai.CameraBoardSocket.CAM_B,
+                                           dai.CameraBoardSocket.CAM_C)
+            # Compose into oak_intrinsics.yaml schema.
+    """
+    print(textwrap.dedent("""
+        [Stage factory — read OAK EEPROM]
+        TODO:
+          1. Open OAK via DepthAI (no pipeline needed).
+          2. cal = device.readCalibration()
+          3. Pull K + dist for left/right monos and the RGB cam.
+          4. Pull stereo extrinsics (R, t between L and R).
+          5. Compute Q, P_left, P_right via cv2.stereoRectify for
+             completeness in the YAML.
+          6. Write config/oak_intrinsics.yaml with the same schema as
+             Stages A/B would produce, plus a `source: factory` flag.
+        Should complete in <2 seconds. No user interaction needed.
+    """).strip())
 
 
 def stage_a():
@@ -88,8 +133,14 @@ def stage_c():
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--stage', choices=['A', 'B', 'C', 'all'], default='all')
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--stage',
+                   choices=['factory', 'A', 'B', 'C', 'all'],
+                   default='factory',
+                   help='factory (default): read EEPROM. A/B: custom '
+                        'chessboard. C: ArUco ring. all: factory + C.')
     p.add_argument('--report', action='store_true',
                    help='Regenerate calibration_report.html only.')
     args = p.parse_args()
@@ -99,11 +150,18 @@ def main():
               "existing oak_intrinsics.yaml.")
         return 0
 
-    if args.stage in ('A', 'all'):
+    if args.stage == 'factory':
+        stage_factory()
+    elif args.stage == 'A':
         stage_a()
-    if args.stage in ('B', 'all'):
+    elif args.stage == 'B':
         stage_b()
-    if args.stage in ('C', 'all'):
+    elif args.stage == 'C':
+        stage_c()
+    elif args.stage == 'all':
+        # The "all" flow is: factory cal (instant) + Stage C (camera
+        # placement). Stages A/B are NOT in 'all' — opt in explicitly.
+        stage_factory()
         stage_c()
     return 0
 
