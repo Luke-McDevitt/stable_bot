@@ -1202,7 +1202,17 @@ class StewartControlNode(Node):
     # enough to react before the soft limit, far enough to allow normal
     # operation away from the edge.
     VEL_LIMIT_BUFFER_TURNS = 0.02
+    # Runaway threshold: if a leg in pos mode has its encoder accelerating
+    # past this magnitude (turns/s²) for more than RUNAWAY_TICKS consecutive
+    # ticks, force-disarm. Tuned to fire on slams (typical 5+ turns/s
+    # acceleration) but tolerate normal go-to-rest motion (~0.5 turns/s).
+    RUNAWAY_VEL_TURNS_PER_S = 3.0
+    RUNAWAY_TICKS = 3   # 3 * 20 ms = 60 ms before firing
     _last_safety_warn = 0.0
+
+    # Per-leg encoder history for runaway detection.
+    # _enc_history[n] = (last_enc, last_t, consecutive_runaway_ticks)
+    _enc_history = [None] * 6
 
     def _feeder_safety_check(self, modes, vel, pos_targets):
         """Called by ODriveFeeder every 20 ms (50 Hz) before any CAN frame
@@ -1229,6 +1239,68 @@ class StewartControlNode(Node):
                 safe_pos[n] = lo
             elif safe_pos[n] > hi:
                 safe_pos[n] = hi
+
+        # Runaway detection: in pos mode, if encoder velocity exceeds the
+        # threshold for several consecutive ticks, force-disarm that leg.
+        # Catches ODrives with misconfigured encoder direction, which
+        # produce closed-loop runaway as soon as CLOSED_LOOP_CONTROL is
+        # entered. Acts BEFORE the leg reaches an endstop in most cases
+        # (60 ms detection + ~10 ms CAN command latency, so up to ~70 ms
+        # of runaway slam — at 3 turns/s threshold this is ~15 mm of
+        # motion, hopefully shy of the endstop).
+        if self.listener is not None and self.feeder is not None:
+            enc = self.listener.get_all(max_age_s=0.2)
+            now = time.monotonic()
+            for n in range(6):
+                if modes[n] != 'pos' or enc[n] is None:
+                    self._enc_history[n] = None
+                    continue
+                hist = self._enc_history[n]
+                if hist is not None:
+                    prev_enc, prev_t, run_count = hist
+                    dt = now - prev_t
+                    if 0.005 < dt < 0.2:
+                        enc_vel = (enc[n] - prev_enc) / dt
+                        if abs(enc_vel) > self.RUNAWAY_VEL_TURNS_PER_S:
+                            run_count += 1
+                            if run_count >= self.RUNAWAY_TICKS:
+                                self.get_logger().error(
+                                    f"!!! RUNAWAY on leg {n}: encoder moving "
+                                    f"at {enc_vel:+.2f} turns/s "
+                                    f"(~{abs(enc_vel) * MM_PER_REV:.0f} mm/s) "
+                                    f"in pos mode for {run_count} ticks. "
+                                    f"FORCE-DISARMING leg {n}. Likely cause: "
+                                    f"ODrive node {n} has its encoder "
+                                    f"direction misconfigured — re-run motor "
+                                    f"+ encoder offset calibration in the "
+                                    f"ODrive GUI on Windows.")
+                                # Mark this leg as idle in feeder modes;
+                                # the feeder applies it next tick. ALSO
+                                # send STATE_IDLE directly via CAN so the
+                                # ODrive drops torque immediately.
+                                modes_local = list(modes)
+                                modes_local[n] = 'idle'
+                                # Update node-side armed flag.
+                                self.leg_armed[n] = False
+                                # Send IDLE via CAN (best-effort — feeder
+                                # owns the bus, so this race is benign).
+                                try:
+                                    _send_cmd(self.bus, n, CMD_SET_AXIS_STATE,
+                                              struct.pack('<I', STATE_IDLE))
+                                except Exception:
+                                    pass
+                                # Tell the feeder via its own setter so
+                                # the lock is respected.
+                                self.feeder.set_mode(n, 'idle')
+                                self._enc_history[n] = (enc[n], now, 0)
+                                continue
+                        else:
+                            run_count = 0
+                        self._enc_history[n] = (enc[n], now, run_count)
+                    else:
+                        self._enc_history[n] = (enc[n], now, 0)
+                else:
+                    self._enc_history[n] = (enc[n], now, 0)
 
         # Velocity safety — only relevant if any leg is in vel mode and we
         # have a fresh encoder reading to check against.
@@ -1415,9 +1487,19 @@ class StewartControlNode(Node):
         rosbridge in WSL2 + ROS 2 Kilted can't reliably discover services
         across processes (topics discover fine). Payload is JSON string
         with a 'cmd' key and per-cmd args. Results come back via the
-        /status topic and /control_result topic."""
+        /status topic and /control_result topic.
+
+        Other nodes (e.g. ref_generator_node in stewart_vision) use this
+        same /control_cmd topic with a different `key:value` protocol
+        (`mode:LEVEL_HOLD`, `ball_config:{...}`). Those aren't JSON for
+        us — silently ignore rather than spamming the journal at 5 Hz.
+        """
+        text = (msg.data or '').strip()
+        if not text or not text.startswith('{'):
+            # Not our protocol; let the other nodes handle it.
+            return
         try:
-            d = json.loads(msg.data)
+            d = json.loads(text)
         except json.JSONDecodeError as e:
             self.get_logger().warn(f"control_cmd: bad JSON: {e}")
             return
