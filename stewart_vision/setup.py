@@ -31,6 +31,7 @@ setup(
             'ball_localizer_node = stewart_vision.ball_localizer_node:main',
             'ball_kf_node = stewart_vision.ball_kf_node:main',
             'ref_generator_node = stewart_vision.ref_generator_node:main',
+            'calibration_node = stewart_vision.calibration_node:main',
         ],
     },
 )

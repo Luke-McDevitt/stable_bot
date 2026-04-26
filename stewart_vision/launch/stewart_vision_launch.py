@@ -51,5 +51,12 @@ def generate_launch_description():
         output='screen',
         emulate_tty=True,
     ))
+    ld.add_action(Node(
+        package='stewart_vision',
+        executable='calibration_node',
+        name='calibration_node',
+        output='screen',
+        emulate_tty=True,
+    ))
 
     return ld
