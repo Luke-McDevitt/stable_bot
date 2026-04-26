@@ -847,6 +847,15 @@ class StewartControlNode(Node):
             ctrl_mode = CONTROL_MODE_VELOCITY
             input_mode = INPUT_MODE_VEL_RAMP
 
+        # Capture the freshest encoder reading just before sending the
+        # CAN sequence — used to explicitly seed input_pos right before
+        # CLOSED_LOOP_CONTROL so ODrive doesn't briefly use a stale or
+        # default (often zero) input_pos register.
+        seed_for_arm = None
+        if mode == 'pos':
+            enc_now = self.listener.get_all(max_age_s=0.5)
+            if enc_now[n] is not None:
+                seed_for_arm = float(enc_now[n])
         with self.bus_lock:
             try:
                 _send_cmd(self.bus, n, CMD_CLEAR_ERRORS, b'\x00')
@@ -857,6 +866,22 @@ class StewartControlNode(Node):
                 _send_cmd(self.bus, n, CMD_SET_CONTROLLER_MODE,
                           struct.pack('<II', ctrl_mode, input_mode))
                 time.sleep(0.02)
+                # CRITICAL: explicitly write input_pos = current encoder
+                # IMMEDIATELY before STATE=CLOSED_LOOP. The feeder thread
+                # also sends Set_Input_Pos at 50 Hz, but if the ODrive
+                # resets input_pos when CONTROLLER_MODE switches (or if
+                # the feeder hasn't ticked yet), there's a window where
+                # input_pos = 0. Encoder is typically nonzero, so the
+                # controller drives the leg toward 0 — which is the
+                # 2026-04-26 slam pattern. Belt-and-suspenders against
+                # this: write the seed directly here, no time.sleep.
+                if mode == 'pos' and seed_for_arm is not None:
+                    _send_pos(self.bus, n, seed_for_arm,
+                              vel_ff_tps=0.0, torque_ff_nm=0.0)
+                elif mode == 'vel':
+                    # For vel mode, explicitly zero the input_vel before
+                    # CLOSED_LOOP so the leg doesn't take off.
+                    _send_vel(self.bus, n, 0.0, 0.0)
                 _send_cmd(self.bus, n, CMD_SET_AXIS_STATE,
                           struct.pack('<I', STATE_CLOSED_LOOP))
             except Exception as e:

@@ -244,10 +244,14 @@ function onLimitsResult(r) {
   if (r.limits_in_memory) {
     limitsInMem = r.limits_in_memory;
     let s = '';
+    s += 'Note: lo/hi are encoder-numerical extremes (with 0.05-turn safety margin)\n';
+    s += '      lo  = most-negative encoder allowed = TOP of stroke (leg fully up)\n';
+    s += '      hi  = most-positive encoder allowed = BOTTOM of stroke (leg on foam)\n';
+    s += '      rest = where the leg holds when go-to-rest is commanded\n\n';
     for (let n = 0; n < 6; n++) {
       const a = r.limits_in_memory[`axis_${n}`];
       if (a) {
-        s += `axis_${n}: lo=${a.lo.toFixed(4)} hi=${a.hi.toFixed(4)} rest=${a.rest.toFixed(4)}\n`;
+        s += `axis_${n}: lo=${a.lo.toFixed(4)}(top)  hi=${a.hi.toFixed(4)}(bot)  rest=${a.rest.toFixed(4)}\n`;
       }
     }
     $('limits-in-memory').innerText = s || '(none)';
