@@ -776,24 +776,43 @@ class StewartControlNode(Node):
         if vel_limit is None:
             vel_limit = self.soft_max_vel * 1.5
 
-        # Seed the feeder target. Default = current encoder reading so the
-        # axis doesn't lurch on arm. If we're in force_no_limits mode AND
-        # the user has captured rest positions, prefer those — they
-        # represent "the safe positions the user has placed the legs at",
-        # which may differ from the live reading after small mechanical
-        # settling between capture and arm.
-        if self.feeder is not None and self.listener is not None:
+        # ----- CRITICAL SAFETY: seed the feeder target -----
+        # The feeder streams Set_Input_Pos at 50 Hz with self.pos_targets[n].
+        # If we don't seed this to the leg's current encoder reading BEFORE
+        # the ODrive enters CLOSED_LOOP, the feeder will command whatever
+        # was in pos_targets[n] previously — which could be a stale value
+        # from an OLD leg_limits.yaml or from a previous arm cycle. The
+        # ODrive will then dutifully drive the leg from its current
+        # position to that stale target, which can be many turns away —
+        # a slam. This was the bug reported on 2026-04-26 where L1 slammed
+        # through the foam after a fresh save_limits.
+        #
+        # We REFUSE to arm if:
+        #   - feeder/listener aren't running
+        #   - the encoder reading is stale (> 1 s old)
+        # rather than silently fall through with a stale target.
+        if self.feeder is None or self.listener is None:
+            return False, (
+                f"leg {n}: arm refused — feeder or encoder listener not "
+                f"running. Try Diagnostics → Hard reset stack.")
+        if mode == 'pos':
             enc = self.listener.get_all(max_age_s=1.0)
-            if mode == 'pos' and enc[n] is not None:
-                seed = enc[n]
-                if (force_no_limits
-                        and self.captured_rest_positions is not None
-                        and self.captured_rest_positions[n] is not None):
-                    seed = self.captured_rest_positions[n]
-                self.feeder.set_pos_target_one(n, seed)
-            # Start feeding in the target mode BEFORE state=8 so watchdog is
-            # fed continuously through the transition.
-            self.feeder.set_mode(n, mode)
+            if enc[n] is None:
+                return False, (
+                    f"leg {n}: arm REFUSED — no fresh encoder reading "
+                    f"(>1 s stale). Refusing to use a stale pos target "
+                    f"as that can drive the leg to a previous position "
+                    f"and slam an endstop. Verify the ODrive is powered "
+                    f"and on the CAN bus, then retry.")
+            seed = enc[n]
+            if (force_no_limits
+                    and self.captured_rest_positions is not None
+                    and self.captured_rest_positions[n] is not None):
+                seed = self.captured_rest_positions[n]
+            self.feeder.set_pos_target_one(n, seed)
+        # Start feeding in the target mode BEFORE state=8 so watchdog is
+        # fed continuously through the transition.
+        self.feeder.set_mode(n, mode)
 
         if mode == 'pos':
             ctrl_mode = CONTROL_MODE_POSITION
@@ -1026,6 +1045,20 @@ class StewartControlNode(Node):
                 f"reload — check the file (perhaps an axis is missing).")
         # Limits supersede captured_rest_positions.
         self.captured_rest_positions = None
+        # Defense in depth: refresh the feeder's pos_targets to the new
+        # neutral-pose rest values, so even if the per-leg seed-update
+        # ever misses (encoder stale, etc.) the fallback is the CURRENT
+        # leg_limits.yaml's rest, not whatever was loaded at startup
+        # from the previous file. Pairs with the encoder-staleness arm
+        # refusal in _arm_leg_internal.
+        try:
+            if self.feeder is not None and self.geom is not None:
+                neutral_targets, _clamped = _compute_motor_targets(
+                    (0, 0, 0), (0, 0, 0), self.geom, self.limits)
+                self.feeder.set_pos_targets(neutral_targets)
+        except Exception as e:
+            self.get_logger().warn(
+                f"feeder pos_targets refresh failed (non-fatal): {e}")
         msg_parts = [
             f"leg_limits.yaml written: {len(legs_written)} legs updated "
             f"({legs_written}); {len(legs_skipped)} preserved from existing "

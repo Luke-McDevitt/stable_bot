@@ -2172,48 +2172,58 @@ window.addEventListener('DOMContentLoaded', () => {
 // ===========================================================================
 
 function initCollapsiblePanels() {
-  const panels = document.querySelectorAll(
-    'section > div.bg-slate-800.rounded-lg.p-4.border.border-slate-700');
+  // Convert every panel-styled <div> with an <h2> child into a native
+  // <details>/<summary> pair — same UX as the existing legacy
+  // "Demo: rolling ball" panel that uses <details>. This way every
+  // panel collapses identically: click the title to toggle.
+  // Existing <details>-rooted panels (Vision Debug, Calibration, etc.)
+  // are not touched by this pass.
+  const PANEL_CLASS = 'bg-slate-800 rounded-lg p-4 border border-slate-700';
+  // Match panels ANYWHERE in the document (not just direct section children),
+  // so nested-but-still-styled-as-panel divs also collapse.
+  const panels = Array.from(document.querySelectorAll('div'))
+    .filter(d => {
+      const cl = d.className;
+      // Must have the full panel class string AND have an <h2> as a direct
+      // child (gives it a clear title to use as <summary>).
+      if (typeof cl !== 'string') return false;
+      if (!cl.includes('bg-slate-800') || !cl.includes('rounded-lg')) return false;
+      if (!cl.includes('border')) return false;
+      const h2 = d.querySelector(':scope > h2');
+      return h2 != null;
+    });
+
   panels.forEach((panel, idx) => {
     const h2 = panel.querySelector(':scope > h2');
-    if (!h2) return;
-    // Stable id for localStorage keying — derived from the title.
-    const titleSlug = (h2.textContent || `panel-${idx}`).trim()
-      .toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+    const titleText = (h2.textContent || `panel-${idx}`).trim();
+    const titleSlug = titleText.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').slice(0, 40);
     const lsKey = `stable-bot-panel-collapsed-${titleSlug}`;
+    const startCollapsed = localStorage.getItem(lsKey) === '1';
 
-    panel.classList.add('relative');
+    // Build the replacement: <details><summary>title</summary>...rest of children...</details>
+    const det = document.createElement('details');
+    det.className = panel.className;   // inherit panel styling
+    if (panel.id) det.id = panel.id;
+    if (!startCollapsed) det.open = true;
 
-    // Toggle button — top-right corner of the panel.
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.title = 'collapse / expand';
-    btn.className = 'absolute top-2 right-2 w-6 h-6 rounded ' +
-      'text-slate-400 hover:text-slate-100 hover:bg-slate-700 ' +
-      'text-base leading-none flex items-center justify-center';
-    panel.appendChild(btn);
+    const sum = document.createElement('summary');
+    // Match the existing legacy-panel summary style: same text-sm uppercase
+    // text-slate-400 styling that <h2>s already use, plus cursor-pointer.
+    sum.className = (h2.className || '') + ' cursor-pointer select-none';
+    sum.innerHTML = h2.innerHTML;
+    det.appendChild(sum);
 
-    // Children to hide on collapse: everything except the <h2> and the button.
-    const hideable = Array.from(panel.children).filter(
-      c => c !== h2 && c !== btn);
+    // Move every child of `panel` EXCEPT the original h2 into the new details.
+    const remaining = Array.from(panel.children).filter(c => c !== h2);
+    remaining.forEach(c => det.appendChild(c));
 
-    function applyState(collapsed) {
-      hideable.forEach(c => { c.style.display = collapsed ? 'none' : ''; });
-      btn.innerText = collapsed ? '+' : '−';
-      // Tighten spacing when collapsed so the panel becomes a thin header.
-      panel.style.paddingTop = collapsed ? '0.5rem' : '';
-      panel.style.paddingBottom = collapsed ? '0.5rem' : '';
-      h2.style.marginBottom = collapsed ? '0' : '';
-    }
-
-    let collapsed = localStorage.getItem(lsKey) === '1';
-    applyState(collapsed);
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      collapsed = !collapsed;
-      localStorage.setItem(lsKey, collapsed ? '1' : '0');
-      applyState(collapsed);
+    // Persist open/closed state per panel.
+    det.addEventListener('toggle', () => {
+      localStorage.setItem(lsKey, det.open ? '0' : '1');
     });
+
+    panel.parentNode.replaceChild(det, panel);
   });
 }
 
