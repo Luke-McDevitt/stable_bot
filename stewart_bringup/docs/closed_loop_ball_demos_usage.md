@@ -6,9 +6,51 @@ How to USE the system. The companion design spec at
 Read this when you're about to drive the robot. Read the spec when
 you want to know why a particular choice was made.
 
-This guide assumes the v7 GUI changes are live. The cold-start
-sequence below mirrors the existing `stable_bot_startup.txt`
-reference card; everything else is new with the vision pipeline.
+This guide assumes the v9 spec / v8.1 GUI scaffold is live on the Pi.
+The cold-start sequence below mirrors the existing
+`stable_bot_startup.txt` reference card; everything else is new with
+the vision pipeline.
+
+---
+
+## 0. Pre-flight before pushing v8.1 GUI to the Pi
+
+Run these once after pulling the latest commit, before walking up to
+the robot:
+
+- [ ] `git pull` on the Pi to grab the new GUI + nodes:
+  ```bash
+  ssh sorak@stablebot.local
+  cd ~/<your-workspace>/src/stable_bot_repo && git pull
+  ```
+- [ ] Build the new package (intrinsics + extrinsics calibrators,
+  ArUco helpers, calibration node, bag recorder):
+  ```bash
+  cd ~/<your-workspace>
+  source /opt/ros/kilted/setup.bash
+  colcon build --packages-select stewart_vision
+  source install/local_setup.bash
+  ```
+- [ ] Restart the GUI service so the new index.html is served:
+  ```bash
+  sudo systemctl restart stable_bot_gui.service
+  ```
+- [ ] Open `http://stablebot.local:8080/` from your laptop. Confirm:
+  - Vision Debug + Calibration panels appear at the top of the LEFT column.
+  - Demo 1 / 2 / 3 panels appear at the top of the MIDDLE column.
+  - Existing controls (Status / Arming / Encoders / Jog / Pose / Homing /
+    ODrive errors / etc.) still work unchanged.
+  - The 3D Viewer panel is collapsed at the bottom of the middle
+    column (placeholder; v9 implementation).
+- [ ] If the OAK isn't plugged in yet, the page will still load —
+  `oak_driver_node` will log a fatal but the existing control
+  stack is unaffected. Plug in the OAK and
+  `sudo systemctl restart stable_bot.service` to bring vision online.
+- [ ] Run the Stage-C calibration flow (§2). Confirm
+  `oak_extrinsics.yaml` gets written.
+
+Once all five checkboxes pass, you're at step 1 of the iteration
+ladder in spec §16.
 
 ---
 

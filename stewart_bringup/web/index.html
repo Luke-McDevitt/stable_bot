@@ -400,6 +400,48 @@
       <div id="d3-status" class="text-xs text-slate-400 mt-2 mono min-h-4"></div>
     </div>
 
+    <!-- 3D Viewer (scaffold for v9; spec v9 §11.6) -->
+    <details id="view3d-panel" class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">
+        3D Viewer
+        <span class="text-amber-400 normal-case text-xs">(coming v9 — scaffold only)</span>
+      </summary>
+      <p class="text-xs text-slate-500 mt-2 mb-2">
+        Three.js scene mirroring the platform in real time, driven by
+        <span class="mono">/ball_state</span> + <span class="mono">/platform_rpy</span>.
+        Bag replay works for free via <span class="mono">ros2 bag play &lt;bag&gt;</span>
+        — the live view renders the replayed topics with no extra code.
+        Implementation deferred to v9. Design: spec §11.6.
+      </p>
+      <div id="view3d-canvas-wrap"
+           class="bg-slate-900 rounded flex items-center justify-center text-xs text-slate-500 border border-slate-700"
+           style="aspect-ratio: 4 / 3;">
+        (3D scene renders here — placeholder until v9)
+      </div>
+      <fieldset class="mt-3 border border-slate-700 rounded p-2 text-xs text-slate-500" disabled>
+        <legend class="px-2 text-slate-400">Trail coordinate frame (toggle, locked while scaffold)</legend>
+        <label class="flex items-center gap-2 mt-1">
+          <input type="radio" name="view3d-trail-frame" value="plate" checked>
+          <span><b>plate-parented (default)</b> — trail is painted on the disc,
+            tilts with the platform. Reads as "ball's path across the plate."</span>
+        </label>
+        <label class="flex items-center gap-2 mt-1">
+          <input type="radio" name="view3d-trail-frame" value="world">
+          <span><b>world-frame</b> — trail stays where the ball physically was
+            in space. More accurate when the platform is tilting; useful for
+            showing tilt motion against a static reference.</span>
+        </label>
+      </fieldset>
+      <div class="grid grid-cols-2 gap-2 text-xs mt-2 text-slate-500" style="opacity: 0.55;">
+        <label class="flex items-center gap-2"><input type="checkbox" disabled> show ball trail</label>
+        <label class="flex items-center gap-2"><input type="checkbox" disabled> show camera frustum</label>
+        <label class="flex items-center gap-2"><input type="checkbox" disabled> show classical-method ghosts (OAK / mono / stereo)</label>
+        <label class="flex items-center gap-2"><input type="checkbox" disabled> show Stewart legs (FK from /encoders)</label>
+        <label class="flex items-center gap-2"><input type="checkbox" disabled> auto-rotate camera</label>
+        <button disabled class="bg-slate-700 rounded py-1 text-xs cursor-not-allowed">Reset view</button>
+      </div>
+    </details>
+
     <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
       <h2 class="text-sm uppercase text-slate-400 mb-2">Per-leg jog (position, clamped to soft limits)</h2>
       <label class="text-xs flex items-center gap-2 mb-2">

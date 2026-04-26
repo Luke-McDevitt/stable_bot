@@ -5,10 +5,11 @@ Scope: Replace the open-loop rolling-ball demo with a vision-driven
 closed loop. Three demos: orbit (Demo 1), click-to-position (Demo 2),
 and path-drawing follow (Demo 3, stretch goal).
 Authors: Luke McDevitt + Claude (Opus 4.7).
-Last revised: 2026-04-26 (v8 — bag recording subsystem added;
-auto-record on every demo Start, fault-tag bags when the off-platform
-watchdog fires; image topics opt-in; closes the loop with the demo
-plotter).
+Last revised: 2026-04-26 (v9 — 3D viewer design captured (scaffolded
+only, full implementation deferred); plate-parented vs world-frame
+trail toggle locked in; post-deployment iteration plan written down
+in §16 so we know exactly which backend to flesh out next after the
+first hardware test).
 
 This plan supersedes the relevant sections of
 stewart_bringup/docs/NEXT_STEPS.md. It pulls in lecture material from
@@ -901,6 +902,77 @@ When the strobe condition is met:
 The strobe is GUI-only; the platform itself goes to LEVEL_HOLD
 without delay regardless of the GUI state.
 
+11.6 3D viewer (scaffolded v9, full implementation deferred)
+
+A Three.js scene mirroring the platform state in real time. Lives as
+a collapsible panel below Demo 3 in the middle column. The scaffold
+is in place (placeholder div + the toggle below); the actual scene
+code lands in a later iteration (post-deployment, see §16).
+
+What the v9 implementation will render:
+
+  ----------------------------------------------------------------------------------------------------------------------------------
+  Element                                   Source                          Notes
+  ----------------------------------------- ------------------------------- --------------------------------------------------------
+  Bottom plate                              static                          reference geometry
+
+  Top plate                                 /platform_rpy                   tilts roll/pitch in real time
+
+  ArUco ring (8 squares) + dead-zone disc   static, parented to top plate   tilts with plate
+
+  Ball (40 mm sphere, orange)               /ball_state                     position in platform frame
+
+  Trail (last ~8 s)                         /ball_state history             see frame toggle below
+
+  Reference marker (Demo 2)                 /ball_ref                       hollow blue ring
+
+  Drawn path (Demo 3)                       /ball_path/active               green polyline
+
+  Camera frustum                            oak_extrinsics.yaml             wireframe pyramid (toggleable)
+
+  Classical-method ghosts                   /ball_xy_oak/mono/stereo        semi-transparent dots in different colors (toggleable)
+
+  Stewart legs                              /encoders + IK                  six cylinders (toggleable; needs forward kinematics)
+  ----------------------------------------------------------------------------------------------------------------------------------
+
+Trail coordinate frame — user toggle (Q44, locked v9)
+
+Two modes:
+
+-   Plate-parented (default) — trail is rendered as a child of the
+    top-plate group, so it tilts with the platform and reads as “the
+    ball’s path across the disc.” This is what an operator expects
+    from a demo and what reads cleanly when viewed at any angle.
+-   World-frame — trail stays at the world-space positions where
+    the ball physically was. More physically accurate during tilt,
+    and useful for showing the platform’s tilting motion against a
+    static reference.
+
+Switching the toggle re-projects the existing trail buffer into the
+new frame; no data loss. Both modes consume the same /ball_state
+samples; only the rendering differs.
+
+Bag replay (no extra code)
+
+ros2 bag play <bag> re-publishes the topics the 3D viewer
+subscribes to, so a recorded run plays back automatically with full
+3D fidelity. No “replay mode” to write. Slow-motion via
+--rate 0.25; pause/resume via the bag CLI.
+
+Implementation tiers (post-deployment, see §16)
+
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Phase                   Scope                                                                                                            Estimate
+  ----------------------- ---------------------------------------------------------------------------------------------------------------- ---------------------------------------------------------
+  1                       Live 3D in browser: plate, ArUco, ball, trail with frame toggle, ref marker, path. OrbitControls + reset view.   ~300 lines Three.js module via ES import map
+
+  2                       Static 3D plot in the post-run HTML report (Plotly inside plot_demo_run.py)                                      ~80 lines
+
+  3                       Camera frustum, classical-method ghosts, Stewart leg rendering                                                   ~150 lines
+
+  4                       Animated playback scrubber + frame-by-frame stepping                                                             ~100 lines (custom replay node, not just ros2 bag play)
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
 ------------------------------------------------------------------------
 
 12. Topics, services, and messages
@@ -1401,7 +1473,7 @@ Resolved in v8 (2026-04-26)
   ----------------------- ------------------------------ ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   Q38                     Bag recording                  Auto-record on every demo Start; fault-tag bags when the off-platform watchdog fires. Default allowlist excludes images. mcap storage in ~/stable_bot_bags/.
 
-  Q39                     Image-topic recording          Opt-in via record_images:on on /control_cmd. GUI will expose this as a per-demo checkbox once the index.html work lands.
+  Q39                     Image-topic recording          Opt-in via record_images:on on /control_cmd. GUI exposes this as a per-demo checkbox in v8.1.
 
   Q40                     Bag retention                  No automatic rotation. Operator clears ~/stable_bot_bags/ manually. Avoids the “we deleted the great run” footgun.
 
@@ -1412,13 +1484,90 @@ Resolved in v8 (2026-04-26)
   Q43                     Demo activation interlock      Soft interlock: pressing Start on demo X automatically stops whatever was running and transitions through LEVEL_HOLD. Fewer clicks than a hard interlock or modal prompt.
   -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+Resolved in v9 (2026-04-26)
+
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  #                       Question                                    Decision
+  ----------------------- ------------------------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Q44                     3D viewer trail coordinate frame            User-toggle: plate-parented (default, trail painted on disc and tilts with it) vs world-frame (trail stays where ball physically was in space). Both rendered from the same /ball_state samples.
+
+  Q45                     3D viewer scope (now vs later)              Scaffolded only in v8.1: collapsible panel with placeholder canvas + the trail-frame toggle visible-but-disabled. Full Three.js implementation deferred to post-deployment iteration (§16 step 13–14).
+
+  Q46                     Iteration order after first hardware test   Locked in §16. The 14-step ladder is gated by physical observation; don’t advance past a step until its DONE-WHEN condition (§14) is green.
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
 Still open
 
-None — spec locked at v8 (2026-04-26).
+None — spec locked at v9 (2026-04-26).
 
 ------------------------------------------------------------------------
 
-16. References
+16. Post-deployment iteration plan
+
+Once v9 (with the v8.1 GUI scaffold) is on the Pi and a Stage-C
+calibration has succeeded, the demo flow can be exercised
+end-to-end against real hardware. From there, implementation work
+proceeds in this order, one piece at a time, gated by physical
+observation. Don’t advance past a step until its corresponding
+DONE-WHEN gate in §14 is green.
+
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  #                 Step                                  What to flesh out                                                                                                                                   DONE-WHEN gate (§14)
+  ----------------- ------------------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------- -----------------------------------------
+  1                 Smoke test                            Full stack auto-launches; GUI loads; live RGB feed shows up; ArUco markers detected at 8/8 with platform leveled.                                   Milestones 1, 2
+
+  2                 Stage-C calibration                   GUI button flow works end-to-end; reproj < 1 px.                                                                                                    Milestone 4
+
+  3                 Stub validation                       Manually publish a fake /ball_state from the CLI; confirm the SVG ball moves and Demo 2 click handler fires before any real ball detection works.   (no formal gate; sanity check)
+
+  4                 V0 ball detection                     Verify oak_driver_node’s host-side HSV threshold finds the orange foam ball; tune HSV_LO / HSV_HI by watching the live feed.                        Milestone 6
+
+  5                 /ball_xy_mono                         Wire ball_localizer_node’s ray-plane projection. Hand-move the ball; ruler-test against the reported (x, y).                                        Milestone 7
+
+  6                 KF on the mono path                   ball_kf_node smooths position + produces velocity. NIS in [0.5, 5] under hand motion.                                                               Milestone 9
+
+  7                 Closed-loop ball-centering (sanity)   Drop ball off-center; platform tilts to push it toward center; settles within ±10 mm in 10 s. Tune Kp first.                                        Milestone 10
+
+  8                 Demo 1 — Orbit                        Ball-track-trajectory mode. Tune Kd to remove wobble, then small Ki for stiction. Reverse button works.                                             Milestone 11
+
+  9                 Demo 2 — Click-to-Goto                Same gains transfer; ±10 mm settling. Z-height slider commands pure heave.                                                                          Milestone 12
+
+  10                Stereo triangulation                  Implement /ball_xy_stereo in ball_localizer_node. /method_comparison shows green most of the time.                                                  (extends Milestone 8)
+
+  11                YOLO V1 detector                      Capture training frames via capture_training_frames.py; label; train YOLOv5-nano; deploy to OAK as /oak/ball/v1/rgb_pixel.                          Milestones 17, 18
+
+  12                Demo 3 — Path drawing                 Implement ref_generator_node’s path-mode arc-length traversal + smoothing + Loop closure + Reverse.                                                 Milestones 14, 15, 16
+
+  13                Plotter — plot_demo_run.py            rosbag2_py reader + matplotlib panels + comparison.csv + summary.json + HTML index. Closes the loop with the bag-recorder.                          Milestone 19
+
+  14                3D viewer (Phase 1)                   Live Three.js scene: plate, ArUco, ball, trail with frame toggle, ref marker, drawn path. OrbitControls + reset. (§11.6)                            (no formal gate; visual diff vs SVG-2D)
+
+  15                3D viewer (Phase 2)                   Plotly 3D in the post-run HTML report (in plot_demo_run.py).                                                                                        (no formal gate)
+
+  16                3D viewer (Phase 3)                   Camera frustum, classical-method ghosts, Stewart leg rendering from /encoders + IK.                                                                 (no formal gate)
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Pre-flight before pushing this code to the Pi
+
+-   ☐ git pull on the Pi to grab the new GUI + nodes.
+-   ☐ colcon build --packages-select stewart_vision on the Pi
+    (depthai, opencv-contrib-python, cv_bridge available).
+-   ☐ Restart stable_bot_gui.service so the new index.html is
+    served.
+-   ☐ Open http://stablebot.local:8080/ from the laptop browser;
+    confirm the new Vision Debug + Calibration panels render in
+    the left column and the demo panels render in the middle.
+-   ☐ If the OAK isn’t plugged in yet, the page will still load —
+    oak_driver_node will log a fatal but the existing control
+    stack is unaffected. Plug in the OAK and systemctl restart       stable_bot.service to bring vision online.
+-   ☐ Run Stage C calibration. Confirm
+    ~/ros2_ws/install/stewart_vision/share/stewart_vision/config/oak_extrinsics.yaml
+    gets written.
+
+Once all four checkboxes pass, you’re at step 1 of the iteration
+ladder above.
+
+17. References
 
 -   stewart_bringup/docs/NEXT_STEPS.md — prior vision plan (this doc
     refines it).
