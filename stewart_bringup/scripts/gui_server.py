@@ -151,6 +151,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
 
+    def end_headers(self):
+        # Disable browser caching for everything we serve. Without this,
+        # SimpleHTTPRequestHandler returns 304 Not Modified based on
+        # If-Modified-Since, which on systems where index.html is served
+        # via a symlink (Pi deployment, repo-clone layout) keeps the
+        # browser pinned to a stale copy after a `git pull`. Cost: ~1
+        # extra index.html fetch per page load (~50 KB). Worth it.
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Expires', '0')
+        super().end_headers()
+
     def do_GET(self):
         if self.path == '/launch_status':
             self._send_json(_launch_status())

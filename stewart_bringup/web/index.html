@@ -797,31 +797,39 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
         <span class="mono">[ENTER]</span> in the prompt to record it.
       </p>
 
-      <!-- Pre-homing safety: lock all legs at their current positions so
-           ODrive bench tests + partial homing attempts don't drop them
-           into the bottom endstops. Bypasses the leg_limits.yaml gate
-           (this command holds in place; it doesn't permit /set_pose
-           or /jog_leg, which still need limits). -->
+      <!-- Pre-homing safety: capture current encoders as the rest reference,
+           so the regular Arm button can succeed even before homing has
+           produced leg_limits.yaml. Two-step flow:
+             1. Position legs manually to a safe spot
+             2. Click "Capture rest from current encoders"
+             3. Press the regular Arm button (left column) — it now uses
+                the captured positions as the seed instead of refusing. -->
       <div class="mb-3 border border-rose-700 bg-rose-900/20 rounded p-2">
-        <div class="flex items-center justify-between gap-2">
-          <div class="flex-1">
-            <div class="text-xs uppercase text-rose-300 font-semibold mb-1">
-              Pre-homing safety
-            </div>
-            <p class="text-xs text-slate-400 mb-0">
-              Lock all 6 legs at their <i>current</i> positions so they
-              don't slam into the bottom endstop during ODrive tests or
-              between homing attempts. After this, only Disarm and a
-              successful homing can release them — pose / jog stay blocked
-              until <span class="mono">leg_limits.yaml</span> exists.
-            </p>
-          </div>
+        <div class="text-xs uppercase text-rose-300 font-semibold mb-1">
+          Pre-homing safety
         </div>
-        <button id="safe-arm-btn"
-                class="w-full mt-2 bg-rose-700 hover:bg-rose-600 rounded py-2 text-sm font-semibold">
-          🔒 Arm in place (safe)
-        </button>
-        <p id="safe-arm-msg" class="text-xs text-slate-400 mt-1 min-h-4 mono"></p>
+        <p class="text-xs text-slate-400 mb-0">
+          Snapshot the current encoder readings as the rest reference so
+          the regular <b>Arm</b> button doesn't refuse (when no
+          <span class="mono">leg_limits.yaml</span> exists yet) and doesn't
+          drive into the endstops. Two-step flow:
+        </p>
+        <ol class="text-xs text-slate-400 list-decimal pl-5 mt-1 mb-2">
+          <li>Manually position each leg to a safe spot (mid-stroke).</li>
+          <li>Click <b>📍 Capture rest</b> below — just records positions, doesn't arm.</li>
+          <li>Then press the regular <b>Arm</b> button in the left column.</li>
+        </ol>
+        <div class="grid grid-cols-2 gap-2 mt-2">
+          <button id="capture-rest-btn"
+                  class="bg-rose-700 hover:bg-rose-600 rounded py-2 text-sm font-semibold">
+            📍 Capture rest from current encoders
+          </button>
+          <button id="clear-rest-btn"
+                  class="bg-slate-600 hover:bg-slate-500 rounded py-2 text-sm">
+            Clear captured rest
+          </button>
+        </div>
+        <p id="capture-rest-msg" class="text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap"></p>
       </div>
       <div class="space-y-2 mb-2">
         <div>
@@ -1103,8 +1111,8 @@ function setupROSInterface() {
         if (Array.isArray(r.keyframes)) renderKeyframeList(r.keyframes);
         return;
       }
-      if (r.cmd === 'safe_arm') {
-        toast('safe-arm-msg', line, r.success);
+      if (r.cmd === 'capture_rest' || r.cmd === 'clear_rest' || r.cmd === 'safe_arm') {
+        toast('capture-rest-msg', line, r.success);
         return;
       }
       if (r.cmd === 'probe_graph') {
@@ -1898,16 +1906,14 @@ window.addEventListener('DOMContentLoaded', () => {
   $('pose-send').addEventListener('click', sendPose);
   $('pose-zero').addEventListener('click', zeroPose);
 
-  $('safe-arm-btn').addEventListener('click', () => {
-    if (!confirm(
-      "Lock all 6 legs at their CURRENT positions?\n\n" +
-      "After this:\n" +
-      "  • legs hold rigidly via POSITION_CONTROL\n" +
-      "  • Disarm releases them\n" +
-      "  • /set_pose and /jog_leg are blocked until homing succeeds")) return;
-    const msgEl = $('safe-arm-msg');
-    if (msgEl) { msgEl.innerText = 'arming...'; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono'; }
-    publishCmd({ cmd: 'safe_arm' });
+  $('capture-rest-btn').addEventListener('click', () => {
+    // Non-destructive — just snapshots encoders. No confirm needed.
+    const msgEl = $('capture-rest-msg');
+    if (msgEl) { msgEl.innerText = 'capturing...'; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono whitespace-pre-wrap'; }
+    publishCmd({ cmd: 'capture_rest' });
+  });
+  $('clear-rest-btn').addEventListener('click', () => {
+    publishCmd({ cmd: 'clear_rest' });
   });
   $('home-bottom-btn').addEventListener('click', homeBottomEndstops);
   $('home-top-btn').addEventListener('click', captureTopOfStroke);

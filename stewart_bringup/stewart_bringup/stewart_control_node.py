@@ -551,6 +551,13 @@ class StewartControlNode(Node):
         self.bus_lock = threading.Lock()
         self.feeder = None
         self.listener = None
+        # captured rest positions (per-leg encoder snapshot from the GUI's
+        # "Capture rest from current encoders" button). Used as the seed
+        # for safe arming when leg_limits.yaml doesn't exist yet (e.g.
+        # before homing has succeeded). None when no capture has been
+        # made; otherwise a list of 6 floats (turns).
+        self.captured_rest_positions = None
+
         # per-leg armed state (True iff the leg is in CLOSED_LOOP, in either
         # pos or vel mode).
         self.leg_armed = [False] * 6
@@ -757,11 +764,21 @@ class StewartControlNode(Node):
         if vel_limit is None:
             vel_limit = self.soft_max_vel * 1.5
 
-        # Seed the feeder target to current encoder so the axis doesn't lurch.
+        # Seed the feeder target. Default = current encoder reading so the
+        # axis doesn't lurch on arm. If we're in force_no_limits mode AND
+        # the user has captured rest positions, prefer those — they
+        # represent "the safe positions the user has placed the legs at",
+        # which may differ from the live reading after small mechanical
+        # settling between capture and arm.
         if self.feeder is not None and self.listener is not None:
             enc = self.listener.get_all(max_age_s=1.0)
             if mode == 'pos' and enc[n] is not None:
-                self.feeder.set_pos_target_one(n, enc[n])
+                seed = enc[n]
+                if (force_no_limits
+                        and self.captured_rest_positions is not None
+                        and self.captured_rest_positions[n] is not None):
+                    seed = self.captured_rest_positions[n]
+                self.feeder.set_pos_target_one(n, seed)
             # Start feeding in the target mode BEFORE state=8 so watchdog is
             # fed continuously through the transition.
             self.feeder.set_mode(n, mode)
@@ -793,21 +810,63 @@ class StewartControlNode(Node):
 
     def _arm_all_in_pos_mode(self, current=6.0, vel_limit=None,
                              force_no_limits=False):
-        if self.limits is None and not force_no_limits:
-            return False, "leg_limits.yaml not available — run homing first"
+        # Acceptance gate: need EITHER homing-derived limits, OR a captured
+        # rest snapshot (set via "Capture rest from current encoders" in
+        # the GUI), OR an explicit force_no_limits override.
+        have_limits = self.limits is not None
+        have_rest = self.captured_rest_positions is not None
+        if not have_limits and not force_no_limits and not have_rest:
+            return False, (
+                "no leg_limits.yaml and no captured rest positions. "
+                "Either run homing, or press 'Capture rest from current "
+                "encoders' in the Homing panel first.")
+        # If we're falling back to captured rest (no limits but rest is set),
+        # treat this as force_no_limits internally so _arm_leg_internal
+        # uses the captured seed.
+        use_force = force_no_limits or (not have_limits and have_rest)
         msgs = []
         for n in range(6):
             ok, m = self._arm_leg_internal(
-                n, 'pos', current, vel_limit, force_no_limits=force_no_limits)
+                n, 'pos', current, vel_limit, force_no_limits=use_force)
             msgs.append(m)
             if not ok:
                 return False, f"leg {n}: {m}"
-        # Each leg's pos target was already seeded from its current encoder
-        # reading in _arm_leg_internal, so we do NOT override to rest here.
-        # The platform just holds wherever it was when armed (typically
-        # slightly sagged from gravity after disarm). User has to explicitly
-        # "Go to rest" or slide the pose to move it.
-        return True, "all 6 armed (pos mode, holding current position)"
+        return True, ("all 6 armed (pos mode, holding " +
+                      ("at captured rest positions" if use_force and have_rest
+                       else "current position") + ")")
+
+    def _capture_rest_positions(self):
+        """Snapshot the current encoder readings into self.captured_rest_positions.
+        Used as the seed for safe arming when leg_limits.yaml hasn't been
+        produced yet (pre-homing flow).
+
+        After capture: the regular Arm button (and srv_activate, and
+        cmd:activate) will succeed even without limits, holding each leg
+        at its captured position.
+
+        Capture is non-destructive: it just records the current encoder
+        readings into memory. To clear, press 'Capture rest' again with
+        the legs in a different (also-safe) position, or call
+        cmd:clear_rest. After homing succeeds, leg_limits.yaml takes
+        precedence and captured_rest is no longer consulted.
+        """
+        if self.bus is None:
+            if not self._open_bus_and_start_threads():
+                return False, "can't open can0", None
+        if self.listener is None:
+            return False, "encoder listener not running", None
+        enc = self.listener.get_all(max_age_s=1.0)
+        missing = [n for n in range(6) if enc[n] is None]
+        if missing:
+            return False, (
+                f"capture refused: legs {missing} have no fresh encoder "
+                f"reading. Power-cycle the ODrive(s) and try again."), None
+        self.captured_rest_positions = list(enc)
+        formatted = ", ".join(
+            f"L{n}={enc[n]:+.4f}" for n in range(6))
+        return True, (
+            f"captured rest positions: {formatted}. Now press the regular "
+            f"Arm button to lock the legs at these positions."), enc
 
     def _safe_arm_in_place(self, current=6.0, vel_limit=None):
         """Arm all 6 legs at their current encoder positions, bypassing
@@ -1035,10 +1094,20 @@ class StewartControlNode(Node):
         try:
             if cmd == 'activate':
                 ok, reply_msg = self._arm_all_in_pos_mode()
+            elif cmd == 'capture_rest':
+                # Snapshot current encoder readings into captured_rest_positions.
+                # Doesn't arm — user presses regular Arm afterward, which
+                # will use the captured positions if no leg_limits.yaml.
+                ok, reply_msg, encs = self._capture_rest_positions()
+                if encs is not None:
+                    extra['positions'] = list(encs)
+            elif cmd == 'clear_rest':
+                self.captured_rest_positions = None
+                ok, reply_msg = True, "captured rest positions cleared."
             elif cmd == 'safe_arm':
-                # Lock all 6 legs at their CURRENT encoder positions,
-                # bypassing the leg_limits.yaml requirement. Used before
-                # homing to prevent legs from dropping during bench tests.
+                # Legacy: capture + arm in one click. Kept for backward
+                # compatibility with the v9.2-deployed GUI; new GUI uses
+                # the two-button capture_rest + activate flow.
                 ok, reply_msg = self._safe_arm_in_place()
             elif cmd == 'deactivate' or cmd == 'e_stop':
                 self._disarm_internal()
