@@ -5,10 +5,10 @@ Scope: Replace the open-loop rolling-ball demo with a vision-driven
 closed loop. Three demos: orbit (Demo 1), click-to-position (Demo 2),
 and path-drawing follow (Demo 3, stretch goal).
 Authors: Luke McDevitt + Claude (Opus 4.7).
-Last revised: 2026-04-25 (v4 — final spec lock: per-demo bag
-schemas + dedicated plotter, training-frame capture helper, manual
-re-arm only, UNO-reverse on Demos 1 & 3 only, strobe scoped to
-off-platform fall + body-background only).
+Last revised: 2026-04-26 (v5 — Pi 5 16 GB migration locked in;
+OAK depth = truth, classical lecture techniques run in parallel for
+comparison only; calibrate-via-GUI-button flow; chessboard generator
+shipped).
 
 This plan supersedes the relevant sections of
 stewart_bringup/docs/NEXT_STEPS.md. It pulls in lecture material from
@@ -31,9 +31,9 @@ use the same vision pipeline; only the reference generator differs.
 
 2. Hardware summary
 
-  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   Component                           Detail
-  ----------------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  ----------------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   Camera                              Luxonis OAK-D-PRO-AF — stereo + 12 MP color + IR dot projector + Movidius Myriad X VPU. Onboard inference frees the Pi.
 
   Camera mount                        5 ft aluminum rod fixed to the bottom platform (clear of actuators and the moving top plate), with an articulated camera arm + ball-head mount so the camera angle and height can be adjusted between trials.
@@ -46,8 +46,12 @@ use the same vision pipeline; only the reference generator differs.
 
   IMU                                 Movella MTi-630 AHRS, mounted parallel to the top plate; platform_level.yaml references roll/pitch zero to the IMU’s factory-calibrated frame (see the MTi reference-frame discussion in chat history dated 2026-04-25).
 
-  Compute (current)                   Bring-up host is a WSL2 Ubuntu 24.04 laptop. Phase 8 of the bring-up plan migrates to a Raspberry Pi.
-  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Compute                             Raspberry Pi 5, 16 GB RAM, ROS 2 Kilted. Phase 8 migration is complete (2026-04-26). Two systemd services auto-start the stack on power-up: stable_bot.service (ROS 2 nodes) + stable_bot_gui.service (gui_server.py + rosbridge). Pi 5 USB-C is power-only — OAK plugs into a blue USB-A 3.0 port (dedicated PCIe-fed bandwidth, no Pi 4 shared-controller bottleneck).
+
+  Network                             Laptop ↔ Pi over the user’s Pixel 9 phone hotspot (same LAN). Hostname stablebot; current IP is hotspot-DHCP-assigned (look up in the hotspot’s “Connected devices”). GUI is at http://<pi-ip>:8080/; rosbridge websocket at ws://<pi-ip>:9090/. SSH user: sorak.
+
+  Bring-up laptop                     Used only to host the browser. WSL2 Ubuntu 24.04 retained for development + GitHub flow.
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 The articulated mount is a deliberate choice — the camera angle WILL be
 re-tuned during bring-up. Every camera move invalidates the
@@ -194,6 +198,27 @@ described in §9. No other changes to stewart_bringup are required.
 
 6. Camera calibration workflow
 
+Calibration runs on the Pi (where the OAK is plugged in), but
+the user-facing capture flow is via a button in the laptop’s GUI —
+the Pi is headless. scripts/calibrate_oak.py exposes a small ROS 2
+service interface that the GUI calls:
+
+-   /calibrate/capture_frame (Trigger) — grab one synced
+    chessboard pair (Stage A) or the leveled-platform ArUco frame
+    (Stage C). The script auto-detects the chessboard / board and
+    accepts or rejects the frame, returning a status to the GUI
+    (success: “frame N/30 captured”, failure: “chessboard not detected”).
+-   /calibrate/solve (Trigger) — runs cv2.calibrateCamera /
+    cv2.stereoCalibrate / cv2.stereoRectify on the captured set
+    and writes the YAML if the acceptance gates pass.
+-   /calibrate/reset (Trigger) — clears captured-frame buffer.
+
+The GUI’s Vision Debug panel shows the live OAK feed with detected
+chessboard corners drawn in real time, plus a counter “N/30 frames”
+and the three buttons above. The chessboard geometry comes from
+chessboard.yaml produced by generate_chessboard.py so changing
+the printed board doesn’t require code edits.
+
 scripts/calibrate_oak.py runs in three independent stages so that
 moving the camera only invalidates the cheap stage.
 
@@ -264,9 +289,25 @@ gating prevents bad data from ever entering the pipeline.
 
 7. Stereo / vision techniques from Lecture 6
 
-The OAK gives onboard depth for free, but the prof wants to see the
-techniques. Each item below is implemented explicitly somewhere in the
-pipeline, even where the OAK could shortcut.
+Strategy (locked in v5, 2026-04-26): the OAK’s onboard stereo depth
+is treated as ground truth, and the controller closes the loop on
+that. The lecture techniques (homography, F/E matrices, 8-point +
+RANSAC, triangulation, SfM) all run in parallel as comparison
+estimators only — they have no control authority. Each technique
+writes its output to a dedicated topic, and a comparison artifact
+(JSON + the per-demo HTML report from §13.5) shows agreement /
+disagreement between the OAK truth and each classical method.
+
+Why: this is the highest-probability path to a working demo while
+still showcasing every Lecture 6 technique. If a classical estimator
+has a bad frame, the controller is unaffected (it’s looking at the
+OAK truth). If a classical estimator agrees with the OAK to within a
+few mm across the demo, that’s a strong “I understand this” claim
+to the professor — a single-frame disagreement plot is worth more
+than a flawless real-time estimator that anyone can run from a
+DepthAI tutorial.
+
+Each item below is implemented explicitly somewhere in the pipeline.
 
   -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   Lecture topic                                Implementation in this project
@@ -294,15 +335,27 @@ pipeline, even where the OAK could shortcut.
   SfM pipeline (slide 41–42)                   sfm_demo.py: pan camera by hand, recover camera trajectory via SIFT/ORB → F → E → triangulation. Standalone demo for the slides.
   -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-Two ball-localization paths run in parallel and are published on
-separate topics:
+Three ball-localization paths run in parallel; only /ball_xy_oak has
+control authority:
 
-1.  Mono + plane projection (/ball_xy_mono) — ball pixel + ArUco
-    plane → ray–plane intersection.
-2.  Stereo triangulation (/ball_xy_stereo) — rectified pair → ball
-    pixel in each → DLT triangulation → into platform frame.
+1.  OAK onboard depth (truth) (/ball_xy_oak) — ball pixel + the
+    OAK’s StereoDepth output sampled at the ball ROI via DepthAI’s
+    SpatialLocationCalculator. This is what ball_kf_node consumes
+    and what the controller closes on.
+2.  Mono + plane projection (classical) (/ball_xy_mono) — ball
+    pixel + ArUco plane → ray-plane intersection. Pure Lecture 6 math
+    (no stereo). Logged for comparison.
+3.  Stereo triangulation (classical) (/ball_xy_stereo) — rectified
+    pair → ball pixel in each → DLT triangulation → into platform frame.
+    Uses our own intrinsics + 8-point fundamental matrix verification.
+    Logged for comparison.
 
-Disagreement between them is itself a useful diagnostic and a slide.
+/ball_xy_oak ↔ /ball_xy_mono ↔ /ball_xy_stereo agreement is
+written to /method_comparison (custom JSON-encoded String at 30 Hz)
+and rolled up post-run by the plotter into the comparison section
+of the demo’s HTML report (§13.5). Per-frame error vs OAK truth
+(mm), Bland-Altman plots, and a histogram of disagreements per
+method.
 
 ------------------------------------------------------------------------
 
@@ -557,7 +610,26 @@ Vision Debug (top of left column, collapsible):
     -   ArUco markers visible (n / 8)
     -   Tracker confidence (KF NIS, color-coded)
     -   End-to-end latency (stamp_now − stamp_capture)
-    -   Mono-vs-stereo ball-position discrepancy (mm)
+    -   Method comparison (live, mm): OAK-vs-mono, OAK-vs-stereo,
+        mono-vs-stereo discrepancies. Color-coded green/yellow/red.
+
+Calibration controls (collapsible sub-panel, hidden during demos):
+
+-   Live OAK left-eye feed with detected chessboard / ArUco board
+    corners drawn in real time (so the user can see whether the
+    current pose is being accepted).
+-   Frame counter “N/30 captured” for Stage A.
+-   Three buttons:
+    -   Capture frame — calls /calibrate/capture_frame. Result
+        toast: “frame N/30 captured” or “chessboard not detected, try
+        again” or “pose too similar to a captured one — vary angle”.
+    -   Solve — calls /calibrate/solve. Disabled until ≥ 30 frames.
+        Returns reprojection error per eye + epipolar error; refuses
+        to write the YAML if acceptance gates fail.
+    -   Reset — clears the buffer.
+-   Stage selector: “Stage A (intrinsics)” / “Stage B (stereo)” /
+    “Stage C (camera-to-world)”. Stage C is the one re-run after
+    every camera move; the others run rarely.
 
 Encoder & current debug (bottom of left column): the existing
 plots and read-outs, unchanged.
@@ -753,9 +825,9 @@ without delay regardless of the GUI state.
 
 New topics published by stewart_vision
 
-  -----------------------------------------------------------------------------------------------------------------------
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   Topic                         Type                                      Rate              Notes
-  ----------------------------- ----------------------------------------- ----------------- -----------------------------
+  ----------------------------- ----------------------------------------- ----------------- ------------------------------------------------------------------------------------------
   /oak/left/image_compressed    sensor_msgs/CompressedImage               15 Hz             GUI live feed only
 
   /oak/right/image_compressed   sensor_msgs/CompressedImage               15 Hz             GUI live feed only
@@ -768,14 +840,32 @@ New topics published by stewart_vision
 
   /platform_pose                geometry_msgs/PoseStamped                 30 Hz             ArUco board → camera frame
 
-  /ball_xy_mono                 geometry_msgs/PointStamped                60 Hz             Platform frame, mono path
+  /ball_xy_oak                  geometry_msgs/PointStamped                60 Hz             Truth — OAK SpatialLocationCalculator output, platform frame. Controller closes on this.
 
-  /ball_xy_stereo               geometry_msgs/PointStamped                60 Hz             Platform frame, stereo path
+  /ball_xy_mono                 geometry_msgs/PointStamped                60 Hz             Classical mono ray-plane projection. Logged only, no control authority.
 
-  /ball_state                   custom (px, py, vx, vy, covariance)       100 Hz            KF posterior, both frames
+  /ball_xy_stereo               geometry_msgs/PointStamped                60 Hz             Classical 8-point + DLT triangulation. Logged only, no control authority.
+
+  /method_comparison            std_msgs/String (JSON)                    30 Hz             Per-frame OAK-vs-classical disagreements (mm) for live + post-run analysis.
+
+  /ball_state                   custom (px, py, vx, vy, covariance)       100 Hz            KF posterior fed by /ball_xy_oak.
 
   /ball_ref                     geometry_msgs/PointStamped                event-driven      Set by ref_generator_node
-  -----------------------------------------------------------------------------------------------------------------------
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Calibration services (Stage A/B/C, called by the GUI)
+
+  ------------------------------------------------------------------------------------------------------------------
+  Service                    Type                               Notes
+  -------------------------- ---------------------------------- ----------------------------------------------------
+  /calibrate/capture_frame   std_srvs/Trigger                   One frame per click; rejects bad poses.
+
+  /calibrate/solve           std_srvs/Trigger                   Runs the OpenCV solver, writes YAML if gates pass.
+
+  /calibrate/reset           std_srvs/Trigger                   Clears the captured-frame buffer.
+
+  /calibrate/stage           std_srvs/SetBool style or custom   Select A / B / C.
+  ------------------------------------------------------------------------------------------------------------------
 
 New /control_cmd payloads (existing topic)
 
@@ -897,6 +987,33 @@ Plots produced:
 -   Per-loop overlay if Loop was on (lap 1 vs lap 2 vs … in different
     colors) — repeatability is the wow plot here.
 -   Reverse events as vertical bars; trail-erase resets visible.
+
+Method-comparison section (added v5, every demo’s report)
+
+Drives the “we implemented every Lecture 6 technique” claim. From
+/method_comparison (JSON @ 30 Hz) and the per-method ball-position
+topics:
+
+-   2-D scatter: OAK truth (x) vs each classical method (y), per axis,
+    with the y = x line drawn. Tight clustering = method works.
+-   Bland-Altman plot per classical method: mean of (truth, classical)
+    on x-axis, difference on y-axis; mean ± 1.96σ horizontal lines.
+    The standard way to visualize agreement between two estimators.
+-   Per-method statistics table:
+    -   mean error vs truth (mm)
+    -   RMS error vs truth (mm)
+    -   95th-percentile error (mm)
+    -   frames where the method produced no estimate (failure rate)
+-   Time-series of per-method error during the run, with demo events
+    (orbit reverse, goto target reached, path waypoints) overlaid as
+    vertical bars.
+
+This is the artifact that proves to the professor that every
+classical technique was implemented correctly, even though we chose
+the OAK’s hardware-accelerated depth for robust real-time control.
+Also identifies which classical method would have been the viable
+fallback had the OAK failed — useful “what if” answer for any
+“why didn’t you use stereo triangulation directly?” question.
 
 Plotter interface
 
@@ -1041,9 +1158,29 @@ Q21 | Re-arm after off-platform abort | Manual only. Operator must press Start o
 Q22 | UNO-reverse button placement | Demo 1 panel and Demo 3 panel (path drawing). Not Demo 2; not the status bar. |
 Q23 | Strobe-red trigger scope | Off-platform watchdog only. In-bounds disturbance recovery is silent. Strobe is body-background-only — never overlays panels or controls. |
 
+Resolved in v5 (2026-04-26)
+
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  #                       Question                   Decision
+  ----------------------- -------------------------- -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Q24                     Compute platform           Raspberry Pi 5, 16 GB RAM, ROS 2 Kilted. Phase 8 migration complete. systemd auto-launch.
+
+  Q25                     OAK USB port               Blue USB-A 3.0 on the Pi 5 (USB-C is power-only on Pi 5).
+
+  Q26                     Network                    Same-LAN via Pixel 9 hotspot. GUI at http://<pi-ip>:8080/. Hostname stablebot.
+
+  Q27                     Vision strategy            OAK onboard depth = ground truth (controller closes on it). Lecture-6 classical methods (homography, F/E + 8-point, triangulation, SfM) run in parallel as comparison estimators with no control authority.
+
+  Q28                     Comparison artifact        Live /method_comparison JSON @ 30 Hz for the GUI’s vision-debug strip; rolled up post-run by plot_demo_run.py into a dedicated section of the demo HTML report.
+
+  Q29                     Calibration capture flow   GUI buttons (Capture / Solve / Reset) calling Pi-side ROS services — Pi is headless so terminal cv2.imshow is a non-starter. Live corner overlay in the GUI’s existing left-eye feed.
+
+  Q30                     Chessboard generator       Shipped (stewart_vision/scripts/generate_chessboard.py). Default 10x7 squares (9x6 internal corners), 25 mm/square, fits letter landscape.
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
 Still open
 
-None — spec locked at v4 (2026-04-25).
+None — spec locked at v5 (2026-04-26).
 
 ------------------------------------------------------------------------
 
