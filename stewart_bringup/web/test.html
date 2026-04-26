@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stable-Bot — Test GUI</title>
+<script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  input[type=range] { accent-color: rgb(59 130 246); }
+</style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+
+<header class="bg-rose-900/50 border-b border-rose-700">
+  <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+    <div>
+      <h1 class="text-lg font-semibold">Stable-Bot — Test GUI</h1>
+      <div class="text-xs text-rose-300">
+        Isolated test harness. Reads <span class="mono">leg_limits.yaml</span>
+        directly from the controller, lets you slider-drive each leg to
+        an absolute position. Use this when the prod GUI flow is in doubt.
+      </div>
+    </div>
+    <div class="flex items-center gap-3 flex-wrap">
+      <span id="conn-dot" class="w-3 h-3 rounded-full bg-red-500"></span>
+      <span id="conn-label" class="text-sm text-slate-300">disconnected</span>
+      <input id="ws-url" value="ws://stablebot.local:9090"
+             class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-56">
+      <button id="connect-btn" class="text-sm bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded">Connect</button>
+      <button id="disarm-all-btn" class="text-sm bg-amber-600 hover:bg-amber-500 px-3 py-1 rounded">Disarm All</button>
+      <button id="estop-btn" class="text-sm font-bold uppercase bg-red-600 hover:bg-red-500 px-4 py-2 rounded shadow">E-STOP</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto p-4 space-y-4">
+
+  <!-- Limits panel: shows what the controller has in memory + the file on disk -->
+  <details open class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <summary class="text-sm uppercase text-slate-400 cursor-pointer">Limits in use</summary>
+    <p class="text-xs text-slate-400 mt-2 mb-2">
+      Verifies that the controller is actually using the most recent
+      <span class="mono">leg_limits.yaml</span>. The "in memory" column is what the
+      controller has loaded NOW; the "on disk" column is what's currently
+      in the file. They should match. If not, click <b>Reload</b>.
+    </p>
+    <div class="flex gap-2 mb-2">
+      <button id="get-limits-btn" class="bg-slate-600 hover:bg-slate-500 rounded px-3 py-1 text-sm">Refresh display</button>
+      <button id="reload-limits-btn" class="bg-blue-600 hover:bg-blue-500 rounded px-3 py-1 text-sm">Reload from disk → memory</button>
+    </div>
+    <div class="text-xs mono text-slate-400">
+      File path: <span id="limits-file-path">—</span><br>
+      File mtime: <span id="limits-file-mtime">—</span><br>
+      File size: <span id="limits-file-size">—</span>
+    </div>
+    <div class="grid grid-cols-2 gap-3 mt-3">
+      <div>
+        <div class="text-xs uppercase text-slate-400 mb-1">In memory</div>
+        <pre id="limits-in-memory" class="mono text-xs bg-slate-900 border border-slate-700 rounded p-2 overflow-x-auto whitespace-pre">(refresh to view)</pre>
+      </div>
+      <div>
+        <div class="text-xs uppercase text-slate-400 mb-1">On disk (raw YAML)</div>
+        <pre id="limits-file-text" class="mono text-xs bg-slate-900 border border-slate-700 rounded p-2 overflow-x-auto whitespace-pre">(refresh to view)</pre>
+      </div>
+    </div>
+    <div id="limits-msg" class="text-xs mt-2 mono min-h-4"></div>
+  </details>
+
+  <!-- Status -->
+  <details open class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <summary class="text-sm uppercase text-slate-400 cursor-pointer">Status</summary>
+    <pre id="status-text" class="mono text-xs bg-slate-900 border border-slate-700 rounded p-2 mt-2 overflow-x-auto whitespace-pre-wrap min-h-12">(no /status received yet)</pre>
+  </details>
+
+  <!-- Errors -->
+  <details open class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <summary class="text-sm uppercase text-slate-400 cursor-pointer">ODrive errors</summary>
+    <div class="flex gap-2 mt-2 mb-2">
+      <button id="err-read-btn" class="bg-slate-600 hover:bg-slate-500 rounded py-1 px-3 text-sm">Read now</button>
+      <button id="err-clear-btn" class="bg-amber-600 hover:bg-amber-500 rounded py-1 px-3 text-sm">Clear all</button>
+    </div>
+    <div id="err-grid" class="grid grid-cols-1 gap-1 mono text-xs"></div>
+  </details>
+
+  <!-- Per-leg sliders -->
+  <details open class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <summary class="text-sm uppercase text-slate-400 cursor-pointer">Per-leg position sliders</summary>
+    <p class="text-xs text-slate-400 mt-2 mb-2">
+      Each slider's range is set from <span class="mono">[lo, hi]</span> in
+      leg_limits.yaml. <b>Live mode</b> (default): slider follows live
+      encoder when you're not touching it. <b>Drag</b> the slider thumb to
+      a new position; on release, the controller drives the leg there
+      (uses the same code path as per-leg jog, so the safety hook +
+      runaway detector still apply).
+    </p>
+    <div class="grid grid-cols-3 gap-2 mb-3">
+      <button id="arm-all-btn" class="bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-sm">Arm all</button>
+      <button id="disarm-all-btn-2" class="bg-amber-600 hover:bg-amber-500 rounded py-1 text-sm">Disarm all</button>
+      <button id="rest-all-btn" class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-sm">Go to rest</button>
+    </div>
+    <div id="leg-sliders" class="space-y-3"></div>
+  </details>
+
+  <!-- Diagnostics -->
+  <details class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <summary class="text-sm uppercase text-slate-400 cursor-pointer">Diagnostics</summary>
+    <div class="grid grid-cols-2 gap-2 mt-2">
+      <button id="diag-reconnect-btn" class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-sm">Reconnect rosbridge</button>
+      <button id="diag-hardreset-btn" class="bg-rose-700 hover:bg-rose-600 rounded py-1 text-sm">Hard reset stack</button>
+      <button id="diag-probe-btn" class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-sm">Probe topics + nodes</button>
+      <button id="diag-launchlog-btn" class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-sm">Show launch log tail</button>
+    </div>
+    <pre id="diag-output" class="mono text-xs bg-slate-900 border border-slate-700 rounded p-2 mt-2 overflow-x-auto whitespace-pre-wrap min-h-12">(diagnostics output goes here)</pre>
+  </details>
+
+  <p class="text-xs text-slate-500">
+    Test GUI v0. The prod GUI is at
+    <a href="/" class="text-blue-400 hover:underline mono">/</a>.
+  </p>
+</main>
+
+<script>
+let ros = null;
+let limitsInMem = null;
+let lastEncoders = [null, null, null, null, null, null];
+const userDragging = [false, false, false, false, false, false];
+const sliderEls = [null, null, null, null, null, null];
+const encReadoutEls = [null, null, null, null, null, null];
+const targetReadoutEls = [null, null, null, null, null, null];
+
+const $ = (id) => document.getElementById(id);
+
+function setConn(ok, label) {
+  $('conn-dot').className = 'w-3 h-3 rounded-full ' + (ok ? 'bg-emerald-500' : 'bg-red-500');
+  $('conn-label').innerText = label;
+}
+
+function publishCmd(obj) {
+  if (!ros || !srvCmd) return;
+  srvCmd.publish(new ROSLIB.Message({ data: JSON.stringify(obj) }));
+}
+
+let srvCmd = null;
+let topResult = null;
+let topStatus = null;
+let topEncoders = null;
+let topErrors = null;
+
+function connect() {
+  const url = $('ws-url').value;
+  if (ros) { try { ros.close(); } catch (e) {} }
+  ros = new ROSLIB.Ros({ url });
+  ros.on('connection', () => { setConn(true, 'connected'); subscribe(); });
+  ros.on('error',      () => setConn(false, 'error'));
+  ros.on('close',      () => setConn(false, 'disconnected'));
+}
+
+function subscribe() {
+  // /control_cmd is the command bus (pubs and subs both happen on it).
+  srvCmd = new ROSLIB.Topic({
+    ros, name: '/control_cmd', messageType: 'std_msgs/msg/String' });
+  topResult = new ROSLIB.Topic({
+    ros, name: '/control_result', messageType: 'std_msgs/msg/String' });
+  topResult.subscribe(onControlResult);
+  topStatus = new ROSLIB.Topic({
+    ros, name: '/status', messageType: 'std_msgs/msg/String' });
+  topStatus.subscribe(m => {
+    try {
+      const d = JSON.parse(m.data);
+      $('status-text').innerText = JSON.stringify(d, null, 2);
+    } catch (e) {}
+  });
+  topEncoders = new ROSLIB.Topic({
+    ros, name: '/leg_encoders',
+    messageType: 'std_msgs/msg/Float64MultiArray' });
+  topEncoders.subscribe(m => {
+    for (let i = 0; i < 6; i++) {
+      lastEncoders[i] = m.data[i];
+      if (sliderEls[i] && !userDragging[i]) {
+        sliderEls[i].value = m.data[i];
+      }
+      if (encReadoutEls[i]) {
+        encReadoutEls[i].innerText = m.data[i].toFixed(4);
+      }
+    }
+  });
+  topErrors = new ROSLIB.Topic({
+    ros, name: '/odrive_errors', messageType: 'std_msgs/msg/String' });
+  topErrors.subscribe(m => {
+    try {
+      const d = JSON.parse(m.data);
+      renderErrors(d.nodes);
+    } catch (e) {}
+  });
+  // Auto-fetch limits on connect.
+  setTimeout(() => publishCmd({ cmd: 'get_limits' }), 300);
+}
+
+function onControlResult(m) {
+  let r;
+  try { r = JSON.parse(m.data); } catch (e) { return; }
+  if (r.cmd === 'get_limits' || r.cmd === 'reload_limits') {
+    onLimitsResult(r);
+    return;
+  }
+  if (r.cmd === 'probe_graph') {
+    if (!r.success) { $('diag-output').innerText = 'probe failed: ' + r.message; return; }
+    const topics = r.topics || [], nodes = r.nodes || [];
+    let txt = `=== TOPICS (${topics.length}) ===\n`;
+    for (const t of topics) txt += `  ${t.name}\n    [${(t.types||[]).join(', ')}]\n`;
+    txt += `\n=== NODES (${nodes.length}) ===\n`;
+    for (const n of nodes) txt += `  ${n}\n`;
+    $('diag-output').innerText = txt;
+    return;
+  }
+  // Generic result toast
+  const line = `${r.cmd}: ${r.success ? 'OK' : 'ERR'} — ${r.message}`;
+  if (r.cmd === 'set_leg_target' || r.cmd === 'jog_leg') {
+    // Append to limits-msg as a small status indicator
+    const el = $('limits-msg');
+    if (el) {
+      el.innerText = line;
+      el.className = 'text-xs mt-2 mono min-h-4 ' +
+        (r.success ? 'text-emerald-400' : 'text-red-400');
+    }
+  }
+}
+
+function onLimitsResult(r) {
+  $('limits-msg').innerText = r.message || '';
+  $('limits-msg').className = 'text-xs mt-2 mono min-h-4 ' +
+    (r.success ? 'text-emerald-400' : 'text-red-400');
+  if (r.limits_file_path) $('limits-file-path').innerText = r.limits_file_path;
+  if (r.limits_file_mtime_unix) {
+    const d = new Date(r.limits_file_mtime_unix * 1000);
+    $('limits-file-mtime').innerText = d.toLocaleString() + ' ('
+      + ((Date.now() - d.getTime()) / 1000).toFixed(0) + ' s ago)';
+  }
+  if (r.limits_file_size != null) {
+    $('limits-file-size').innerText = r.limits_file_size + ' bytes';
+  }
+  if (r.limits_in_memory) {
+    limitsInMem = r.limits_in_memory;
+    let s = '';
+    for (let n = 0; n < 6; n++) {
+      const a = r.limits_in_memory[`axis_${n}`];
+      if (a) {
+        s += `axis_${n}: lo=${a.lo.toFixed(4)} hi=${a.hi.toFixed(4)} rest=${a.rest.toFixed(4)}\n`;
+      }
+    }
+    $('limits-in-memory').innerText = s || '(none)';
+    rebuildSliders();
+  }
+  if (r.limits_file_text) {
+    $('limits-file-text').innerText = r.limits_file_text;
+  }
+}
+
+function rebuildSliders() {
+  const wrap = $('leg-sliders');
+  wrap.innerHTML = '';
+  for (let n = 0; n < 6; n++) {
+    const a = limitsInMem ? limitsInMem[`axis_${n}`] : null;
+    if (!a) continue;
+    const lo = a.lo, hi = a.hi;
+    const row = document.createElement('div');
+    row.className = 'bg-slate-900 border border-slate-700 rounded p-2';
+    const head = document.createElement('div');
+    head.className = 'flex justify-between text-xs mb-1';
+    head.innerHTML = `
+      <span class="font-semibold">L${n}</span>
+      <span class="text-slate-400 mono">
+        enc: <span id="enc-${n}">${(lastEncoders[n] ?? 0).toFixed(4)}</span> ·
+        slider: <span id="tgt-${n}">${(lastEncoders[n] ?? lo).toFixed(4)}</span> ·
+        range: [${lo.toFixed(2)}, ${hi.toFixed(2)}]
+      </span>`;
+    row.appendChild(head);
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = lo;
+    slider.max = hi;
+    slider.step = 0.001;
+    slider.value = lastEncoders[n] ?? lo;
+    slider.className = 'w-full';
+    slider.dataset.leg = n;
+    slider.addEventListener('mousedown', () => userDragging[n] = true);
+    slider.addEventListener('touchstart', () => userDragging[n] = true);
+    slider.addEventListener('input', (e) => {
+      const tgt = parseFloat(e.target.value);
+      const tEl = document.getElementById(`tgt-${n}`);
+      if (tEl) tEl.innerText = tgt.toFixed(4);
+    });
+    const commit = (e) => {
+      userDragging[n] = false;
+      const tgt = parseFloat(e.target.value);
+      publishCmd({ cmd: 'set_leg_target', leg: n, target_turns: tgt });
+    };
+    slider.addEventListener('mouseup', commit);
+    slider.addEventListener('touchend', commit);
+    row.appendChild(slider);
+    wrap.appendChild(row);
+    sliderEls[n] = slider;
+    encReadoutEls[n] = document.getElementById(`enc-${n}`);
+    targetReadoutEls[n] = document.getElementById(`tgt-${n}`);
+  }
+}
+
+function renderErrors(nodes) {
+  const grid = $('err-grid');
+  grid.innerHTML = '';
+  if (!Array.isArray(nodes)) return;
+  for (const n of nodes) {
+    const row = document.createElement('div');
+    const has = (n.active_errors && n.active_errors !== '0x00000000');
+    row.className = (has ? 'text-red-400' : 'text-slate-500');
+    row.innerText = `node ${n.node_id}: active=${n.active_errors||'-'} disarm=${n.disarm_reason||'-'}`;
+    grid.appendChild(row);
+  }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  // Persist + restore WS URL.
+  const saved = localStorage.getItem('stable-bot-test-ws-url');
+  if (saved) $('ws-url').value = saved;
+  $('connect-btn').addEventListener('click', () => {
+    localStorage.setItem('stable-bot-test-ws-url', $('ws-url').value);
+    connect();
+  });
+  $('estop-btn').addEventListener('click', () => publishCmd({ cmd: 'e_stop' }));
+  $('disarm-all-btn').addEventListener('click', () => publishCmd({ cmd: 'deactivate' }));
+  $('disarm-all-btn-2').addEventListener('click', () => publishCmd({ cmd: 'deactivate' }));
+  $('arm-all-btn').addEventListener('click', () => publishCmd({ cmd: 'activate' }));
+  $('rest-all-btn').addEventListener('click', () => publishCmd({ cmd: 'go_to_rest' }));
+  $('get-limits-btn').addEventListener('click', () => publishCmd({ cmd: 'get_limits' }));
+  $('reload-limits-btn').addEventListener('click', () => publishCmd({ cmd: 'reload_limits' }));
+  $('err-read-btn').addEventListener('click', () => publishCmd({ cmd: 'read_errors' }));
+  $('err-clear-btn').addEventListener('click', () => publishCmd({ cmd: 'clear_errors' }));
+  $('diag-reconnect-btn').addEventListener('click', connect);
+  $('diag-probe-btn').addEventListener('click', () => publishCmd({ cmd: 'probe_graph' }));
+  $('diag-hardreset-btn').addEventListener('click', async () => {
+    if (!confirm('Hard reset the entire stable_bot stack? Any in-flight motion stops.')) return;
+    $('diag-output').innerText = 'requesting hard reset...';
+    try {
+      const r = await fetch('/reset', { method: 'POST' });
+      $('diag-output').innerText = await r.text();
+    } catch (e) {
+      $('diag-output').innerText = 'reset failed: ' + e + '\n(needs gui_server.py, not bare http.server)';
+    }
+  });
+  $('diag-launchlog-btn').addEventListener('click', async () => {
+    try {
+      const r = await fetch('/launch_status');
+      const j = await r.json();
+      $('diag-output').innerText =
+        `launch running: ${j.running}  pid: ${j.pid || 'n/a'}\n--- log tail ---\n` +
+        ((j.log_tail || '(empty)').split('\n').slice(-40).join('\n'));
+    } catch (e) {
+      $('diag-output').innerText = 'fetch failed: ' + e;
+    }
+  });
+  connect();  // auto-connect on load
+});
+</script>
+</body>
+</html>

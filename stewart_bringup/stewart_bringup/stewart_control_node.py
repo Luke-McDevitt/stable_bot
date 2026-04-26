@@ -1518,6 +1518,88 @@ class StewartControlNode(Node):
         try:
             if cmd == 'activate':
                 ok, reply_msg = self._arm_all_in_pos_mode()
+            elif cmd == 'get_limits':
+                # Return whatever's currently in self.limits PLUS the file
+                # path + mtime, so the test GUI can verify the controller
+                # is using the latest leg_limits.yaml (and not some stale
+                # cached version).
+                ok, reply_msg = True, "limits dumped"
+                extra['limits_in_memory'] = (
+                    {f'axis_{n}': {
+                        'lo': float(self.limits[n]['lo']),
+                        'hi': float(self.limits[n]['hi']),
+                        'rest': float(self.limits[n]['rest']),
+                    } for n in range(6)}
+                    if self.limits is not None else None)
+                extra['limits_file_path'] = LEG_LIMITS_PATH
+                try:
+                    st = os.stat(LEG_LIMITS_PATH)
+                    extra['limits_file_size'] = st.st_size
+                    extra['limits_file_mtime_unix'] = st.st_mtime
+                except OSError:
+                    extra['limits_file_size'] = None
+                    extra['limits_file_mtime_unix'] = None
+                # Also dump the raw file contents so the GUI can show
+                # the file vs in-memory side by side.
+                try:
+                    with open(LEG_LIMITS_PATH, 'r') as f:
+                        extra['limits_file_text'] = f.read()
+                except OSError as e:
+                    extra['limits_file_text'] = f"(read failed: {e})"
+            elif cmd == 'reload_limits':
+                # Force re-read of leg_limits.yaml from disk and refresh
+                # the feeder's pos_targets to the new neutral-pose rests.
+                # User's hypothesis 2026-04-26: an old cached limits is
+                # being used somewhere — this gives them a way to KNOW
+                # the file on disk is what's in memory.
+                try:
+                    self.limits = _load_leg_limits()
+                except Exception as e:
+                    ok, reply_msg = False, f"reload failed: {e}"
+                else:
+                    if self.limits is None:
+                        ok, reply_msg = False, (
+                            "leg_limits.yaml exists but failed validation "
+                            "(missing axis or bad values).")
+                    else:
+                        # Refresh feeder targets to new neutral rest.
+                        try:
+                            if self.feeder is not None and self.geom is not None:
+                                neutral_targets, _c = _compute_motor_targets(
+                                    (0, 0, 0), (0, 0, 0),
+                                    self.geom, self.limits)
+                                self.feeder.set_pos_targets(neutral_targets)
+                        except Exception as e:
+                            self.get_logger().warn(
+                                f"feeder refresh after reload failed: {e}")
+                        # Clear captured rest (limits supersedes).
+                        self.captured_rest_positions = None
+                        ok, reply_msg = True, (
+                            f"reloaded leg_limits.yaml from "
+                            f"{LEG_LIMITS_PATH}")
+            elif cmd == 'set_leg_target':
+                # Drive a single leg to an ABSOLUTE position (turns) using
+                # the existing per-leg jog flow internally. Soft limits +
+                # the feeder-level safety hook still apply.
+                # Payload: {"leg": N, "target_turns": X}
+                try:
+                    n = int(d.get('leg', -1))
+                    target = float(d.get('target_turns'))
+                except Exception:
+                    ok, reply_msg = False, "bad set_leg_target payload"
+                else:
+                    if not 0 <= n <= 5:
+                        ok, reply_msg = False, f"leg {n} out of range"
+                    elif self.listener is None:
+                        ok, reply_msg = False, "listener not running"
+                    else:
+                        enc = self.listener.get_all(max_age_s=1.0)
+                        if enc[n] is None:
+                            ok, reply_msg = False, (
+                                f"leg {n}: no fresh encoder reading")
+                        else:
+                            delta = target - float(enc[n])
+                            ok, reply_msg = self._do_jog_leg(n, delta)
             elif cmd == 'capture_endstop':
                 # Manual endstop capture for leg_limits.yaml without
                 # automatic stall-homing. Payload:
