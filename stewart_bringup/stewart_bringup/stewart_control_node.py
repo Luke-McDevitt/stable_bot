@@ -1202,16 +1202,19 @@ class StewartControlNode(Node):
     # enough to react before the soft limit, far enough to allow normal
     # operation away from the edge.
     VEL_LIMIT_BUFFER_TURNS = 0.02
-    # Runaway threshold: if a leg in pos mode has its encoder accelerating
-    # past this magnitude (turns/s²) for more than RUNAWAY_TICKS consecutive
-    # ticks, force-disarm. Tuned to fire on slams (typical 5+ turns/s
-    # acceleration) but tolerate normal go-to-rest motion (~0.5 turns/s).
-    RUNAWAY_VEL_TURNS_PER_S = 3.0
-    RUNAWAY_TICKS = 3   # 3 * 20 ms = 60 ms before firing
+    # Runaway threshold: ONLY fires when the target has been STABLE (not
+    # changed by more than RUNAWAY_TARGET_STABLE_TURNS in the last
+    # RUNAWAY_TICKS ticks) AND the encoder is moving fast in the wrong
+    # direction relative to the target. This avoids false-positives on
+    # normal jogs and pose moves, which legitimately produce high encoder
+    # velocity for a short time.
+    RUNAWAY_VEL_TURNS_PER_S = 5.0
+    RUNAWAY_TARGET_STABLE_TURNS = 0.005  # target hasn't moved by more than this
+    RUNAWAY_TICKS = 3   # 3 * 20 ms = 60 ms of sustained runaway before firing
     _last_safety_warn = 0.0
 
     # Per-leg encoder history for runaway detection.
-    # _enc_history[n] = (last_enc, last_t, consecutive_runaway_ticks)
+    # _enc_history[n] = (last_enc, last_t, consecutive_runaway_ticks, last_target)
     _enc_history = [None] * 6
 
     def _feeder_safety_check(self, modes, vel, pos_targets):
@@ -1240,14 +1243,12 @@ class StewartControlNode(Node):
             elif safe_pos[n] > hi:
                 safe_pos[n] = hi
 
-        # Runaway detection: in pos mode, if encoder velocity exceeds the
-        # threshold for several consecutive ticks, force-disarm that leg.
-        # Catches ODrives with misconfigured encoder direction, which
-        # produce closed-loop runaway as soon as CLOSED_LOOP_CONTROL is
-        # entered. Acts BEFORE the leg reaches an endstop in most cases
-        # (60 ms detection + ~10 ms CAN command latency, so up to ~70 ms
-        # of runaway slam — at 3 turns/s threshold this is ~15 mm of
-        # motion, hopefully shy of the endstop).
+        # Runaway detection: in pos mode, fire ONLY when the target has
+        # been stable AND the encoder is racing in the wrong direction.
+        # This catches an ODrive with misconfigured encoder direction
+        # (closed-loop runaway despite a steady target) without false-
+        # firing on legitimate jog/pose commanded motion (which legitimately
+        # produces high encoder velocity for a brief time).
         if self.listener is not None and self.feeder is not None:
             enc = self.listener.get_all(max_age_s=0.2)
             now = time.monotonic()
@@ -1255,52 +1256,60 @@ class StewartControlNode(Node):
                 if modes[n] != 'pos' or enc[n] is None:
                     self._enc_history[n] = None
                     continue
+                target = float(safe_pos[n])
                 hist = self._enc_history[n]
-                if hist is not None:
-                    prev_enc, prev_t, run_count = hist
-                    dt = now - prev_t
-                    if 0.005 < dt < 0.2:
-                        enc_vel = (enc[n] - prev_enc) / dt
-                        if abs(enc_vel) > self.RUNAWAY_VEL_TURNS_PER_S:
-                            run_count += 1
-                            if run_count >= self.RUNAWAY_TICKS:
-                                self.get_logger().error(
-                                    f"!!! RUNAWAY on leg {n}: encoder moving "
-                                    f"at {enc_vel:+.2f} turns/s "
-                                    f"(~{abs(enc_vel) * MM_PER_REV:.0f} mm/s) "
-                                    f"in pos mode for {run_count} ticks. "
-                                    f"FORCE-DISARMING leg {n}. Likely cause: "
-                                    f"ODrive node {n} has its encoder "
-                                    f"direction misconfigured — re-run motor "
-                                    f"+ encoder offset calibration in the "
-                                    f"ODrive GUI on Windows.")
-                                # Mark this leg as idle in feeder modes;
-                                # the feeder applies it next tick. ALSO
-                                # send STATE_IDLE directly via CAN so the
-                                # ODrive drops torque immediately.
-                                modes_local = list(modes)
-                                modes_local[n] = 'idle'
-                                # Update node-side armed flag.
-                                self.leg_armed[n] = False
-                                # Send IDLE via CAN (best-effort — feeder
-                                # owns the bus, so this race is benign).
-                                try:
-                                    _send_cmd(self.bus, n, CMD_SET_AXIS_STATE,
-                                              struct.pack('<I', STATE_IDLE))
-                                except Exception:
-                                    pass
-                                # Tell the feeder via its own setter so
-                                # the lock is respected.
-                                self.feeder.set_mode(n, 'idle')
-                                self._enc_history[n] = (enc[n], now, 0)
-                                continue
-                        else:
-                            run_count = 0
-                        self._enc_history[n] = (enc[n], now, run_count)
-                    else:
-                        self._enc_history[n] = (enc[n], now, 0)
+                if hist is None:
+                    self._enc_history[n] = (enc[n], now, 0, target)
+                    continue
+                prev_enc, prev_t, run_count, prev_target = hist
+                dt = now - prev_t
+                # Reject suspiciously old / new history entries.
+                if not (0.005 < dt < 0.2):
+                    self._enc_history[n] = (enc[n], now, 0, target)
+                    continue
+                # If the target has moved meaningfully, the controller is
+                # legitimately commanding motion. Reset the runaway counter.
+                target_moved = abs(target - prev_target) > self.RUNAWAY_TARGET_STABLE_TURNS
+                if target_moved:
+                    self._enc_history[n] = (enc[n], now, 0, target)
+                    continue
+                # Target stable. Check encoder velocity.
+                enc_vel = (enc[n] - prev_enc) / dt
+                error = target - enc[n]
+                # Encoder velocity should DRIVE error toward zero. If error
+                # > 0 we want enc_vel > 0 (encoder rising toward target);
+                # if error < 0 we want enc_vel < 0. If signs disagree AND
+                # encoder is moving fast, the encoder is DIVERGING from
+                # the target — that's runaway.
+                diverging = (error > 0 and enc_vel < 0) or (error < 0 and enc_vel > 0)
+                if (abs(enc_vel) > self.RUNAWAY_VEL_TURNS_PER_S
+                        and diverging):
+                    run_count += 1
+                    if run_count >= self.RUNAWAY_TICKS:
+                        self.get_logger().error(
+                            f"!!! RUNAWAY on leg {n}: target stable at "
+                            f"{target:+.3f}, encoder at {enc[n]:+.3f} "
+                            f"(error {error:+.3f}) but encoder velocity "
+                            f"{enc_vel:+.2f} turns/s "
+                            f"(~{abs(enc_vel) * MM_PER_REV:.0f} mm/s) is "
+                            f"DIVERGING from target for {run_count} ticks. "
+                            f"FORCE-DISARMING leg {n}. Most likely cause: "
+                            f"ODrive node {n} has motor/encoder direction "
+                            f"misconfigured — re-run motor + encoder offset "
+                            f"calibration in the ODrive GUI on Windows.")
+                        # Mark idle in feeder + clear armed; send IDLE via CAN.
+                        self.leg_armed[n] = False
+                        try:
+                            _send_cmd(self.bus, n, CMD_SET_AXIS_STATE,
+                                      struct.pack('<I', STATE_IDLE))
+                        except Exception:
+                            pass
+                        self.feeder.set_mode(n, 'idle')
+                        self._enc_history[n] = (enc[n], now, 0, target)
+                        continue
                 else:
-                    self._enc_history[n] = (enc[n], now, 0)
+                    run_count = 0
+                self._enc_history[n] = (enc[n], now, run_count, target)
 
         # Velocity safety — only relevant if any leg is in vel mode and we
         # have a fresh encoder reading to check against.
@@ -1718,11 +1727,14 @@ class StewartControlNode(Node):
         self.pub_control_result.publish(rm)
 
     # ---- command helpers (shared by service handlers and /control_cmd) ----
-    # Per-step jog cap — never let a single click move a leg by more
-    # than this magnitude. At MM_PER_REV = 71.047, 0.5 turns ≈ 35 mm.
-    # If the GUI sends something bigger, it's almost certainly a typo
-    # (or a misclick on a button with a too-large delta).
-    MAX_JOG_DELTA_TURNS = 0.5
+    # Per-step jog cap — defense against absurdly large delta values
+    # (typos, the input field accidentally getting set to 100, etc).
+    # Soft limits in leg_limits.yaml already clamp the actual final
+    # position, so a slightly oversize jog is harmless — it just
+    # gets clipped at lo/hi. 5.0 turns ≈ 355 mm, which is well past
+    # the entire stroke of any reasonable Stewart leg, so anything
+    # larger really is a misuse.
+    MAX_JOG_DELTA_TURNS = 5.0
 
     def _do_jog_leg(self, n, delta_turns):
         """Position-mode jog on one leg.
