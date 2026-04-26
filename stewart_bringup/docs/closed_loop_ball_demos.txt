@@ -5,10 +5,10 @@ Scope: Replace the open-loop rolling-ball demo with a vision-driven
 closed loop. Three demos: orbit (Demo 1), click-to-position (Demo 2),
 and path-drawing follow (Demo 3, stretch goal).
 Authors: Luke McDevitt + Claude (Opus 4.7).
-Last revised: 2026-04-26 (v6 — factory-calibration shortcut for
-Stages A/B; expanded list of shadowed-on-OAK comparisons; CSV + PNG
-exports from the plotter; KPI color thresholds locked at
-green < 5 mm / yellow < 15 mm / red ≥ 15 mm).
+Last revised: 2026-04-26 (v7 — GUI calibration button is Stage C
+only; Stages A/B are CLI-only to prevent operators accidentally
+overriding factory tuning; clarified that the existing
+web/index.html is already three-column).
 
 This plan supersedes the relevant sections of
 stewart_bringup/docs/NEXT_STEPS.md. It pulls in lecture material from
@@ -198,26 +198,46 @@ described in §9. No other changes to stewart_bringup are required.
 
 6. Camera calibration workflow
 
-Calibration runs on the Pi (where the OAK is plugged in), but
-the user-facing capture flow is via a button in the laptop’s GUI —
-the Pi is headless. scripts/calibrate_oak.py exposes a small ROS 2
-service interface that the GUI calls:
+Calibration runs on the Pi (where the OAK is plugged in). The
+user-facing flow is split by audience (locked v7, 2026-04-26):
 
--   /calibrate/capture_frame (Trigger) — grab one synced
-    chessboard pair (Stage A) or the leveled-platform ArUco frame
-    (Stage C). The script auto-detects the chessboard / board and
-    accepts or rejects the frame, returning a status to the GUI
-    (success: “frame N/30 captured”, failure: “chessboard not detected”).
--   /calibrate/solve (Trigger) — runs cv2.calibrateCamera /
-    cv2.stereoCalibrate / cv2.stereoRectify on the captured set
-    and writes the YAML if the acceptance gates pass.
--   /calibrate/reset (Trigger) — clears captured-frame buffer.
+-   GUI button — Stage C only. The laptop’s GUI exposes capture /
+    solve / reset for the camera-to-world ArUco-ring step only. This
+    is the operation that matters between demo runs (every camera arm
+    move re-runs it) and is the only one a non-developer operator
+    ever needs.
+
+-   CLI only — --stage factory, --stage A, --stage B. Reading
+    factory cal from EEPROM and any custom chessboard recalibration
+    happen only via SSH + python3 calibrate_oak.py on the Pi.
+    Reasoning: A and B override the OAK’s factory-tuned intrinsics
+    and stereo extrinsics. A misclick by an operator could replace a
+    working factory cal with a half-baked custom one and silently
+    degrade the controller. Gating these behind the CLI keeps them
+    available to advanced users without surfacing the foot-gun.
+
+The stewart_vision calibration ROS node therefore implements ONLY
+Stage C service handlers:
+
+-   /calibrate/capture_frame (Trigger) — grab one frame of the
+    leveled platform’s ArUco ring; auto-detects the board and
+    returns success (“ArUco ring detected, all 8 markers visible”)
+    or failure (“only 5 markers visible — check lighting and angle”).
+-   /calibrate/solve (Trigger) — cv2.aruco.estimatePoseBoard
+    over the accepted frames; writes oak_extrinsics.yaml if the
+    reprojection gate passes.
+-   /calibrate/reset (Trigger) — clears the captured-frame buffer.
+
+There is no /calibrate/stage selector exposed via ROS — Stages
+A/B literally cannot be triggered from the GUI even if someone
+malicious typed the right service name. They only run when the
+calibrate_oak.py CLI is invoked on the Pi with the explicit flag.
 
 The GUI’s Vision Debug panel shows the live OAK feed with detected
-chessboard corners drawn in real time, plus a counter “N/30 frames”
-and the three buttons above. The chessboard geometry comes from
-chessboard.yaml produced by generate_chessboard.py so changing
-the printed board doesn’t require code edits.
+ArUco markers drawn in real time, plus the three buttons above.
+The marker geometry comes from marker_layout.yaml produced by
+generate_aruco_ring.py so reprinting the ring doesn’t require code
+edits.
 
 scripts/calibrate_oak.py runs in three independent stages so that
 moving the camera only invalidates the cheap stage. Stages A and B
@@ -619,28 +639,31 @@ The GUI remains a single web/index.html Tailwind + roslibjs page
 served by gui_server.py. The page now uses a three-column layout
 to keep all live information visible at once.
 
-11.0 Three-column layout
+11.0 Three-column layout (already in web/index.html)
+
+The current web/index.html is already three-column on lg: breakpoint
+and above (<main class="grid lg:grid-cols-3"> with three
+<section class="lg:col-span-1"> children). On screens narrower than
+1280 px the columns stack vertically. The vision-driven demos add
+panels into the existing layout rather than restructuring it:
 
     ┌──────────────┬──────────────────────────────┬──────────────┐
     │   LEFT       │           MIDDLE              │   RIGHT      │
     │              │                               │              │
-    │  Vision      │  Demo control panels:         │  Existing    │
-    │  Debug       │   • Demo 1 (Orbit)            │  controls    │
-    │   • Live     │   • Demo 2 (Goto)             │   • Homing   │
-    │     stereo   │   • Demo 3 (Path) [stretch]   │   • Jog      │
-    │     feed     │  Each with Start / Stop +     │   • Level    │
-    │   • Status   │  graphical SVG disk view.     │   • Reset    │
-    │   • Latency  │                               │     stack    │
+    │  + Vision    │  + Demo 1 (Orbit)             │  Homing      │
+    │    Debug     │  + Demo 2 (Goto)              │  Jog         │
+    │  + Calib     │  + Demo 3 (Path) [stretch]    │  Level       │
+    │    Stage C   │   each with Start / Stop +    │  Reset stack │
+    │    only      │   graphical SVG disk view     │  (existing)  │
     │              │                               │              │
-    │  Encoder &   │                               │              │
-    │  current     │                               │              │
-    │  debug       │                               │              │
-    │  values      │                               │              │
+    │  Encoder &   │  (Open-loop "rolling ball"    │              │
+    │  current     │   panel hidden by default     │              │
+    │  debug       │   when vision is active)      │              │
     │  (existing)  │                               │              │
     └──────────────┴──────────────────────────────┴──────────────┘
 
-All three columns scroll independently. On screens narrower than
-1280 px the columns stack vertically (mobile-friendly fallback).
++ = NEW panels added by the vision work. Existing panels keep
+working unchanged.
 
 11.1 Left column — Vision Debug + existing diagnostics
 
@@ -666,21 +689,29 @@ Vision Debug (top of left column, collapsible):
 
 Calibration controls (collapsible sub-panel, hidden during demos):
 
--   Live OAK left-eye feed with detected chessboard / ArUco board
-    corners drawn in real time (so the user can see whether the
-    current pose is being accepted).
--   Frame counter “N/30 captured” for Stage A.
--   Three buttons:
+This panel exposes Stage C only — the ArUco-ring camera-to-world
+step that’s re-run after every camera arm move. Stages A/B are
+CLI-only by design (see §6).
+
+-   Live OAK left-eye feed with detected ArUco-ring corners drawn in
+    real time (so the user can see whether the current pose has all
+    8 markers visible before pressing Capture).
+-   Frame counter “N captured” — typically 1–3 frames is enough for
+    Stage C with a well-leveled platform; the solver accepts a
+    single frame as long as ≥ 3 markers are detected.
+-   Three buttons (only Stage C operations exposed via ROS):
     -   Capture frame — calls /calibrate/capture_frame. Result
-        toast: “frame N/30 captured” or “chessboard not detected, try
-        again” or “pose too similar to a captured one — vary angle”.
-    -   Solve — calls /calibrate/solve. Disabled until ≥ 30 frames.
-        Returns reprojection error per eye + epipolar error; refuses
-        to write the YAML if acceptance gates fail.
+        toast: “all 8 markers detected” / “only N/8 markers visible —
+        rotate camera or improve lighting”.
+    -   Solve — calls /calibrate/solve. Runs
+        cv2.aruco.estimatePoseBoard over the accepted frames; writes
+        oak_extrinsics.yaml if mean reprojection error < 2 px.
     -   Reset — clears the buffer.
--   Stage selector: “Stage A (intrinsics)” / “Stage B (stereo)” /
-    “Stage C (camera-to-world)”. Stage C is the one re-run after
-    every camera move; the others run rarely.
+
+The GUI does not offer a stage selector. Operators cannot
+override the OAK’s factory intrinsics or stereo extrinsics from
+the browser — those are protected behind the CLI flow on the Pi
+to prevent accidental damage to a working calibration.
 
 Encoder & current debug (bottom of left column): the existing
 plots and read-outs, unchanged.
@@ -904,19 +935,21 @@ New topics published by stewart_vision
   /ball_ref                     geometry_msgs/PointStamped                event-driven      Set by ref_generator_node
   ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-Calibration services (Stage A/B/C, called by the GUI)
+Calibration services (Stage C ONLY — A/B are CLI-only by design)
 
-  ------------------------------------------------------------------------------------------------------------------
-  Service                    Type                               Notes
-  -------------------------- ---------------------------------- ----------------------------------------------------
-  /calibrate/capture_frame   std_srvs/Trigger                   One frame per click; rejects bad poses.
+  -----------------------------------------------------------------------------------------------------------------------------------------------
+  Service                    Type                    Notes
+  -------------------------- ----------------------- --------------------------------------------------------------------------------------------
+  /calibrate/capture_frame   std_srvs/Trigger        One frame per click; rejects frames with < 3 ArUco markers visible.
 
-  /calibrate/solve           std_srvs/Trigger                   Runs the OpenCV solver, writes YAML if gates pass.
+  /calibrate/solve           std_srvs/Trigger        Runs cv2.aruco.estimatePoseBoard, writes oak_extrinsics.yaml if reprojection error < 2 px.
 
-  /calibrate/reset           std_srvs/Trigger                   Clears the captured-frame buffer.
+  /calibrate/reset           std_srvs/Trigger        Clears the captured-frame buffer.
+  -----------------------------------------------------------------------------------------------------------------------------------------------
 
-  /calibrate/stage           std_srvs/SetBool style or custom   Select A / B / C.
-  ------------------------------------------------------------------------------------------------------------------
+There is no stage selector service. Stages A/B (custom intrinsics
+and stereo recalibration) override the OAK’s factory tuning and
+therefore live behind the CLI only — see §6 for the rationale.
 
 New /control_cmd payloads (existing topic)
 
@@ -1259,9 +1292,19 @@ Resolved in v6 (2026-04-26)
   Q35                     Failure-mode fallbacks            OAK depth fail → toggle controller to /ball_xy_mono (already running, just no control authority by default). OAK device fail → watchdog to LEVEL_HOLD; operator power-cycles.
   -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+Resolved in v7 (2026-04-26)
+
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  #                       Question                         Decision
+  ----------------------- -------------------------------- -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Q36                     GUI calibration scope            Stage C ONLY (camera-to-world ArUco ring). Stages A/B never reachable from the GUI — they override factory tuning and live behind the CLI flow on the Pi to prevent operator misclicks.
+
+  Q37                     Existing web/index.html layout   Already three-column (lg:grid-cols-3); the vision work adds panels into the existing structure rather than restructuring.
+  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
 Still open
 
-None — spec locked at v6 (2026-04-26).
+None — spec locked at v7 (2026-04-26).
 
 ------------------------------------------------------------------------
 
