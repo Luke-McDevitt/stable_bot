@@ -541,6 +541,58 @@
       <p id="stab-msg" class="text-xs text-slate-400 mt-2 min-h-4"></p>
     </div>
 
+    <!-- Active Stabilization (Ball-Hold) — scaffold for v10; spec §11.7 -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700" id="ball-hold-panel">
+      <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">
+        Active Stabilization (Ball-Hold)
+        <span class="text-amber-400 normal-case text-xs">(scaffold for v10)</span>
+      </summary>
+      <p class="text-xs text-slate-500 mt-2 mb-2">
+        Keeps the ball at its current plate-frame position despite
+        base perturbations (someone bumps the table, bot on a wobbly
+        cart, slow tilt). Combines the existing plate-level loop
+        with <span class="mono">/base/imu/data</span> feedforward
+        and vision feedback. Workspace is limited to ~30 mm of
+        top-plate translation; falls back to plate-frame holding
+        past that.
+        <br><br>
+        Implementation deferred to v10. Math source of truth:
+        <span class="mono">stewart_vision/_ball_physics.py</span>
+        (<span class="mono">feedforward_tilt_for_base_accel</span>,
+        <span class="mono">saturation_fraction</span>; both unit-tested).
+        Design: spec §11.7. Reserved mode token:
+        <span class="mono">BALL_HOLD</span>.
+      </p>
+      <div class="grid grid-cols-3 gap-2 mt-2">
+        <button disabled
+          class="bg-emerald-700 rounded py-1 text-xs opacity-50 cursor-not-allowed"
+          title="Captures the ball's current plate-frame position as the hold target and engages BALL_HOLD mode (v10).">
+          Engage
+        </button>
+        <button disabled
+          class="bg-amber-700 rounded py-1 text-xs opacity-50 cursor-not-allowed"
+          title="Drops back to LEVEL_HOLD (v10).">
+          Disengage
+        </button>
+        <button disabled
+          class="bg-slate-600 rounded py-1 text-xs opacity-50 cursor-not-allowed"
+          title="Re-captures the current ball position as the new hold target without disengaging (v10).">
+          Recapture target
+        </button>
+      </div>
+      <div class="text-xs text-slate-500 mt-2 mono">
+        Target: <span id="bh-target">—</span>  ·
+        Saturation: <span id="bh-saturation">—</span>%  ·
+        Status: <span id="bh-status">not engaged</span>
+      </div>
+      <p class="text-xs text-amber-400 mt-2">
+        Limitations to surface for the operator: ~30 mm workspace
+        (saturates with large base motion), base-IMU drift over
+        long runs, ~25 Hz controller bandwidth. Off-platform
+        watchdog still applies.
+      </p>
+    </details>
+
     <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
       <h2 class="text-sm uppercase text-slate-400 mb-2">Routines (record / play)</h2>
 

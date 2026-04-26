@@ -69,3 +69,66 @@ def get_preset(name: str) -> dict:
         raise KeyError(
             f"unknown ball preset {name!r}; valid options: {valid}")
     return dict(BALL_PRESETS[name])  # shallow copy so callers can mutate
+
+
+# -- Active stabilization (BALL_HOLD mode, v10) ------------------------------
+#
+# The math for the base-IMU feedforward used by Ball-Hold mode lives here so
+# both the controller (stewart_control_node) and the unit tests can import
+# the same source of truth. Implementation of the actual closed loop is
+# deferred to v10 (see spec §11.7).
+
+GRAVITY_MPS2 = 9.81
+
+
+def feedforward_tilt_for_base_accel(
+    base_accel_mps2: float,
+    ball_alpha: float,
+    g: float = GRAVITY_MPS2,
+) -> float:
+    """Return the anticipatory tilt (radians) that cancels a horizontal
+    base-frame acceleration on a ball rolling on the platform.
+
+    Derivation (small-angle):
+        ẍ_ball_in_plate = α · g · sin θ  −  a_base
+        For ẍ_ball_in_plate = 0:
+            sin θ = a_base / (α · g)
+        Small angle: θ ≈ a_base / (α · g)
+
+    Sign convention: positive `base_accel_mps2` pushing the platform in
+    the +x direction needs a positive tilt about the y-axis (right-hand
+    rule), which makes the plate slope downward toward +x and creates
+    gravity-induced ball acceleration in the +x direction matching the
+    base.
+
+    Inputs:
+      base_accel_mps2: horizontal acceleration of the base in the
+        platform's x or y axis (m/s²). Apply once per axis.
+      ball_alpha: 5/7 for solid sphere, 3/5 for hollow sphere — pull
+        from BALL_PRESETS based on which ball is in use.
+      g: gravity (m/s²); override for testing.
+
+    Returns: tilt angle in radians. Caller is responsible for clipping
+    to the platform's tilt envelope (see global_limits.yaml).
+    """
+    if ball_alpha <= 0:
+        raise ValueError(f"ball_alpha must be > 0; got {ball_alpha}")
+    return base_accel_mps2 / (ball_alpha * g)
+
+
+def saturation_fraction(
+    commanded_tilt_rad: float,
+    max_safe_tilt_rad: float,
+) -> float:
+    """How close are we to the platform's tilt envelope?
+
+    Returns a value in [0, ∞). Values ≥ 1 mean we're saturated and
+    can't fully compensate for the requested motion — the operator's
+    base perturbation has exceeded what the Stewart workspace + tilt
+    cap can reject. The GUI surfaces this as a status indicator and
+    the controller should fall back to plate-frame holding when
+    saturation > 0.95 sustained for >100 ms (spec §11.7).
+    """
+    if max_safe_tilt_rad <= 0:
+        raise ValueError(f"max_safe_tilt_rad must be > 0; got {max_safe_tilt_rad}")
+    return abs(commanded_tilt_rad) / max_safe_tilt_rad

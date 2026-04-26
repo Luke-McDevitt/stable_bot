@@ -5,11 +5,12 @@ Scope: Replace the open-loop rolling-ball demo with a vision-driven
 closed loop. Three demos: orbit (Demo 1), click-to-position (Demo 2),
 and path-drawing follow (Demo 3, stretch goal).
 Authors: Luke McDevitt + Claude (Opus 4.7).
-Last revised: 2026-04-26 (v9 — 3D viewer scaffolded with deferred
-full implementation (§11.6); post-deployment iteration plan in §16;
-ball-type dropdown in the GUI header captures foam vs ping-pong into
-every bag (Q47); pytest unit-test scaffold added for pure-math + config
-schemas (Q48).
+Last revised: 2026-04-26 (v9.1 — Active Stabilization (Ball-Hold)
+mode scaffolded for v10 (§11.7): GUI panel with disabled controls,
+mode token BALL_HOLD reserved in ref_generator_node, feedforward
++ saturation math added to _ball_physics.py with unit tests. Full
+implementation (controller-side base-IMU feedforward) deferred — see
+§16 step 8.5).
 
 This plan supersedes the relevant sections of
 stewart_bringup/docs/NEXT_STEPS.md. It pulls in lecture material from
@@ -627,6 +628,14 @@ global_limits.yaml redundancy philosophy):
     with confidence ≥ 0.8 for 1 s. Manual is intentional — automatic
     re-arm during a “hand still on the platform” moment would be
     surprising.
+5.  Watchdog — saturation (BALL_HOLD only, v10) — when active
+    stabilization (§11.7) is engaged, the controller computes
+    saturation = |commanded_tilt| / max_safe_tilt per axis. If
+    saturation ≥ 0.95 sustained for > 100 ms, drop from BALL_HOLD
+    → LEVEL_HOLD with a toast. Below that, the GUI surfaces
+    saturation in the Ball-Hold panel (green / yellow / red). This
+    prevents the controller from demanding tilt the platform can’t
+    deliver and going unstable. Math: _ball_physics.saturation_fraction.
 
 The graphical disk in the Demo-2 / Demo-3 GUI draws the dead-zone in
 semi-opaque red so the operator can’t accidentally click or draw into
@@ -902,6 +911,89 @@ When the strobe condition is met:
 The strobe is GUI-only; the platform itself goes to LEVEL_HOLD
 without delay regardless of the GUI state.
 
+11.7 Active Stabilization — Ball-Hold mode (scaffolded v9.1, full implementation deferred to v10)
+
+Sits below the existing Stabilization panel in the middle column.
+Keeps the ball at its current plate-frame position despite base
+perturbations (someone bumps the table, bot on a wobbly cart, slow
+tilting surface). Co-located with the existing plate-level loop
+because both are “stabilization against base disturbance” — same
+mental category, different control variable.
+
+The two modes are mutually exclusive:
+
+  ------------------------------------------------------------------------------------------------------------------------------
+  Mode                            Control variable            Sensor feedback     Use case
+  ------------------------------- --------------------------- ------------------- ----------------------------------------------
+  Level (existing)                top-plate orientation       platform IMU        “keep the disc flat regardless of base tilt”
+
+  Ball-Hold (new, deferred v10)   ball position on the disc   base IMU + vision   “keep the ball put despite base motion”
+  ------------------------------------------------------------------------------------------------------------------------------
+
+Engage Ball-Hold:
+1. Captures the ball’s current (px, py) from /ball_state as the
+hold target.
+2. Switches to mode BALL_HOLD with that target embedded in the
+/control_cmd payload.
+3. Controller runs the existing PID against the captured target +
+adds a base-IMU feedforward layer.
+
+Math (lives in stewart_vision/_ball_physics.py)
+
+    # Anticipatory tilt that cancels a horizontal base-frame acceleration.
+    theta_ff = feedforward_tilt_for_base_accel(base_accel_mps2, ball_alpha)
+    # Equivalently: theta_ff ≈ base_accel / (alpha · g)
+
+Both feedforward_tilt_for_base_accel and saturation_fraction are
+unit-tested in test/test_ball_physics.py so the implementation in
+stewart_control_node (v10) is just integration work.
+
+Saturation graceful degradation (4th watchdog layer, see §10)
+
+The Stewart top plate has a tilt envelope (set by global_limits.yaml)
+and a translation workspace (~30 mm). Large base perturbations can
+exceed both. The controller computes
+saturation = |commanded_tilt| / max_safe_tilt per axis:
+
+  -------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Saturation                          Behavior
+  ----------------------------------- -------------------------------------------------------------------------------------------------------------------------
+  < 0.80                              normal operation; status indicator GREEN
+
+  0.80 – 0.95                         status YELLOW; toast “Ball-Hold approaching limit”
+
+  ≥ 0.95 sustained > 100 ms           drop from BALL_HOLD → LEVEL_HOLD; toast “Saturated, falling back to plate-level”; ball will drift in the base direction
+  -------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+This avoids the alternative failure mode where the controller
+demands tilt the platform can’t deliver and the loop becomes
+unstable.
+
+Limitations
+
+1.  ~30 mm translation workspace. Beyond that, BALL_HOLD silently
+    degrades to plate-level holding (the ball is along for the ride).
+2.  Base IMU drift. Over sustained motion (>30 s), velocity
+    integration drifts; ball position will slowly creep. Manageable
+    for demo-length perturbations.
+3.  ~25 Hz bandwidth. Controller runs at 50 Hz; perturbations
+    above ~25 Hz can’t be tracked. Hand-tap on the table = fine;
+    high-frequency vibration = not tracked.
+4.  Vision-link latency. Closed-loop correction needs /ball_state
+    at low latency. Hotspot congestion → oscillation. Surfaced via
+    the existing latency KPI in Vision Debug.
+
+Reserved interface (so v10 is purely additive)
+
+-   Mode token: BALL_HOLD (already accepted by ref_generator_node).
+-   Topic payload: mode:BALL_HOLD {x_mm: <float>, y_mm: <float>, ball: <preset>}
+-   GUI: “Active Stabilization (Ball-Hold)” collapsible panel with
+    disabled Engage / Disengage / Recapture target buttons +
+    saturation display.
+-   Ball-config integration: the feedforward uses ball.alpha from
+    the active ball_config payload (Q47), so foam-vs-ping-pong
+    swaps automatically retune the feedforward.
+
 11.6 3D viewer (scaffolded v9, full implementation deferred)
 
 A Three.js scene mirroring the platform state in real time. Lives as
@@ -1032,7 +1124,9 @@ The GUI uses the existing /control_cmd String topic to switch modes
 -   mode:BALL_TRACK_TRAJECTORY + JSON params (radius, period, dir, phase)
 -   mode:BALL_TRACK_GOTO + JSON target (x_mm, y_mm)
 -   mode:BALL_TRACK_PATH + JSON params (path_id, speed_mm_s, loop)
+-   mode:BALL_HOLD + JSON target (x_mm, y_mm, ball) — v10 (§11.7)
 -   z_offset:<mm> for the z-height slider
+-   ball_config:<json> — current ball preset (foam vs ping-pong, §11.7 + Q47)
 
 stewart_control_node already routes /control_cmd; we just add the
 new payload patterns to its dispatcher.
@@ -1516,9 +1610,54 @@ Resolved in v9 (2026-04-26)
   Q48                     Test policy                                 Yes, but pragmatic: pytest unit tests for pure-math + config schemas (ball physics, ArUco YAML loader, ball_safety.yaml, marker_layout.yaml). No CI; no hardware-loop tests. Run pytest stewart_vision/test/ locally before each push. v9 baseline: 35 passing, 3 cv2-dependent skips on the laptop, all passing on the Pi where opencv-contrib is installed.
   -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-Still open
+Resolved in v9.1 (2026-04-26)
 
-None — spec locked at v9 (2026-04-26).
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  #                       Question                                                           Decision
+  ----------------------- ------------------------------------------------------------------ ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  Q49                     Active Stabilization combined with existing Stabilization panel?   Yes, conceptually — the new “Active Stabilization (Ball-Hold)” panel is co-located with the existing Stabilization (Level) panel in the middle column. The two are mutually exclusive control modes (Level holds plate orientation; Ball-Hold holds ball position), but they share the “stabilize against base disturbance” parent concept.
+
+  Q50                     New mode token                                                     BALL_HOLD reserved in ref_generator_node._on_control_cmd. Payload: mode:BALL_HOLD {x_mm, y_mm, ball}.
+
+  Q51                     Saturation graceful degradation                                    4th watchdog layer (§10): saturation < 0.80 GREEN; 0.80–0.95 YELLOW + toast; ≥0.95 sustained 100 ms drops to LEVEL_HOLD with toast. Math via _ball_physics.saturation_fraction.
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Still open (Ball-Hold detail decisions, blocking spec §11.7)
+
+The scaffold reserves the mode and ships the math, but four UX
+details for the v10 implementation aren’t locked yet. Recommended
+defaults are below; confirm or override:
+
+1.  Standalone Ball-Hold OR a toggle on Demo 2? Two ways to expose
+    the base-IMU feedforward layer:
+    -   (a) standalone: separate Ball-Hold mode, captures current ball
+            position as target. (recommended for v10) — clean mental
+            model, simplest UX.
+
+    -   (b) layered: a “World-frame hold” checkbox on Demo 2 that adds
+            the same feedforward to a clicked goto target. Could also
+            extend to Demos 1 and 3 for orbit/path tracking that rejects
+            base motion.
+2.  What if no ball is detected when Engage is clicked?
+    -   (a) refuse; toast “no ball detected — place a ball on the
+            platform first” (recommended).
+
+    -   (b) wait; engage hold once ball appears.
+3.  While in Ball-Hold, can the operator click on the SVG to update
+    the hold target without disengaging?
+    -   (a) yes: clicking is treated like Demo 2’s retarget, just with
+            base-IMU feedforward layered on. (recommended)
+
+    -   (b) no: target is locked at engage time; must Recapture or
+            Disengage to change.
+4.  Saturation visual feedback granularity.
+    -   (a) status text + color (green/yellow/red) on saturation %
+            (recommended; consistent with no-beep policy).
+
+    -   (b) also a non-strobing border pulse on the GUI’s Ball-Hold
+            panel when YELLOW.
+
+    -   (c) audio chirp on YELLOW. (would break the no-beep precedent)
 
 ------------------------------------------------------------------------
 
@@ -1531,41 +1670,43 @@ proceeds in this order, one piece at a time, gated by physical
 observation. Don’t advance past a step until its corresponding
 DONE-WHEN gate in §14 is green.
 
-  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  #                 Step                                  What to flesh out                                                                                                                                   DONE-WHEN gate (§14)
-  ----------------- ------------------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------- -----------------------------------------
-  1                 Smoke test                            Full stack auto-launches; GUI loads; live RGB feed shows up; ArUco markers detected at 8/8 with platform leveled.                                   Milestones 1, 2
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  #                 Step                                  What to flesh out                                                                                                                                                                                                                                                                                                                                                                                DONE-WHEN gate (§14)
+  ----------------- ------------------------------------- ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ -------------------------------------------------------------------------------
+  1                 Smoke test                            Full stack auto-launches; GUI loads; live RGB feed shows up; ArUco markers detected at 8/8 with platform leveled.                                                                                                                                                                                                                                                                                Milestones 1, 2
 
-  2                 Stage-C calibration                   GUI button flow works end-to-end; reproj < 1 px.                                                                                                    Milestone 4
+  2                 Stage-C calibration                   GUI button flow works end-to-end; reproj < 1 px.                                                                                                                                                                                                                                                                                                                                                 Milestone 4
 
-  3                 Stub validation                       Manually publish a fake /ball_state from the CLI; confirm the SVG ball moves and Demo 2 click handler fires before any real ball detection works.   (no formal gate; sanity check)
+  3                 Stub validation                       Manually publish a fake /ball_state from the CLI; confirm the SVG ball moves and Demo 2 click handler fires before any real ball detection works.                                                                                                                                                                                                                                                (no formal gate; sanity check)
 
-  4                 V0 ball detection                     Verify oak_driver_node’s host-side HSV threshold finds the orange foam ball; tune HSV_LO / HSV_HI by watching the live feed.                        Milestone 6
+  4                 V0 ball detection                     Verify oak_driver_node’s host-side HSV threshold finds the orange foam ball; tune HSV_LO / HSV_HI by watching the live feed.                                                                                                                                                                                                                                                                     Milestone 6
 
-  5                 /ball_xy_mono                         Wire ball_localizer_node’s ray-plane projection. Hand-move the ball; ruler-test against the reported (x, y).                                        Milestone 7
+  5                 /ball_xy_mono                         Wire ball_localizer_node’s ray-plane projection. Hand-move the ball; ruler-test against the reported (x, y).                                                                                                                                                                                                                                                                                     Milestone 7
 
-  6                 KF on the mono path                   ball_kf_node smooths position + produces velocity. NIS in [0.5, 5] under hand motion.                                                               Milestone 9
+  6                 KF on the mono path                   ball_kf_node smooths position + produces velocity. NIS in [0.5, 5] under hand motion.                                                                                                                                                                                                                                                                                                            Milestone 9
 
-  7                 Closed-loop ball-centering (sanity)   Drop ball off-center; platform tilts to push it toward center; settles within ±10 mm in 10 s. Tune Kp first.                                        Milestone 10
+  7                 Closed-loop ball-centering (sanity)   Drop ball off-center; platform tilts to push it toward center; settles within ±10 mm in 10 s. Tune Kp first.                                                                                                                                                                                                                                                                                     Milestone 10
 
-  8                 Demo 1 — Orbit                        Ball-track-trajectory mode. Tune Kd to remove wobble, then small Ki for stiction. Reverse button works.                                             Milestone 11
+  8                 Demo 1 — Orbit                        Ball-track-trajectory mode. Tune Kd to remove wobble, then small Ki for stiction. Reverse button works.                                                                                                                                                                                                                                                                                          Milestone 11
 
-  9                 Demo 2 — Click-to-Goto                Same gains transfer; ±10 mm settling. Z-height slider commands pure heave.                                                                          Milestone 12
+  8.5               BALL_HOLD (Active Stabilization)      Implement controller-side base-IMU feedforward in stewart_control_node: subscribe to /base/imu/data, compute theta_ff from _ball_physics.feedforward_tilt_for_base_accel, add to PID output. Engage from the GUI’s Ball-Hold panel; bump the table by hand and watch the ball stay put within ±5 mm. Saturation graceful degradation kicks in past 95% commanded-tilt for >100 ms. Spec §11.7.   (no formal gate; ball stays within ±5 mm of target during a 200 mm hand-bump)
 
-  10                Stereo triangulation                  Implement /ball_xy_stereo in ball_localizer_node. /method_comparison shows green most of the time.                                                  (extends Milestone 8)
+  9                 Demo 2 — Click-to-Goto                Same gains transfer; ±10 mm settling. Z-height slider commands pure heave.                                                                                                                                                                                                                                                                                                                       Milestone 12
 
-  11                YOLO V1 detector                      Capture training frames via capture_training_frames.py; label; train YOLOv5-nano; deploy to OAK as /oak/ball/v1/rgb_pixel.                          Milestones 17, 18
+  10                Stereo triangulation                  Implement /ball_xy_stereo in ball_localizer_node. /method_comparison shows green most of the time.                                                                                                                                                                                                                                                                                               (extends Milestone 8)
 
-  12                Demo 3 — Path drawing                 Implement ref_generator_node’s path-mode arc-length traversal + smoothing + Loop closure + Reverse.                                                 Milestones 14, 15, 16
+  11                YOLO V1 detector                      Capture training frames via capture_training_frames.py; label; train YOLOv5-nano; deploy to OAK as /oak/ball/v1/rgb_pixel.                                                                                                                                                                                                                                                                       Milestones 17, 18
 
-  13                Plotter — plot_demo_run.py            rosbag2_py reader + matplotlib panels + comparison.csv + summary.json + HTML index. Closes the loop with the bag-recorder.                          Milestone 19
+  12                Demo 3 — Path drawing                 Implement ref_generator_node’s path-mode arc-length traversal + smoothing + Loop closure + Reverse.                                                                                                                                                                                                                                                                                              Milestones 14, 15, 16
 
-  14                3D viewer (Phase 1)                   Live Three.js scene: plate, ArUco, ball, trail with frame toggle, ref marker, drawn path. OrbitControls + reset. (§11.6)                            (no formal gate; visual diff vs SVG-2D)
+  13                Plotter — plot_demo_run.py            rosbag2_py reader + matplotlib panels + comparison.csv + summary.json + HTML index. Closes the loop with the bag-recorder.                                                                                                                                                                                                                                                                       Milestone 19
 
-  15                3D viewer (Phase 2)                   Plotly 3D in the post-run HTML report (in plot_demo_run.py).                                                                                        (no formal gate)
+  14                3D viewer (Phase 1)                   Live Three.js scene: plate, ArUco, ball, trail with frame toggle, ref marker, drawn path. OrbitControls + reset. (§11.6)                                                                                                                                                                                                                                                                         (no formal gate; visual diff vs SVG-2D)
 
-  16                3D viewer (Phase 3)                   Camera frustum, classical-method ghosts, Stewart leg rendering from /encoders + IK.                                                                 (no formal gate)
-  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  15                3D viewer (Phase 2)                   Plotly 3D in the post-run HTML report (in plot_demo_run.py).                                                                                                                                                                                                                                                                                                                                     (no formal gate)
+
+  16                3D viewer (Phase 3)                   Camera frustum, classical-method ghosts, Stewart leg rendering from /encoders + IK.                                                                                                                                                                                                                                                                                                              (no formal gate)
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 Pre-flight before pushing this code to the Pi
 

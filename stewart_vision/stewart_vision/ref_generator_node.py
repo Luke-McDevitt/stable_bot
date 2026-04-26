@@ -124,6 +124,7 @@ class RefGeneratorNode(Node):
             if mode not in (
                 'LEVEL_HOLD', 'BALL_TRACK_GOTO',
                 'BALL_TRACK_TRAJECTORY', 'BALL_TRACK_PATH',
+                'BALL_HOLD',  # active stabilization, scaffolded v9, full impl v10
             ):
                 self.get_logger().warn(f"Unknown mode: {mode}")
                 return
@@ -200,6 +201,14 @@ class RefGeneratorNode(Node):
             t = time.monotonic() - self.t0
             theta = direction * 2.0 * math.pi * t / T + phase
             return R * math.cos(theta), R * math.sin(theta)
+        if self.mode == 'BALL_HOLD':
+            # Active stabilization: hold at the captured target. The
+            # base-IMU feedforward layer that makes this useful lives
+            # in stewart_control_node (deferred to v10, spec §11.7).
+            # For now we just emit the stationary reference.
+            x = float(self.params.get('x_mm', 0.0))
+            y = float(self.params.get('y_mm', 0.0))
+            return x, y
         if self.mode == 'BALL_TRACK_PATH':
             # TODO: parameterize the uploaded path by arc length, advance
             # at self.params.get('speed_mm_s', 80) mm/s, support reverse

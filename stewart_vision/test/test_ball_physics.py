@@ -10,12 +10,15 @@ import pytest
 
 from stewart_vision._ball_physics import (
     BALL_PRESETS,
+    GRAVITY_MPS2,
     HOLLOW_ALPHA,
     HOLLOW_SPHERE_MOI_FACTOR,
     SOLID_ALPHA,
     SOLID_SPHERE_MOI_FACTOR,
     alpha_from_moi_factor,
+    feedforward_tilt_for_base_accel,
     get_preset,
+    saturation_fraction,
 )
 
 
@@ -97,3 +100,69 @@ def test_both_balls_are_40mm():
     for name in ('foam', 'ping_pong'):
         assert BALL_PRESETS[name]['diameter_mm'] == pytest.approx(40.0)
         assert BALL_PRESETS[name]['radius_mm'] == pytest.approx(20.0)
+
+
+# --- Active-stabilization (BALL_HOLD) feedforward (spec §11.7, deferred v10) -
+
+def test_feedforward_zero_at_zero_base_accel():
+    """No base motion → no anticipatory tilt."""
+    assert feedforward_tilt_for_base_accel(0.0, SOLID_ALPHA) == 0.0
+
+
+def test_feedforward_proportional_to_base_accel():
+    """Doubling the base acceleration doubles the required tilt."""
+    t1 = feedforward_tilt_for_base_accel(1.0, SOLID_ALPHA)
+    t2 = feedforward_tilt_for_base_accel(2.0, SOLID_ALPHA)
+    assert t2 == pytest.approx(2 * t1)
+
+
+def test_feedforward_sign_matches_base_direction():
+    """Positive base acceleration → positive tilt (per docstring sign convention)."""
+    assert feedforward_tilt_for_base_accel(+1.0, SOLID_ALPHA) > 0
+    assert feedforward_tilt_for_base_accel(-1.0, SOLID_ALPHA) < 0
+
+
+def test_feedforward_hollow_needs_more_tilt_than_solid():
+    """Same base accel: hollow ball (lower α) needs MORE tilt because
+    the same gravity component produces less linear acceleration on it.
+    """
+    a = 1.0  # m/s²
+    solid_tilt = feedforward_tilt_for_base_accel(a, SOLID_ALPHA)
+    hollow_tilt = feedforward_tilt_for_base_accel(a, HOLLOW_ALPHA)
+    assert hollow_tilt > solid_tilt
+    # Specific ratio: hollow / solid = (5/7) / (3/5) = 25/21 ≈ 1.19
+    assert hollow_tilt / solid_tilt == pytest.approx(25 / 21, rel=1e-9)
+
+
+def test_feedforward_invalid_alpha_raises():
+    with pytest.raises(ValueError):
+        feedforward_tilt_for_base_accel(1.0, ball_alpha=0.0)
+    with pytest.raises(ValueError):
+        feedforward_tilt_for_base_accel(1.0, ball_alpha=-0.5)
+
+
+def test_feedforward_uses_gravity_correctly():
+    """Sanity: the formula divides by α·g, so doubling g halves the tilt."""
+    a = 1.0
+    t_normal_g = feedforward_tilt_for_base_accel(a, SOLID_ALPHA, g=GRAVITY_MPS2)
+    t_double_g = feedforward_tilt_for_base_accel(a, SOLID_ALPHA, g=2 * GRAVITY_MPS2)
+    assert t_double_g == pytest.approx(t_normal_g / 2)
+
+
+def test_saturation_fraction_zero_below_limit():
+    assert saturation_fraction(0.0, max_safe_tilt_rad=0.5) == 0.0
+    assert saturation_fraction(0.1, max_safe_tilt_rad=0.5) == pytest.approx(0.2)
+
+
+def test_saturation_fraction_one_at_limit():
+    assert saturation_fraction(0.5, max_safe_tilt_rad=0.5) == pytest.approx(1.0)
+
+
+def test_saturation_fraction_uses_absolute_value():
+    """A negative tilt is just as saturated as a positive one of the same magnitude."""
+    assert saturation_fraction(-0.4, 0.5) == pytest.approx(saturation_fraction(0.4, 0.5))
+
+
+def test_saturation_fraction_invalid_max_raises():
+    with pytest.raises(ValueError):
+        saturation_fraction(0.1, max_safe_tilt_rad=0.0)
