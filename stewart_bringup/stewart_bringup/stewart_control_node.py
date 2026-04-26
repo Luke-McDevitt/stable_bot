@@ -720,10 +720,19 @@ class StewartControlNode(Node):
                 self.bus = None
 
     # ---- arm / disarm ----
-    def _arm_leg_internal(self, n, mode, current=6.0, vel_limit=None):
+    def _arm_leg_internal(self, n, mode, current=6.0, vel_limit=None,
+                          force_no_limits=False):
         """Arm a single leg in the given mode ('pos' or 'vel'), or disarm
         (mode='idle'). Feeder modes are updated BEFORE the ODrive state
-        transition so watchdog stays fed through the transition."""
+        transition so watchdog stays fed through the transition.
+
+        force_no_limits=True bypasses the leg_limits.yaml check for pos
+        mode. Only safe when the caller is going to hold the leg at its
+        CURRENT encoder reading and not command any new positions —
+        no soft-limit clamping happens, so any subsequent /set_pose or
+        /jog_leg can still drive into mechanical endstops. Used by the
+        'safe arm' path for pre-homing lock-in-place (spec: closed-loop
+        ball demos discussion 2026-04-26)."""
         assert mode in ('pos', 'vel', 'idle')
         if self.bus is None:
             if not self._open_bus_and_start_threads():
@@ -743,7 +752,7 @@ class StewartControlNode(Node):
             return True, f"leg {n} disarmed"
 
         # mode in ('pos', 'vel')
-        if mode == 'pos' and self.limits is None:
+        if mode == 'pos' and self.limits is None and not force_no_limits:
             return False, "pos mode needs leg_limits.yaml — run homing first"
         if vel_limit is None:
             vel_limit = self.soft_max_vel * 1.5
@@ -782,12 +791,14 @@ class StewartControlNode(Node):
         self.leg_armed[n] = True
         return True, f"leg {n} armed ({mode})"
 
-    def _arm_all_in_pos_mode(self, current=6.0, vel_limit=None):
-        if self.limits is None:
+    def _arm_all_in_pos_mode(self, current=6.0, vel_limit=None,
+                             force_no_limits=False):
+        if self.limits is None and not force_no_limits:
             return False, "leg_limits.yaml not available — run homing first"
         msgs = []
         for n in range(6):
-            ok, m = self._arm_leg_internal(n, 'pos', current, vel_limit)
+            ok, m = self._arm_leg_internal(
+                n, 'pos', current, vel_limit, force_no_limits=force_no_limits)
             msgs.append(m)
             if not ok:
                 return False, f"leg {n}: {m}"
@@ -797,6 +808,40 @@ class StewartControlNode(Node):
         # slightly sagged from gravity after disarm). User has to explicitly
         # "Go to rest" or slide the pose to move it.
         return True, "all 6 armed (pos mode, holding current position)"
+
+    def _safe_arm_in_place(self, current=6.0, vel_limit=None):
+        """Arm all 6 legs at their current encoder positions, bypassing
+        the leg_limits.yaml requirement. Use BEFORE homing to prevent
+        legs from dropping under gravity during ODrive bench tests or
+        partial homing attempts.
+
+        Pre-flight checks added because this skips the limits guard:
+          - bus must be open
+          - all 6 legs must report a fresh encoder reading
+          - listener must be running
+
+        After this, /set_pose and /jog_leg will refuse (limits is None)
+        — the legs hold rigidly at their current positions and can ONLY
+        be released by Disarm or by running homing.
+        """
+        if self.bus is None:
+            if not self._open_bus_and_start_threads():
+                return False, "can't open can0"
+        if self.listener is None:
+            return False, "encoder listener not running"
+        enc = self.listener.get_all(max_age_s=1.0)
+        missing = [n for n in range(6) if enc[n] is None]
+        if missing:
+            return False, (
+                f"safe arm refused: legs {missing} have no fresh encoder "
+                f"reading. Power-cycle the ODrive(s) and try again.")
+        ok, msg = self._arm_all_in_pos_mode(
+            current=current, vel_limit=vel_limit, force_no_limits=True)
+        if ok:
+            return True, ("all 6 safe-armed in pos mode at current "
+                          "positions. /set_pose and /jog_leg are blocked "
+                          "until limits exist (run homing).")
+        return ok, msg
 
     def _disarm_internal(self):
         """Send all legs to IDLE and restore user-default mode + limits."""
@@ -990,6 +1035,11 @@ class StewartControlNode(Node):
         try:
             if cmd == 'activate':
                 ok, reply_msg = self._arm_all_in_pos_mode()
+            elif cmd == 'safe_arm':
+                # Lock all 6 legs at their CURRENT encoder positions,
+                # bypassing the leg_limits.yaml requirement. Used before
+                # homing to prevent legs from dropping during bench tests.
+                ok, reply_msg = self._safe_arm_in_place()
             elif cmd == 'deactivate' or cmd == 'e_stop':
                 self._disarm_internal()
                 ok, reply_msg = True, "all 6 disarmed"

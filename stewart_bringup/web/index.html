@@ -796,6 +796,33 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
         you physically move each leg to its top position, then press
         <span class="mono">[ENTER]</span> in the prompt to record it.
       </p>
+
+      <!-- Pre-homing safety: lock all legs at their current positions so
+           ODrive bench tests + partial homing attempts don't drop them
+           into the bottom endstops. Bypasses the leg_limits.yaml gate
+           (this command holds in place; it doesn't permit /set_pose
+           or /jog_leg, which still need limits). -->
+      <div class="mb-3 border border-rose-700 bg-rose-900/20 rounded p-2">
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex-1">
+            <div class="text-xs uppercase text-rose-300 font-semibold mb-1">
+              Pre-homing safety
+            </div>
+            <p class="text-xs text-slate-400 mb-0">
+              Lock all 6 legs at their <i>current</i> positions so they
+              don't slam into the bottom endstop during ODrive tests or
+              between homing attempts. After this, only Disarm and a
+              successful homing can release them — pose / jog stay blocked
+              until <span class="mono">leg_limits.yaml</span> exists.
+            </p>
+          </div>
+        </div>
+        <button id="safe-arm-btn"
+                class="w-full mt-2 bg-rose-700 hover:bg-rose-600 rounded py-2 text-sm font-semibold">
+          🔒 Arm in place (safe)
+        </button>
+        <p id="safe-arm-msg" class="text-xs text-slate-400 mt-1 min-h-4 mono"></p>
+      </div>
       <div class="space-y-2 mb-2">
         <div>
           <div class="text-xs text-slate-400 mb-1">Legs to home:</div>
@@ -1074,6 +1101,10 @@ function setupROSInterface() {
         toast('routine-msg', line, r.success);
         if (Array.isArray(r.routines)) populateRoutineDropdown(r.routines);
         if (Array.isArray(r.keyframes)) renderKeyframeList(r.keyframes);
+        return;
+      }
+      if (r.cmd === 'safe_arm') {
+        toast('safe-arm-msg', line, r.success);
         return;
       }
       if (r.cmd === 'probe_graph') {
@@ -1867,6 +1898,17 @@ window.addEventListener('DOMContentLoaded', () => {
   $('pose-send').addEventListener('click', sendPose);
   $('pose-zero').addEventListener('click', zeroPose);
 
+  $('safe-arm-btn').addEventListener('click', () => {
+    if (!confirm(
+      "Lock all 6 legs at their CURRENT positions?\n\n" +
+      "After this:\n" +
+      "  • legs hold rigidly via POSITION_CONTROL\n" +
+      "  • Disarm releases them\n" +
+      "  • /set_pose and /jog_leg are blocked until homing succeeds")) return;
+    const msgEl = $('safe-arm-msg');
+    if (msgEl) { msgEl.innerText = 'arming...'; msgEl.className = 'text-xs text-slate-400 mt-1 min-h-4 mono'; }
+    publishCmd({ cmd: 'safe_arm' });
+  });
   $('home-bottom-btn').addEventListener('click', homeBottomEndstops);
   $('home-top-btn').addEventListener('click', captureTopOfStroke);
   $('homing-start').addEventListener('click', startHoming);
