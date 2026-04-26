@@ -982,36 +982,66 @@ class StewartControlNode(Node):
         out = dict(existing)  # start from existing, override per-leg as we go
         legs_written = []
         legs_skipped = []
-        legs_derived = []  # legs where one endstop was derived from default_stroke
+        legs_derived = []  # legs where one endstop was derived
         ts = datetime.datetime.utcnow().isoformat(timespec='seconds') + '+00:00'
         for n in range(6):
             b, t = bot[n], top[n]
             if b is None and t is None:
-                # Nothing captured for this leg — preserve any existing entry
-                # (already there in `out` from the existing dict).
+                # Nothing captured for this leg — preserve any existing entry.
                 if f'axis_{n}' in out:
                     legs_skipped.append(n)
                 continue
 
-            # Default sign convention from project memory: positive=down,
-            # so up direction = negative. If both captured, use observed sign.
+            # SAFETY: determine the per-leg sign convention (signed stroke
+            # from min toward max) WITHOUT guessing.
+            #
+            # 1. If both endstops captured this round: use observed.
+            # 2. If only one captured + this leg has prior data in
+            #    leg_limits.yaml: use the prior signed stroke. This handles
+            #    encoder re-zeroing while preserving the per-leg direction
+            #    that was empirically correct before.
+            # 3. Otherwise: REFUSE. Guessing a default direction is what
+            #    caused the slam on 2026-04-26 — never again.
+            signed_stroke = None
             if b is not None and t is not None:
-                if abs(t - b) < 0.01:
+                signed_stroke = t - b
+                if abs(signed_stroke) < 0.01:
                     return False, (
                         f"leg {n}: bottom and top capture are too close "
-                        f"({t - b:+.4f} turns). Did you capture them at "
-                        f"the same physical position?")
-                up_dir = 1.0 if (t - b) > 0 else -1.0
+                        f"({signed_stroke:+.4f} turns). Did you capture "
+                        f"them at the same physical position?")
             else:
-                # Convention assumption: positive encoder = leg extended
-                # downward → top is in the negative direction from bottom.
-                up_dir = -1.0
-                if b is not None:
-                    t = b + up_dir * default_stroke_turns
-                else:  # t is not None, b is None
-                    b = t - up_dir * default_stroke_turns
+                # Single-endstop case. Look up prior data for this leg.
+                ax_existing = existing.get(f'axis_{n}', {}) or {}
+                ex_min = ax_existing.get('min_pos_turns')
+                ex_max = ax_existing.get('max_pos_turns')
+                if (ex_min is not None and ex_max is not None
+                        and abs(float(ex_max) - float(ex_min)) > 0.01):
+                    # Use the magnitude clamp: prefer caller-supplied
+                    # default_stroke_turns scaled by the observed sign,
+                    # so an explicit user override still applies.
+                    sign = 1.0 if (float(ex_max) - float(ex_min)) > 0 else -1.0
+                    signed_stroke = sign * default_stroke_turns
+                else:
+                    return False, (
+                        f"leg {n}: only one endstop captured AND no prior "
+                        f"leg_limits.yaml entry to infer the per-leg sign "
+                        f"convention. REFUSING to guess — guessing was the "
+                        f"slam bug on 2026-04-26. Capture BOTH endstops for "
+                        f"leg {n} (or first run a working calibration of any "
+                        f"leg as a sign reference) before saving.")
+
+            # Derive whichever endstop wasn't captured.
+            if b is None:
+                b = t - signed_stroke
+                legs_derived.append(n)
+            elif t is None:
+                t = b + signed_stroke
                 legs_derived.append(n)
 
+            # Rest is rest_offset_turns "above" bottom, where "above" = the
+            # signed direction toward top.
+            up_dir = 1.0 if signed_stroke > 0 else -1.0
             rest = b + up_dir * rest_offset_turns
             out[f'axis_{n}'] = {
                 'min_pos_turns': float(b),
@@ -1020,7 +1050,8 @@ class StewartControlNode(Node):
                 'homed_at': ts,
                 'source': 'manual_endstop_capture',
                 'rest_offset_turns': float(rest_offset_turns),
-                'derived_top': n in legs_derived if t is not None and bot[n] is not None and top[n] is None else False,
+                'derived_endstop': n in legs_derived,
+                'signed_stroke_turns': float(signed_stroke),
             }
             legs_written.append(n)
 
@@ -1534,7 +1565,15 @@ class StewartControlNode(Node):
         return True, (f"clamped at {new_target:+.4f}" if clamped
                       else f"L{n} → {new_target:+.4f}")
 
-    def _do_set_pose(self, x, y, z, r, p, yw):
+    # Hard safety cap on per-leg motion commanded by a single pose. At
+    # MM_PER_REV = 71.047, 0.5 turns ≈ 35 mm of leg extension; anything
+    # bigger usually means a sign error in leg_limits.yaml, a stale
+    # encoder reading, or commanding a pose far outside the reachable
+    # workspace. Refusing rather than executing avoids slamming an
+    # endstop. Bypass this only with an explicit unsafe override.
+    MAX_POSE_DELTA_TURNS = 0.5
+
+    def _do_set_pose(self, x, y, z, r, p, yw, allow_large=False):
         if not self.armed:
             return False, "not armed"
         if self.limits is None:
@@ -1545,6 +1584,35 @@ class StewartControlNode(Node):
             return True, "pose set (level loop will track)"
         targets, any_clamped = _compute_motor_targets(
             (x, y, z), (r, p, yw), self.geom, self.limits)
+
+        # SAFETY: refuse to commit if any leg would jump >MAX_POSE_DELTA_TURNS
+        # from its current encoder reading. This is the last line of defense
+        # against the 2026-04-26 slamming bug — even if leg_limits.yaml has
+        # the wrong sign for one leg, this stops the motion before it reaches
+        # the endstop.
+        if not allow_large and self.listener is not None:
+            enc = self.listener.get_all(max_age_s=1.0)
+            offending = []
+            for i in range(6):
+                if enc[i] is None:
+                    offending.append(f"leg{i}: no fresh encoder")
+                    continue
+                delta = float(targets[i]) - float(enc[i])
+                if abs(delta) > self.MAX_POSE_DELTA_TURNS:
+                    offending.append(
+                        f"leg{i}: target={targets[i]:+.3f} would jump "
+                        f"{delta:+.3f} turns (~{abs(delta) * MM_PER_REV:.1f} "
+                        f"mm) from current {enc[i]:+.3f}")
+            if offending:
+                return False, (
+                    "POSE REFUSED — would cause large per-leg moves "
+                    "(>{:.2f} turns ≈ {:.0f} mm). Likely cause: a leg's "
+                    "sign convention in leg_limits.yaml doesn't match the "
+                    "current encoder zero. Recapture endstops with both "
+                    "BOTTOM and TOP for the offending leg(s). Details: "
+                    .format(self.MAX_POSE_DELTA_TURNS,
+                            self.MAX_POSE_DELTA_TURNS * MM_PER_REV)
+                    + "; ".join(offending))
         self.feeder.set_pos_targets(targets)
         return True, ("pose sent (CLAMPED)" if any_clamped else "pose sent")
 

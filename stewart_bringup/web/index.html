@@ -877,19 +877,32 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
         </div>
 
         <label class="text-xs text-slate-400 block mb-1">
-          Rest offset above BOTTOM (turns):
+          Rest offset above BOTTOM:
           <div class="flex items-center gap-2">
-            <input id="rest-offset-slider" type="range" min="0.05" max="0.50" step="0.01" value="0.20" class="flex-1">
-            <span id="rest-offset-readout" class="mono text-sm w-16 text-right">0.20</span>
+            <input id="rest-offset-slider" type="range" min="0.005" max="0.30" step="0.005" value="0.05" class="flex-1">
+            <span id="rest-offset-readout" class="mono text-sm w-32 text-right">0.050 turns / 3.6 mm</span>
           </div>
+          <span class="text-slate-500">
+            At MM_PER_REV = 71.047, 0.05 turns ≈ 3.6 mm. Default lowered
+            from 0.20 after the 2026-04-26 slam — that was a 14 mm move
+            commanded in (it turned out) the wrong direction for one leg.
+            Smaller offsets are safer if anything's off.
+          </span>
         </label>
         <label class="text-xs text-slate-400 block mb-2">
-          Default stroke when only BOTTOM captured (turns):
+          Default stroke (turns) — used only when BOTTOM is captured but
+          TOP isn't:
           <div class="flex items-center gap-2">
             <input id="stroke-turns-input" type="number" step="0.01" value="3.00"
                    class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
           </div>
-          <span class="text-slate-500">Used to derive max_pos = min_pos − stroke when TOP isn't captured. Your prior leg_limits had ~3.20 turns.</span>
+          <span class="text-slate-500">
+            <b>Refusal NEW v9.x:</b> if there's no prior leg_limits entry
+            for a leg AND only one endstop is captured, the save will refuse
+            with a clear error (rather than guessing the per-leg sign and
+            slamming an endstop). Capture both endstops for that leg, or
+            do at least one full both-endstop calibration as a sign reference.
+          </span>
         </label>
 
         <div class="grid grid-cols-2 gap-2">
@@ -2011,9 +2024,17 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   // --- Manual endstop capture (recommended homing flow) ---
+  // 71.047 mm of leg extension per motor revolution, per stewart_control_node.MM_PER_REV.
+  const MM_PER_REV = 71.047;
+  function fmtRestOffset(turns) {
+    const mm = turns * MM_PER_REV;
+    return turns.toFixed(3) + ' turns / ' + mm.toFixed(1) + ' mm';
+  }
   $('rest-offset-slider').addEventListener('input', (e) => {
-    $('rest-offset-readout').innerText = parseFloat(e.target.value).toFixed(2);
+    $('rest-offset-readout').innerText = fmtRestOffset(parseFloat(e.target.value));
   });
+  // Initial readout on page load
+  $('rest-offset-readout').innerText = fmtRestOffset(parseFloat($('rest-offset-slider').value));
   // Leg-selection helpers
   $('cap-leg-all').addEventListener('click', () => {
     [0,1,2,3,4,5].forEach(n => $(`cap-leg-${n}`).checked = true);
