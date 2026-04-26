@@ -6,21 +6,41 @@
 <script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
-  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; transition: background-color 200ms; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
   input[type=range] { accent-color: rgb(59 130 246); }
+  /* Off-platform watchdog visual feedback (spec §11.5):
+     ~3 Hz strobe for 3 s, then dim red sticks until manual re-arm. */
+  @keyframes ball-lost-strobe {
+    0%, 100% { background-color: rgb(15 23 42); }   /* slate-900 */
+    50%      { background-color: rgb(127 29 29); }  /* red-900 */
+  }
+  body.ball-lost-strobing { animation: ball-lost-strobe 0.33s linear 9; }
+  body.ball-lost-dim      { background-color: rgb(60 20 20); }
+  /* SVG cursor while drawing a Demo-3 path */
+  .draw-mode { cursor: crosshair; }
 </style>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen">
 
 <header class="bg-slate-800 border-b border-slate-700">
-  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
     <h1 class="text-lg font-semibold">Stable-Bot Stewart Platform</h1>
-    <div class="flex items-center gap-3">
-      <span id="conn-dot" class="w-3 h-3 rounded-full bg-red-500"></span>
+    <div class="flex items-center gap-3 flex-wrap">
+      <!-- rosbridge connection -->
+      <span id="conn-dot" class="w-3 h-3 rounded-full bg-red-500" title="rosbridge"></span>
       <span id="conn-label" class="text-sm text-slate-300">disconnected</span>
-      <input id="ws-url" value="ws://localhost:9090"
-             class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-56">
+      <!-- vision stack heartbeat (spec v8 §11.0): green when /oak/rgb/image_compressed
+           has produced a frame in the last 2 s -->
+      <span id="vis-dot" class="w-3 h-3 rounded-full bg-slate-600" title="vision stack"></span>
+      <span id="vis-label" class="text-xs text-slate-400">vision idle</span>
+      <!-- active mode label -->
+      <span id="mode-label"
+            class="text-xs mono px-2 py-0.5 rounded bg-slate-700 text-slate-300"
+            title="active demo mode">LEVEL_HOLD</span>
+      <input id="ws-url" value="ws://stablebot.local:9090"
+             class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-56"
+             title="ws://stablebot.local works on most hotspots; if mDNS fails, use ws://<pi-ip>:9090">
       <button id="connect-btn" class="text-sm bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded">Connect</button>
       <button id="estop-btn"
               class="text-sm font-bold uppercase bg-red-600 hover:bg-red-500 px-4 py-2 rounded shadow">
@@ -32,8 +52,67 @@
 
 <main class="max-w-7xl mx-auto p-4 grid gap-4 lg:grid-cols-3">
 
-  <!-- LEFT COLUMN: status + speed cap + arming + live readouts -->
+  <!-- LEFT COLUMN: vision debug + calibration + status + arming + live readouts -->
   <section class="lg:col-span-1 space-y-4">
+
+    <!-- Vision Debug (spec v8 §11.1): live OAK feed + telemetry strip -->
+    <details open class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">Vision Debug</summary>
+      <div class="mt-2">
+        <div id="vision-feed-wrap" class="bg-slate-900 rounded relative overflow-hidden" style="aspect-ratio: 16 / 9;">
+          <img id="vision-feed-img" alt="(no feed)"
+               class="w-full h-full object-contain block" style="display:none;">
+          <div id="vision-feed-empty"
+               class="absolute inset-0 flex items-center justify-center text-xs text-slate-500">
+            no /oak/rgb/image_compressed
+          </div>
+          <div id="vision-feed-fps"
+               class="absolute top-1 right-1 text-xs mono bg-slate-800/80 px-2 py-0.5 rounded">— fps</div>
+        </div>
+        <div class="grid grid-cols-2 gap-1 text-xs mt-2 text-slate-400">
+          <label class="flex items-center gap-2"><input id="vis-show-stereo" type="checkbox"> stereo pair</label>
+          <label class="flex items-center gap-2"><input id="vis-show-disparity" type="checkbox"> disparity</label>
+        </div>
+        <!-- Telemetry strip (color-coded comparison KPIs, spec §11.1) -->
+        <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-3 mono">
+          <div>ArUco markers: <span id="vis-aruco-n">—</span>/8</div>
+          <div>KF NIS: <span id="vis-kf-nis">—</span></div>
+          <div class="col-span-2">e2e latency: <span id="vis-latency">—</span> ms</div>
+          <div>OAK↔mono: <span id="vis-cmp-mono" class="text-slate-300">—</span> mm</div>
+          <div>OAK↔stereo: <span id="vis-cmp-stereo" class="text-slate-300">—</span> mm</div>
+          <div class="col-span-2">mono↔stereo: <span id="vis-cmp-mm" class="text-slate-300">—</span> mm</div>
+        </div>
+        <p class="text-xs text-slate-500 mt-2">
+          Color: <span class="text-emerald-400">green</span>&nbsp;&lt;&nbsp;5 mm,
+          <span class="text-yellow-400">yellow</span>&nbsp;&lt;&nbsp;15 mm,
+          <span class="text-red-400">red</span>&nbsp;≥&nbsp;15 mm.
+        </p>
+      </div>
+    </details>
+
+    <!-- Calibration (Stage C only, spec v7 §6 + §11.1) -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">Calibration (Stage C)</summary>
+      <p class="text-xs text-slate-500 mt-2 mb-2">
+        Camera-to-world via the ArUco ring. Re-run after every camera arm move.
+        Stages A/B (custom intrinsics + stereo) are <b>CLI-only on the Pi</b>
+        to protect factory tuning.
+      </p>
+      <div class="text-xs mb-2 mono">
+        Markers visible: <span id="cal-markers">—</span>/8 ·
+        Frames captured: <span id="cal-frames">0</span>
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <button id="cal-capture-btn"
+                class="bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">Capture</button>
+        <button id="cal-solve-btn"
+                class="bg-blue-600 hover:bg-blue-500 rounded py-1 text-xs">Solve</button>
+        <button id="cal-reset-btn"
+                class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">Reset</button>
+      </div>
+      <div id="cal-status"
+           class="text-xs text-slate-400 mt-2 mono whitespace-pre-wrap min-h-4"></div>
+    </details>
 
     <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
       <h2 class="text-sm uppercase text-slate-400 mb-2">Status</h2>
@@ -153,8 +232,173 @@
     </div>
   </section>
 
-  <!-- MIDDLE COLUMN: jog + pose -->
+  <!-- MIDDLE COLUMN: closed-loop demos (top), then jog + pose + legacy demo -->
   <section class="lg:col-span-1 space-y-4">
+
+    <!-- Shared SVG canvas for Demos 1, 2, 3 (spec v8 §11.0, §11.2) -->
+    <div id="demo-svg-wrap" class="bg-slate-800 rounded-lg p-3 border-2 border-slate-700 transition-colors duration-200">
+      <h2 class="text-sm uppercase text-slate-400 mb-2 flex justify-between items-center">
+        <span>Demos</span>
+        <span class="text-xs mono normal-case px-2 py-0.5 rounded bg-slate-700"
+              id="demo-mode-label-mid">LEVEL_HOLD</span>
+      </h2>
+      <div class="bg-slate-900 rounded p-1">
+        <!-- viewBox is in mm (platform frame). +x right, +y up.
+             SVG y grows downward, so we use scale(1, -1) on the inner group. -->
+        <svg id="demo-svg" viewBox="-220 -220 440 440"
+             class="w-full block" style="aspect-ratio: 1;">
+          <g transform="scale(1, -1)">
+            <!-- platform disk -->
+            <circle cx="0" cy="0" r="200" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+            <!-- ArUco ring guide circle -->
+            <circle cx="0" cy="0" r="120" stroke="#64748b" fill="none"
+                    stroke-width="0.6" stroke-dasharray="3 3"/>
+            <!-- 8 marker squares (filled in by JS) -->
+            <g id="aruco-marks" stroke="#475569" fill="rgba(71,85,105,0.25)" stroke-width="0.5"></g>
+            <!-- dead-zone (no-go for ball edge) -->
+            <circle cx="0" cy="0" r="30" fill="rgba(220,38,38,0.55)" stroke="#dc2626" stroke-width="1"/>
+            <!-- demo 3 path polyline -->
+            <polyline id="demo3-path" stroke="#22c55e" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <polyline id="demo3-path-erased" stroke="#475569" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.6"/>
+            <!-- predicted path / target -->
+            <line id="pred-path" stroke="#60a5fa" stroke-dasharray="4 4" stroke-opacity="0.6" stroke-width="1" visibility="hidden"/>
+            <!-- ball trail -->
+            <polyline id="ball-trail" stroke="#60a5fa" stroke-width="1" fill="none" stroke-opacity="0.5"/>
+            <!-- ref marker (target) -->
+            <circle id="ref-marker" cx="0" cy="0" r="9" fill="none" stroke="#60a5fa" stroke-width="2" visibility="hidden"/>
+            <!-- ball -->
+            <circle id="ball-dot" cx="0" cy="0" r="6" fill="#60a5fa"/>
+          </g>
+        </svg>
+      </div>
+      <p class="text-xs text-slate-500 mt-1">
+        SVG units = mm in platform frame. Click to set Demo-2 target when armed.
+      </p>
+    </div>
+
+    <!-- Demo 1: Orbit (closed-loop, spec v8 §11.2.1) -->
+    <div id="demo1-panel" class="bg-slate-800 rounded-lg p-4 border-2 border-slate-700 transition-colors duration-200">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Demo 1 — Orbit</h2>
+      <div class="grid grid-cols-2 gap-2 text-xs mb-2">
+        <label>Radius (mm)
+          <input id="d1-radius" type="number" min="35" max="195" step="5" value="80"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>Period (s)
+          <input id="d1-period" type="number" min="1" max="10" step="0.5" value="4"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label class="col-span-2">Direction
+          <select id="d1-dir" class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+            <option value="CCW">CCW</option>
+            <option value="CW">CW</option>
+          </select>
+        </label>
+        <label class="col-span-2 flex items-center gap-2 text-slate-400">
+          <input id="d1-rec-images" type="checkbox"> record images in bag (large; off for routine runs)
+        </label>
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <button id="d1-start-btn"
+                class="bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">Start</button>
+        <button id="d1-stop-btn"
+                class="bg-amber-600 hover:bg-amber-500 rounded py-1 text-xs">Stop</button>
+        <button id="d1-reverse-btn"
+                class="bg-yellow-500 hover:bg-yellow-400 rounded py-1 text-xs text-slate-900 font-semibold disabled:opacity-30 disabled:cursor-not-allowed"
+                disabled title="UNO-reverse: flip orbit direction at the ball's current position">↺&nbsp;↻ Reverse</button>
+      </div>
+    </div>
+
+    <!-- Demo 2: Click-to-Goto (spec v8 §11.2.2) -->
+    <div id="demo2-panel" class="bg-slate-800 rounded-lg p-4 border-2 border-slate-700 transition-colors duration-200">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">Demo 2 — Click-to-Goto</h2>
+      <p class="text-xs text-slate-500 mb-2">
+        When armed, click any safe spot on the SVG above to drive the ball there.
+        Click another spot to retarget; clicks inside the red dead-zone flash and are ignored.
+      </p>
+      <div class="grid grid-cols-2 gap-2 text-xs mb-2">
+        <label class="col-span-2">
+          Z-height (mm) — pure heave on the top plate (no tilt change)
+          <div class="flex items-center gap-2">
+            <input id="d2-z" type="range" min="0" max="80" step="1" value="0" class="flex-1">
+            <span id="d2-z-val" class="mono w-10 text-right">0</span>
+          </div>
+        </label>
+        <label class="flex items-center gap-2"><input id="d2-pred-path" type="checkbox"> show predicted path</label>
+        <label class="flex items-center gap-2 text-slate-400"><input id="d2-rec-images" type="checkbox"> record images</label>
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <button id="d2-start-btn"
+                class="bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">Start</button>
+        <button id="d2-stop-btn"
+                class="bg-amber-600 hover:bg-amber-500 rounded py-1 text-xs">Stop</button>
+        <button id="d2-cancel-btn"
+                class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">Cancel target</button>
+      </div>
+    </div>
+
+    <!-- Demo 3: Path drawing (stretch goal, spec v8 §11.2.3) -->
+    <div id="demo3-panel" class="bg-slate-800 rounded-lg p-4 border-2 border-slate-700 transition-colors duration-200">
+      <h2 class="text-sm uppercase text-slate-400 mb-2">
+        Demo 3 — Path drawing
+        <span class="text-amber-400 text-xs">(stretch)</span>
+      </h2>
+      <p class="text-xs text-slate-500 mb-2">
+        Toggle <i>draw mode</i>, then drag across the SVG to trace a path.
+        Red segments cross the dead-zone or off-platform — you must redraw before Start.
+      </p>
+      <div class="grid grid-cols-2 gap-2 text-xs mb-2">
+        <label class="flex items-center gap-2"><input id="d3-draw-mode" type="checkbox"> draw mode</label>
+        <label class="flex items-center gap-2"><input id="d3-loop" type="checkbox"> loop end→start</label>
+        <label class="col-span-2">
+          Speed (mm/s)
+          <div class="flex items-center gap-2">
+            <input id="d3-speed" type="range" min="10" max="200" step="5" value="80" class="flex-1">
+            <span id="d3-speed-val" class="mono w-10 text-right">80</span>
+          </div>
+        </label>
+        <label class="flex items-center gap-2"><input id="d3-trail-erase" type="checkbox" checked> trail-erase</label>
+        <label class="flex items-center gap-2"><input id="d3-pred-dir" type="checkbox"> direction arrows</label>
+        <label class="col-span-2 flex items-center gap-2 text-slate-400">
+          <input id="d3-rec-images" type="checkbox"> record images
+        </label>
+      </div>
+      <div class="grid grid-cols-3 gap-2 mb-2">
+        <button id="d3-start-btn"
+                class="bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs disabled:opacity-30"
+                disabled>Start</button>
+        <button id="d3-stop-btn"
+                class="bg-amber-600 hover:bg-amber-500 rounded py-1 text-xs">Stop</button>
+        <button id="d3-clear-btn"
+                class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">Clear path</button>
+        <button id="d3-reverse-btn"
+                class="bg-yellow-500 hover:bg-yellow-400 rounded py-1 text-xs text-slate-900 font-semibold disabled:opacity-30 disabled:cursor-not-allowed"
+                disabled title="UNO-reverse: flip traversal direction at current path position">↺&nbsp;↻ Reverse</button>
+        <button id="d3-export-btn"
+                class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">Export .json</button>
+        <button id="d3-import-btn"
+                class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">Import .json</button>
+      </div>
+      <div class="text-xs text-slate-400 mb-1">Saved paths (browser localStorage):</div>
+      <div class="flex gap-2 mb-1">
+        <input id="d3-slot-name" type="text" placeholder="slot name"
+               class="mono flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs">
+        <button id="d3-slot-save"
+                class="bg-blue-600 hover:bg-blue-500 rounded py-1 px-3 text-xs">Save</button>
+      </div>
+      <select id="d3-slot-select"
+              class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs">
+        <option value="">(no saved paths)</option>
+      </select>
+      <div class="grid grid-cols-2 gap-2 mt-1">
+        <button id="d3-slot-load"
+                class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">Load</button>
+        <button id="d3-slot-delete"
+                class="bg-rose-700 hover:bg-rose-600 rounded py-1 text-xs">Delete</button>
+      </div>
+      <input id="d3-import-file" type="file" accept=".json,application/json" class="hidden">
+      <div id="d3-status" class="text-xs text-slate-400 mt-2 mono min-h-4"></div>
+    </div>
 
     <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
       <h2 class="text-sm uppercase text-slate-400 mb-2">Per-leg jog (position, clamped to soft limits)</h2>
@@ -312,12 +556,15 @@
       </div>
     </div>
 
-    <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-      <h2 class="text-sm uppercase text-slate-400 mb-2">Demo: rolling ball</h2>
-      <p class="text-xs text-slate-400 mb-2">
-        Generates a tilt-rotation routine so a ball on top orbits at the
-        given radius. After generating, the routine auto-appears in the
-        Play dropdown.
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">
+        Legacy: open-loop rolling ball
+        <span class="text-amber-400 normal-case text-xs">(advanced — superseded by Demo 1)</span>
+      </summary>
+      <p class="text-xs text-slate-400 mt-2 mb-2">
+        Generates a precomputed tilt-rotation routine. Kept for fallback /
+        regression testing only — Demo 1 (Orbit, closed-loop) is the
+        primary orbital demo now.
       </p>
       <ul class="text-xs text-slate-500 mb-2 list-disc pl-4 space-y-0.5">
         <li><b>Ramp-up</b>: spin-up phase. The <i>orbit radius</i> R grows
@@ -391,7 +638,7 @@
         First try without a ball (<b>do not</b> put a ball on it until you
         like what you see).
       </p>
-    </div>
+    </details>
 
   </section>
 
@@ -628,6 +875,13 @@ function setupROSInterface() {
     serviceType: 'jugglebot_interfaces/srv/StartHoming' });
   srv.cancel_homing = new ROSLIB.Service({
     ros, name: '/cancel_homing', serviceType: 'std_srvs/srv/Trigger' });
+  // --- vision-stack services (spec v8) ---
+  srv.cal_capture = new ROSLIB.Service({
+    ros, name: '/calibrate/capture_frame', serviceType: 'std_srvs/srv/Trigger' });
+  srv.cal_solve = new ROSLIB.Service({
+    ros, name: '/calibrate/solve', serviceType: 'std_srvs/srv/Trigger' });
+  srv.cal_reset = new ROSLIB.Service({
+    ros, name: '/calibrate/reset', serviceType: 'std_srvs/srv/Trigger' });
 
   // --- topics (subs) ---
   topic.encoders = new ROSLIB.Topic({
@@ -660,6 +914,46 @@ function setupROSInterface() {
       renderErrors(d.nodes);
     } catch (e) { console.error(e); }
   });
+
+  // --- vision-stack subscriptions (spec v8 §11.1, §12) ---
+  // Live RGB feed
+  topic.rgb_feed = new ROSLIB.Topic({
+    ros, name: '/oak/rgb/image_compressed',
+    messageType: 'sensor_msgs/msg/CompressedImage' });
+  topic.rgb_feed.subscribe(onRgbFrame);
+
+  // Calibration status (5 Hz)
+  topic.cal_status = new ROSLIB.Topic({
+    ros, name: '/calibrate/status', messageType: 'std_msgs/msg/String' });
+  topic.cal_status.subscribe(m => { try { onCalStatus(JSON.parse(m.data)); } catch (e) {} });
+
+  // Ball state (KF posterior, platform-frame mm)
+  topic.ball_state = new ROSLIB.Topic({
+    ros, name: '/ball_state', messageType: 'geometry_msgs/msg/PoseStamped' });
+  topic.ball_state.subscribe(onBallState);
+
+  // Current reference (target the controller is chasing)
+  topic.ball_ref = new ROSLIB.Topic({
+    ros, name: '/ball_ref', messageType: 'geometry_msgs/msg/PointStamped' });
+  topic.ball_ref.subscribe(m => onBallRef({ x: m.point.x, y: m.point.y }));
+
+  // Method comparison (OAK vs classical) — JSON @ 30 Hz
+  topic.method_cmp = new ROSLIB.Topic({
+    ros, name: '/method_comparison', messageType: 'std_msgs/msg/String' });
+  topic.method_cmp.subscribe(m => { try { onMethodCmp(JSON.parse(m.data)); } catch (e) {} });
+
+  // Number of ArUco markers visible
+  topic.markers_n = new ROSLIB.Topic({
+    ros, name: '/platform_pose/markers_visible',
+    messageType: 'std_msgs/msg/Int32' });
+  topic.markers_n.subscribe(m => {
+    if ($('vis-aruco-n')) $('vis-aruco-n').innerText = m.data;
+  });
+
+  // Bag recorder status
+  topic.bag_status = new ROSLIB.Topic({
+    ros, name: '/bag_recorder/status', messageType: 'std_msgs/msg/String' });
+  // (no UI side-effect yet — surfaced when GUI Tier-2 logging panel lands)
   topic.control_result.subscribe(m => {
     try {
       const r = JSON.parse(m.data);
@@ -1547,8 +1841,663 @@ window.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') { e.preventDefault(); sendHomingStdin(); }
   });
 
+  // -----------------------------------------------------------------------
+  // Closed-loop ball demos (spec v8 §11)
+  // -----------------------------------------------------------------------
+  initVisionGUI();
+
+  // Persist the WS URL across reloads (spec v8 Q1).
+  (function persistWsUrl() {
+    const saved = localStorage.getItem('stable-bot-ws-url');
+    if (saved) $('ws-url').value = saved;
+    $('connect-btn').addEventListener('click', () => {
+      localStorage.setItem('stable-bot-ws-url', $('ws-url').value);
+    });
+  })();
+
   // auto-connect on load
   connect();
+});
+
+// ===========================================================================
+// Closed-loop ball demos — state, SVG renderer, dispatch
+// ===========================================================================
+
+// Ball state + ref
+const ballTrail = [];           // [[x,y], ...] in SVG coords (mm, y-flipped)
+const TRAIL_MAX = 120;
+let lastBallStampNs = 0;
+let lastFrameTime = 0;
+
+// Active demo: 0 = LEVEL_HOLD, 1 = orbit, 2 = goto, 3 = path
+let activeDemo = 0;
+
+// FPS counter for the live feed
+let _fpsCount = 0;
+let _fpsT0 = performance.now();
+let _fpsLastFrameMs = 0;
+
+function initVisionGUI() {
+  // --- Marker squares on the SVG ring (8 at 50 mm side, ring r = 120) ---
+  drawArucoMarks();
+
+  // --- SVG click handler (Demo 2 / Demo 3 entry) ---
+  const svg = $('demo-svg');
+  svg.addEventListener('mousedown', onSvgMouseDown);
+  svg.addEventListener('mousemove', onSvgMouseMove);
+  svg.addEventListener('mouseup',   onSvgMouseUp);
+  svg.addEventListener('mouseleave', onSvgMouseUp);
+
+  // --- Calibration buttons ---
+  $('cal-capture-btn').addEventListener('click', () => callCalSrv('cal_capture'));
+  $('cal-solve-btn').addEventListener('click',   () => callCalSrv('cal_solve'));
+  $('cal-reset-btn').addEventListener('click',   () => callCalSrv('cal_reset'));
+
+  // --- Demo 1 (Orbit) ---
+  $('d1-start-btn').addEventListener('click', startDemo1);
+  $('d1-stop-btn').addEventListener('click',  stopAllDemos);
+  $('d1-reverse-btn').addEventListener('click', reverseDemo1);
+
+  // --- Demo 2 (Goto) ---
+  $('d2-start-btn').addEventListener('click',  startDemo2);
+  $('d2-stop-btn').addEventListener('click',   stopAllDemos);
+  $('d2-cancel-btn').addEventListener('click', cancelDemo2Target);
+  $('d2-z').addEventListener('input', (e) => {
+    $('d2-z-val').innerText = e.target.value;
+    // Push z-offset only while a demo is active.
+    if (activeDemo >= 1) publishCmdRaw(`z_offset:${e.target.value}`);
+  });
+  $('d2-pred-path').addEventListener('change', renderPredPath);
+
+  // --- Demo 3 (Path) ---
+  $('d3-speed').addEventListener('input', (e) => {
+    $('d3-speed-val').innerText = e.target.value;
+  });
+  $('d3-clear-btn').addEventListener('click', clearD3Path);
+  $('d3-start-btn').addEventListener('click', startDemo3);
+  $('d3-stop-btn').addEventListener('click',  stopAllDemos);
+  $('d3-reverse-btn').addEventListener('click', reverseDemo3);
+  $('d3-export-btn').addEventListener('click', exportD3Json);
+  $('d3-import-btn').addEventListener('click', () => $('d3-import-file').click());
+  $('d3-import-file').addEventListener('change', importD3Json);
+  $('d3-slot-save').addEventListener('click', saveD3Slot);
+  $('d3-slot-load').addEventListener('click', loadD3Slot);
+  $('d3-slot-delete').addEventListener('click', deleteD3Slot);
+  $('d3-trail-erase').addEventListener('change', renderD3Path);
+  refreshD3Slots();
+
+  // --- Periodic vision-stack heartbeat tick ---
+  setInterval(visionHeartbeat, 1000);
+
+  // --- Highlight active demo ---
+  setActiveDemo(0);
+}
+
+function drawArucoMarks() {
+  const g = $('aruco-marks');
+  if (!g) return;
+  g.innerHTML = '';
+  const N = 8, R = 120, S = 50;
+  for (let i = 0; i < N; i++) {
+    const theta = Math.PI / 2 - (2 * Math.PI * i) / N;  // marker 0 at top, CCW
+    const cx = R * Math.cos(theta);
+    const cy = R * Math.sin(theta);
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', cx - S / 2);
+    rect.setAttribute('y', cy - S / 2);
+    rect.setAttribute('width',  S);
+    rect.setAttribute('height', S);
+    g.appendChild(rect);
+    const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    txt.setAttribute('x', cx);
+    txt.setAttribute('y', cy);
+    txt.setAttribute('text-anchor', 'middle');
+    txt.setAttribute('dominant-baseline', 'central');
+    txt.setAttribute('fill', '#94a3b8');
+    txt.setAttribute('font-size', '12');
+    txt.setAttribute('transform', `scale(1, -1)`);  // un-flip text
+    txt.textContent = String(i);
+    g.appendChild(txt);
+  }
+}
+
+function onRgbFrame(m) {
+  const img = $('vision-feed-img');
+  if (!img) return;
+  // Roslibjs delivers .data as a base64 string for compressed images.
+  let b64;
+  if (typeof m.data === 'string') {
+    b64 = m.data;
+  } else if (Array.isArray(m.data) || m.data instanceof Uint8Array) {
+    const u8 = new Uint8Array(m.data);
+    let s = '';
+    for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+    b64 = btoa(s);
+  } else { return; }
+  img.src = `data:image/jpeg;base64,${b64}`;
+  img.style.display = 'block';
+  $('vision-feed-empty').style.display = 'none';
+  _fpsLastFrameMs = performance.now();
+  _fpsCount++;
+  const now = performance.now();
+  if (now - _fpsT0 >= 1000) {
+    const fps = (_fpsCount * 1000 / (now - _fpsT0)).toFixed(1);
+    $('vision-feed-fps').innerText = `${fps} fps`;
+    _fpsCount = 0; _fpsT0 = now;
+  }
+}
+
+function visionHeartbeat() {
+  // Header indicator: green if a frame arrived in the last 2 s.
+  const fresh = (performance.now() - _fpsLastFrameMs) < 2000 && _fpsLastFrameMs > 0;
+  const dot = $('vis-dot');
+  const lbl = $('vis-label');
+  if (fresh) {
+    dot.className = 'w-3 h-3 rounded-full bg-emerald-500';
+    lbl.className = 'text-xs text-slate-300';
+    lbl.innerText = 'vision live';
+  } else {
+    dot.className = 'w-3 h-3 rounded-full bg-slate-600';
+    lbl.className = 'text-xs text-slate-500';
+    lbl.innerText = 'vision idle';
+  }
+}
+
+function onCalStatus(s) {
+  if ($('cal-markers')) $('cal-markers').innerText =
+    (s.last_frame_markers_visible !== undefined) ? s.last_frame_markers_visible : '—';
+  if ($('cal-frames'))  $('cal-frames').innerText  = s.frames_captured ?? 0;
+}
+
+function callCalSrv(which) {
+  if (!ros) { setCalStatus('not connected', false); return; }
+  setCalStatus('working...', true);
+  srv[which].callService(new ROSLIB.ServiceRequest({}),
+    (r) => setCalStatus(r.message, r.success),
+    (e) => setCalStatus('service error: ' + e, false));
+}
+
+function setCalStatus(msg, ok) {
+  const el = $('cal-status');
+  if (!el) return;
+  el.innerText = msg;
+  el.className = 'text-xs mt-2 mono whitespace-pre-wrap min-h-4 ' +
+    (ok === false ? 'text-red-400' : ok === true ? 'text-emerald-400' : 'text-slate-400');
+}
+
+// --- Ball state / ref / method comparison renderers ---
+
+function onBallState(m) {
+  const px = m.pose.position.x;
+  const py = m.pose.position.y;   // platform-frame mm
+  // Off-platform watchdog: ball physically off the disk.
+  const r = Math.hypot(px, py);
+  if (r > 200) onOffPlatform();
+
+  // SVG renders with an inner scale(1,-1), so we use platform-frame y directly.
+  const dot = $('ball-dot');
+  dot.setAttribute('cx', px);
+  dot.setAttribute('cy', py);
+
+  ballTrail.push([px, py]);
+  if (ballTrail.length > TRAIL_MAX) ballTrail.shift();
+  $('ball-trail').setAttribute('points',
+    ballTrail.map(p => p.join(',')).join(' '));
+
+  // KF NIS: rough proxy from velocity magnitude variance — left blank
+  // until a real /ball_state schema is in place.
+
+  // Latency: if header.stamp is non-zero, compute now - stamp.
+  if (m.header && m.header.stamp) {
+    const stampNs = m.header.stamp.sec * 1e9 + (m.header.stamp.nanosec || 0);
+    if (lastBallStampNs && stampNs > lastBallStampNs) {
+      const lat = (Date.now() * 1e6 - stampNs) / 1e6;
+      if (lat > 0 && lat < 5000) {
+        $('vis-latency').innerText = lat.toFixed(0);
+      }
+    }
+    lastBallStampNs = stampNs;
+  }
+
+  renderPredPath();
+}
+
+function onBallRef(p) {
+  const m = $('ref-marker');
+  m.setAttribute('cx', p.x);
+  m.setAttribute('cy', p.y);
+  m.setAttribute('visibility', 'visible');
+}
+
+function onMethodCmp(d) {
+  // Expected fields: oak_vs_mono_mm, oak_vs_stereo_mm, mono_vs_stereo_mm.
+  // Color thresholds: green<5, yellow<15, red>=15 (spec §11.1).
+  const set = (id, mm) => {
+    const el = $(id);
+    if (!el) return;
+    if (mm === undefined || mm === null || isNaN(mm)) {
+      el.innerText = '—';
+      el.className = 'text-slate-300';
+      return;
+    }
+    el.innerText = Number(mm).toFixed(1);
+    const am = Math.abs(Number(mm));
+    if (am < 5)       el.className = 'text-emerald-400';
+    else if (am < 15) el.className = 'text-yellow-400';
+    else              el.className = 'text-red-400';
+  };
+  set('vis-cmp-mono',   d.oak_vs_mono_mm);
+  set('vis-cmp-stereo', d.oak_vs_stereo_mm);
+  set('vis-cmp-mm',     d.mono_vs_stereo_mm);
+}
+
+function renderPredPath() {
+  const ln = $('pred-path');
+  if (!ln) return;
+  const show = $('d2-pred-path').checked && activeDemo === 2 &&
+               $('ref-marker').getAttribute('visibility') !== 'hidden';
+  if (!show) { ln.setAttribute('visibility', 'hidden'); return; }
+  ln.setAttribute('x1', $('ball-dot').getAttribute('cx'));
+  ln.setAttribute('y1', $('ball-dot').getAttribute('cy'));
+  ln.setAttribute('x2', $('ref-marker').getAttribute('cx'));
+  ln.setAttribute('y2', $('ref-marker').getAttribute('cy'));
+  ln.setAttribute('visibility', 'visible');
+}
+
+// --- Demo dispatch (publishes /control_cmd) ---
+
+function publishCmdRaw(s) {
+  if (!topic.control_cmd) return;
+  topic.control_cmd.publish(new ROSLIB.Message({ data: s }));
+}
+
+function setActiveDemo(n) {
+  activeDemo = n;
+  const colors = ['border-slate-700', 'border-blue-500', 'border-emerald-500', 'border-purple-500'];
+  const labels = ['LEVEL_HOLD', 'BALL_TRACK_TRAJECTORY', 'BALL_TRACK_GOTO', 'BALL_TRACK_PATH'];
+  for (const wid of ['demo-svg-wrap', 'demo1-panel', 'demo2-panel', 'demo3-panel']) {
+    const el = $(wid);
+    if (!el) continue;
+    el.classList.remove('border-slate-700', 'border-blue-500', 'border-emerald-500', 'border-purple-500');
+  }
+  $('demo-svg-wrap').classList.add(colors[n]);
+  // Highlight only the active demo's panel; gray the others.
+  $('demo1-panel').classList.add(n === 1 ? 'border-blue-500'    : 'border-slate-700');
+  $('demo2-panel').classList.add(n === 2 ? 'border-emerald-500' : 'border-slate-700');
+  $('demo3-panel').classList.add(n === 3 ? 'border-purple-500'  : 'border-slate-700');
+
+  $('demo-mode-label-mid').innerText = labels[n];
+  $('mode-label').innerText = labels[n];
+  $('d1-reverse-btn').disabled = (n !== 1);
+  $('d3-reverse-btn').disabled = (n !== 3);
+
+  if (n === 0) {
+    $('ref-marker').setAttribute('visibility', 'hidden');
+    $('pred-path').setAttribute('visibility', 'hidden');
+  }
+}
+
+function stopAllDemos() {
+  publishCmdRaw('mode:LEVEL_HOLD');
+  setActiveDemo(0);
+}
+
+function maybeRecordImages(prefix) {
+  // prefix in {'d1','d2','d3'}
+  const checked = $(`${prefix}-rec-images`).checked;
+  publishCmdRaw(`record_images:${checked ? 'on' : 'off'}`);
+}
+
+function startDemo1() {
+  maybeRecordImages('d1');
+  const params = {
+    radius_mm: parseFloat($('d1-radius').value),
+    period_s:  parseFloat($('d1-period').value),
+    dir:       $('d1-dir').value,
+    phase_rad: 0,
+  };
+  publishCmdRaw('mode:BALL_TRACK_TRAJECTORY ' + JSON.stringify(params));
+  setActiveDemo(1);
+}
+
+function reverseDemo1() {
+  $('d1-dir').value = ($('d1-dir').value === 'CCW') ? 'CW' : 'CCW';
+  startDemo1();   // re-publish with the flipped dir
+}
+
+function startDemo2() {
+  maybeRecordImages('d2');
+  // Goto mode armed but with no target yet — first click in the SVG sets one.
+  publishCmdRaw('mode:BALL_TRACK_GOTO {}');
+  setActiveDemo(2);
+}
+
+function cancelDemo2Target() {
+  $('ref-marker').setAttribute('visibility', 'hidden');
+  $('pred-path').setAttribute('visibility', 'hidden');
+  // Re-arm mode without a target — controller drops to LEVEL_HOLD until
+  // the next click.
+  publishCmdRaw('mode:LEVEL_HOLD');
+  setActiveDemo(2);
+}
+
+function startDemo3() {
+  if (d3Path.length < 2) {
+    setD3Status('draw a path with at least 2 points first.', false);
+    return;
+  }
+  if (d3PathHasViolation) {
+    setD3Status('path has dead-zone or off-platform violations — clear and redraw.', false);
+    return;
+  }
+  maybeRecordImages('d3');
+
+  // Publish path (nav_msgs/Path).
+  const stamp = { sec: Math.floor(Date.now() / 1000),
+                  nanosec: (Date.now() % 1000) * 1e6 };
+  const poses = d3Path.map(([x, y]) => ({
+    header: { stamp, frame_id: 'platform' },
+    pose: { position: { x, y, z: 0 },
+            orientation: { x: 0, y: 0, z: 0, w: 1 } },
+  }));
+  if (!topic.ball_path_upload) {
+    topic.ball_path_upload = new ROSLIB.Topic({
+      ros, name: '/ball_path/upload', messageType: 'nav_msgs/msg/Path' });
+  }
+  topic.ball_path_upload.publish(new ROSLIB.Message({
+    header: { stamp, frame_id: 'platform' },
+    poses,
+  }));
+
+  const params = {
+    speed_mm_s: parseFloat($('d3-speed').value),
+    loop:       $('d3-loop').checked,
+  };
+  publishCmdRaw('mode:BALL_TRACK_PATH ' + JSON.stringify(params));
+  setActiveDemo(3);
+  setD3Status(`started: ${d3Path.length} pts, ${params.speed_mm_s} mm/s, loop=${params.loop}.`, true);
+}
+
+function reverseDemo3() {
+  // Echo to the ref generator that it should flip traversal direction.
+  // The generator-side reverse is a single-token control_cmd payload.
+  publishCmdRaw('mode:BALL_TRACK_PATH ' + JSON.stringify({
+    reverse: true,
+    speed_mm_s: parseFloat($('d3-speed').value),
+    loop: $('d3-loop').checked,
+  }));
+  // Reset trail-erase state so the display reflects "since last reverse".
+  d3PathTraversed = 0;
+  renderD3Path();
+}
+
+// --- Demo 3 path drawing on the shared SVG ---
+
+let d3Path = [];                  // [[x_mm, y_mm], ...] in platform frame
+let d3Drawing = false;
+let d3PathHasViolation = false;
+let d3PathTraversed = 0;          // index up to which path is "behind" the ball
+
+function svgEventToMm(evt) {
+  const svg = $('demo-svg');
+  const pt = svg.createSVGPoint();
+  pt.x = evt.clientX; pt.y = evt.clientY;
+  const ctm = svg.getScreenCTM().inverse();
+  const p = pt.matrixTransform(ctm);
+  // The inner <g> has scale(1,-1), so the SVG y maps directly to
+  // platform y after we negate.
+  return { x: p.x, y: -p.y };
+}
+
+function onSvgMouseDown(evt) {
+  // Demo 3 draw mode takes precedence
+  if ($('d3-draw-mode').checked) {
+    d3Drawing = true;
+    d3Path = [];
+    d3PathHasViolation = false;
+    const p = svgEventToMm(evt);
+    d3Path.push([p.x, p.y]);
+    renderD3Path();
+    return;
+  }
+  // Otherwise: Demo 2 click target
+  if (activeDemo !== 2) return;
+  const p = svgEventToMm(evt);
+  setDemo2Target(p);
+}
+
+function onSvgMouseMove(evt) {
+  if (!d3Drawing) return;
+  const p = svgEventToMm(evt);
+  // Sample throttling: ignore movements <2 mm to avoid huge polylines.
+  const last = d3Path[d3Path.length - 1];
+  if (last && Math.hypot(p.x - last[0], p.y - last[1]) < 2) return;
+  d3Path.push([p.x, p.y]);
+  renderD3Path();
+}
+
+function onSvgMouseUp() {
+  if (d3Drawing) {
+    d3Drawing = false;
+    validateD3Path();
+  }
+}
+
+function setDemo2Target(p) {
+  const r = Math.hypot(p.x, p.y);
+  if (r > 200) return;     // off-platform
+  if (r < 30) {
+    // dead-zone — flash the SVG wrap.
+    $('demo-svg-wrap').classList.add('ring-4', 'ring-red-500');
+    setTimeout(() => $('demo-svg-wrap').classList.remove('ring-4', 'ring-red-500'), 350);
+    return;
+  }
+  $('ref-marker').setAttribute('cx', p.x);
+  $('ref-marker').setAttribute('cy', p.y);
+  $('ref-marker').setAttribute('visibility', 'visible');
+  publishCmdRaw('mode:BALL_TRACK_GOTO ' + JSON.stringify({
+    x_mm: p.x, y_mm: p.y,
+  }));
+  setActiveDemo(2);
+  renderPredPath();
+}
+
+function classifySegmentColor(p1, p2) {
+  // Return 'red' if either endpoint is in dead-zone OR off-platform.
+  for (const p of [p1, p2]) {
+    const r = Math.hypot(p[0], p[1]);
+    if (r < 30 || r > 200) return '#dc2626';
+  }
+  return '#22c55e';
+}
+
+function renderD3Path() {
+  const okEl = $('demo3-path');
+  const erEl = $('demo3-path-erased');
+  if (!okEl || !erEl) return;
+
+  const trail = $('d3-trail-erase').checked;
+  const splitAt = trail ? Math.min(d3PathTraversed, d3Path.length) : 0;
+
+  const erasedPts = d3Path.slice(0, splitAt);
+  const visiblePts = d3Path.slice(splitAt);
+  erEl.setAttribute('points', erasedPts.map(p => p.join(',')).join(' '));
+  okEl.setAttribute('points', visiblePts.map(p => p.join(',')).join(' '));
+  // Color: if any segment violates, show red on okEl. We do a coarse
+  // override: if the path contains a violation point, force red.
+  const violation = d3Path.some(p => {
+    const r = Math.hypot(p[0], p[1]);
+    return r < 30 || r > 200;
+  });
+  okEl.setAttribute('stroke', violation ? '#dc2626' : '#22c55e');
+}
+
+function validateD3Path() {
+  d3PathHasViolation = d3Path.some(p => {
+    const r = Math.hypot(p[0], p[1]);
+    return r < 30 || r > 200;
+  });
+  $('d3-start-btn').disabled = (d3Path.length < 2) || d3PathHasViolation;
+  setD3Status(
+    `${d3Path.length} pts captured` +
+    (d3PathHasViolation ? ' — has violations, redraw.' : ' — ready to Start.'),
+    !d3PathHasViolation);
+  renderD3Path();
+}
+
+function clearD3Path() {
+  d3Path = [];
+  d3PathTraversed = 0;
+  d3PathHasViolation = false;
+  $('d3-start-btn').disabled = true;
+  setD3Status('cleared.', null);
+  renderD3Path();
+}
+
+function setD3Status(msg, ok) {
+  const el = $('d3-status');
+  if (!el) return;
+  el.innerText = msg;
+  el.className = 'text-xs mt-2 mono min-h-4 ' +
+    (ok === false ? 'text-red-400' : ok === true ? 'text-emerald-400' : 'text-slate-400');
+}
+
+// --- Demo 3 path persistence (browser localStorage + JSON file) ---
+
+const D3_LS_KEY = 'stable-bot-d3-paths';
+
+function getD3Slots() {
+  try { return JSON.parse(localStorage.getItem(D3_LS_KEY) || '{}'); }
+  catch (e) { return {}; }
+}
+function setD3Slots(o) { localStorage.setItem(D3_LS_KEY, JSON.stringify(o)); }
+
+function refreshD3Slots() {
+  const slots = getD3Slots();
+  const sel = $('d3-slot-select');
+  sel.innerHTML = '';
+  const names = Object.keys(slots).sort();
+  if (!names.length) {
+    const opt = document.createElement('option');
+    opt.value = ''; opt.text = '(no saved paths)';
+    sel.appendChild(opt);
+    return;
+  }
+  for (const n of names) {
+    const opt = document.createElement('option');
+    opt.value = n; opt.text = n;
+    sel.appendChild(opt);
+  }
+}
+
+function saveD3Slot() {
+  const name = ($('d3-slot-name').value || '').trim();
+  if (!name) { setD3Status('slot needs a name.', false); return; }
+  if (d3Path.length < 2) { setD3Status('nothing to save (path empty).', false); return; }
+  const slots = getD3Slots();
+  slots[name] = pathPayload();
+  setD3Slots(slots);
+  refreshD3Slots();
+  setD3Status(`saved slot "${name}".`, true);
+}
+
+function loadD3Slot() {
+  const name = $('d3-slot-select').value;
+  if (!name) return;
+  const slots = getD3Slots();
+  const p = slots[name];
+  if (!p) return;
+  applyPathPayload(p);
+  setD3Status(`loaded slot "${name}".`, true);
+}
+
+function deleteD3Slot() {
+  const name = $('d3-slot-select').value;
+  if (!name) return;
+  const slots = getD3Slots();
+  delete slots[name];
+  setD3Slots(slots);
+  refreshD3Slots();
+  setD3Status(`deleted slot "${name}".`, true);
+}
+
+function pathPayload() {
+  return {
+    schema_version: 1,
+    frame: 'platform',
+    units: 'mm',
+    loop: $('d3-loop').checked,
+    speed_mm_s: parseFloat($('d3-speed').value),
+    samples: d3Path.map(([x, y]) => [x, y]),
+  };
+}
+
+function applyPathPayload(p) {
+  d3Path = (p.samples || []).map(([x, y]) => [Number(x), Number(y)]);
+  if (typeof p.loop === 'boolean')   $('d3-loop').checked = p.loop;
+  if (typeof p.speed_mm_s === 'number') {
+    $('d3-speed').value = p.speed_mm_s;
+    $('d3-speed-val').innerText = p.speed_mm_s;
+  }
+  d3PathTraversed = 0;
+  validateD3Path();
+}
+
+function exportD3Json() {
+  if (d3Path.length < 2) { setD3Status('nothing to export.', false); return; }
+  const blob = new Blob([JSON.stringify(pathPayload(), null, 2)],
+    { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  a.href = url; a.download = `stable-bot-path-${ts}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  setD3Status('exported.', true);
+}
+
+function importD3Json(evt) {
+  const file = evt.target.files && evt.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const p = JSON.parse(reader.result);
+      if (p.schema_version !== 1) {
+        setD3Status(`unknown schema_version=${p.schema_version}.`, false);
+        return;
+      }
+      applyPathPayload(p);
+      setD3Status('imported.', true);
+    } catch (e) {
+      setD3Status('parse failed: ' + e, false);
+    }
+    evt.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
+// --- Off-platform watchdog (visual; the controller-side logic lives on the Pi) ---
+
+let _strobing = false;
+function onOffPlatform() {
+  if (_strobing) return;
+  _strobing = true;
+  document.body.classList.add('ball-lost-strobing');
+  setTimeout(() => {
+    document.body.classList.remove('ball-lost-strobing');
+    document.body.classList.add('ball-lost-dim');
+  }, 3000);
+}
+
+// Manual re-arm clears the dim red.
+window.addEventListener('click', () => {
+  if (document.body.classList.contains('ball-lost-dim')) {
+    // any user click after the strobe also clears the dim state — the
+    // Pi-side re-arm is the actual gate; this is just visual cleanup.
+    document.body.classList.remove('ball-lost-dim');
+    _strobing = false;
+  }
 });
 </script>
 </body>
