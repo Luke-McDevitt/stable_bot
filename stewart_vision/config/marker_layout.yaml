@@ -1,0 +1,42 @@
+platform_diameter_mm: 400.0
+ring_radius_mm: 120.0
+dictionary: DICT_4X4_50
+marker_size_mm: 50.0
+marker_count: 8
+orientation_note: All markers share the platform-frame orientation. For marker m with
+  center (x, y), its four corners in platform-frame mm are (x-s/2, y-s/2), (x+s/2,
+  y-s/2), (x+s/2, y+s/2), (x-s/2, y+s/2) where s = marker_size_mm. Z=0 in platform
+  frame for all corners.
+markers:
+- id: 0
+  x_mm: 0.0
+  y_mm: 120.0
+  size_mm: 50.0
+- id: 1
+  x_mm: 84.853
+  y_mm: 84.853
+  size_mm: 50.0
+- id: 2
+  x_mm: 120.0
+  y_mm: 0.0
+  size_mm: 50.0
+- id: 3
+  x_mm: 84.853
+  y_mm: -84.853
+  size_mm: 50.0
+- id: 4
+  x_mm: 0.0
+  y_mm: -120.0
+  size_mm: 50.0
+- id: 5
+  x_mm: -84.853
+  y_mm: -84.853
+  size_mm: 50.0
+- id: 6
+  x_mm: -120.0
+  y_mm: -0.0
+  size_mm: 50.0
+- id: 7
+  x_mm: -84.853
+  y_mm: 84.853
+  size_mm: 50.0

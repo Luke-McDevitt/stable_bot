@@ -1,0 +1,25 @@
+# Ball safety / dead-zone parameters.
+# Spec: stewart_bringup/docs/closed_loop_ball_demos.md §10.
+
+dead_zone_mm: 10        # ball-edge to platform-center clearance (IMU bolt)
+ball_radius_mm: 20      # 40 mm-diameter ball (foam OR ping-pong, both 40 mm)
+ball_density: solid     # solid | hollow — affects feedforward coefficient
+
+# Soft-repulsion margin: when measured ball radius < dead_zone + ball_radius
+# + margin_mm, the controller adds an outward repulsive tilt term that
+# kicks in BEFORE the ball reaches the IMU bolt.
+margin_mm: 5
+
+# How long both detectors must report ball-lost before triggering
+# LEVEL_HOLD + the strobing UI flash.
+loss_timeout_ms: 500
+
+# Off-platform watchdog (§10.4):
+# If sqrt(px^2 + py^2) > off_platform_radius_mm for any frame, abort to
+# LEVEL_HOLD immediately. Re-arm requires ball back inside
+# rearm_hysteresis_radius_mm and detected with confidence >= 0.8 for 1 s.
+# Re-arm is MANUAL — operator must press Start (no automatic resume).
+off_platform_radius_mm: 200
+rearm_hysteresis_radius_mm: 180
+rearm_min_confidence: 0.8
+rearm_min_dwell_s: 1.0
