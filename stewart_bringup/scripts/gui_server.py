@@ -239,6 +239,36 @@ def _delete_bag(name):
         return False, f"delete failed: {e}"
 
 
+def _digest_bag(name):
+    """Run analyze_level_bag.py against the named bag/sweep dir.
+    Output lands in <repo>/tuning_data/. Path-traversal guarded via
+    _resolve_bag_path."""
+    full = _resolve_bag_path(name)
+    if full is None:
+        return False, "bad name"
+    analyzer = os.path.join(_BRINGUP_DIR, 'scripts/analyze_level_bag.py')
+    if not os.path.isfile(analyzer):
+        return False, f"analyzer not found at {analyzer}"
+    # Must source ROS for rosbag2_py + jugglebot_interfaces. Match the
+    # pattern used by /reset and /launch elsewhere in this server.
+    cmd = (
+        'source /opt/ros/kilted/setup.bash && '
+        'source ~/ros2_ws/install/local_setup.bash && '
+        f'python3 {analyzer!r} {full!r}'
+    )
+    try:
+        r = subprocess.run(['bash', '-c', cmd],
+                           capture_output=True, text=True, timeout=300)
+        ok = (r.returncode == 0)
+        out = (r.stdout or '').strip()
+        err = (r.stderr or '').strip()
+        return ok, (out + ('\n' + err if err else ''))[-4000:]
+    except subprocess.TimeoutExpired:
+        return False, "digest timed out after 300 s"
+    except Exception as e:
+        return False, f"digest failed: {e}"
+
+
 def _launch_status():
     pid = None
     running = False
@@ -339,6 +369,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 400)
             return
+        if self.path == '/bags/digest':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _digest_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 500)
+            return
         self.send_error(404)
 
     # Quieter logging
@@ -367,7 +409,7 @@ def main():
     srv = ReusingServer((args.host, args.port), Handler)
     print(f"serving {args.web_dir} on http://{args.host}:{args.port}")
     print(f"endpoints: GET /launch_status, GET /bags, POST /reset, POST /launch, "
-          f"POST /stop_launch, POST /bags/delete")
+          f"POST /stop_launch, POST /bags/delete, POST /bags/digest")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -1,0 +1,13 @@
+# tuning_data/ holds digests of level-PI tuning bags — small JSON
+# summaries + downsampled CSV timeseries written by
+# stewart_bringup/scripts/analyze_level_bag.py.
+#
+# Block everything by default, then re-allow only the file types we
+# expect. This makes it impossible to accidentally commit a raw
+# rosbag2 SQLite/MCAP into the repo, no matter what someone runs.
+*
+!*/
+!.gitignore
+!README.md
+!*.json
+!*.csv

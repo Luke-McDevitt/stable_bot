@@ -1619,8 +1619,12 @@ function lvlRenderBag(e) {
     <div class="border-l-2 border-slate-700 pl-2 py-1">
       <div class="flex items-center justify-between gap-2">
         <div class="mono text-slate-300 truncate" title="${lvlEscapeHtml(e.path)}">${lvlEscapeHtml(e.name)}</div>
-        <button class="text-red-400 hover:text-red-300 text-xs"
-          onclick="lvlDeleteBag('${lvlEscapeHtml(e.name)}')">×</button>
+        <div class="flex items-center gap-2 shrink-0">
+          <button class="text-emerald-400 hover:text-emerald-300 text-xs"
+            onclick="lvlExportDigest('${lvlEscapeHtml(e.name)}')">digest</button>
+          <button class="text-red-400 hover:text-red-300 text-xs"
+            onclick="lvlDeleteBag('${lvlEscapeHtml(e.name)}')">×</button>
+        </div>
       </div>
       <div class="text-slate-500">
         ${lvlFmtMtime(e.mtime)} · ${lvlFmtBytes(e.size_bytes)}
@@ -1636,6 +1640,8 @@ function lvlRenderSweep(e) {
       <summary class="cursor-pointer">
         <span class="mono text-emerald-300">${lvlEscapeHtml(e.name)}</span>${aborted}
         <span class="text-slate-500"> · ${(e.children || []).length} bags · ${lvlFmtBytes(e.size_bytes)}</span>
+        <button class="text-emerald-400 hover:text-emerald-300 text-xs ml-2"
+          onclick="event.preventDefault(); lvlExportDigest('${lvlEscapeHtml(e.name)}')">digest</button>
         <button class="text-red-400 hover:text-red-300 text-xs ml-2"
           onclick="event.preventDefault(); lvlDeleteBag('${lvlEscapeHtml(e.name)}')">×</button>
       </summary>
@@ -1653,6 +1659,33 @@ function lvlRenderSweep(e) {
               ? ` · Z=${c.notes.commanded_z_mm}` : ''}</span>
         </div>`).join('');
   return head + kids + '</div></details>';
+}
+function lvlExportDigest(name) {
+  const out = $('lvl-sweep-progress');
+  if (out) {
+    out.innerText = `running analyzer on ${name}…`;
+    out.className = 'text-xs mono text-slate-300 mt-2 min-h-4';
+  }
+  fetch('/bags/digest', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    if (out) {
+      out.innerText = (j.ok ? '✓ ' : '✗ ') + 'digest ' + name + ': ' +
+        (j.message || '').split('\n').slice(0, 3).join(' · ');
+      out.className = 'text-xs mono mt-2 min-h-4 ' +
+        (j.ok ? 'text-emerald-400' : 'text-red-400');
+    }
+    if (j.ok) {
+      // Hint for the user: where the digest landed.
+      console.log('digest output:\n' + j.message);
+    }
+  }).catch(e => {
+    if (out) {
+      out.innerText = '✗ digest failed: ' + e;
+      out.className = 'text-xs mono text-red-400 mt-2 min-h-4';
+    }
+  });
 }
 function lvlFetchBags() {
   const out = $('lvl-bags-list');
