@@ -153,7 +153,7 @@ INPUT_MODE_VEL_RAMP = 2
 
 # PI level gains (same as platform_move)
 LEVEL_KP = 0.7
-LEVEL_KI = 0.4
+LEVEL_KI = 0.2
 LEVEL_FILTER_ALPHA = 0.3
 LEVEL_RATE_LIMIT = 0.2
 LEVEL_MAX_CORR = 5.0
@@ -2804,8 +2804,20 @@ class StewartControlNode(Node):
             target_p = -err_p_f * LEVEL_KP + integ_p
             d_r = max(-LEVEL_RATE_LIMIT, min(LEVEL_RATE_LIMIT, target_r - tilt_r_corr))
             d_p = max(-LEVEL_RATE_LIMIT, min(LEVEL_RATE_LIMIT, target_p - tilt_p_corr))
-            tilt_r_corr = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, tilt_r_corr + d_r))
-            tilt_p_corr = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, tilt_p_corr + d_p))
+            new_r = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, tilt_r_corr + d_r))
+            new_p = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, tilt_p_corr + d_p))
+            # Back-calculation anti-windup: if the actual (rate-limited +
+            # clamped) command differs from the unsaturated PI output,
+            # pull the integrator back by that deficit so it stops
+            # winding up against the saturation. Without this, the I term
+            # keeps growing during transients and produces a limit cycle
+            # around the target instead of settling.
+            integ_r += (new_r - target_r)
+            integ_p += (new_p - target_p)
+            integ_r = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, integ_r))
+            integ_p = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, integ_p))
+            tilt_r_corr = new_r
+            tilt_p_corr = new_p
             self.level_corr = [tilt_r_corr, tilt_p_corr]
             xyz = self.current_xyz
             rpy_cmd = [self.current_rpy[0] + tilt_r_corr,
