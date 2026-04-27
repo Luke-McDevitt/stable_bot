@@ -18,31 +18,38 @@ go AND writes a JSON backup of the previous values so the change is
 trivially reversible.
 
 Usage:
-  # Apply (default). Discovers every USB-attached ODrive and configures
-  # its axis. Writes ~/.stable_bot_odrive_ff_backup.json before changing.
+  # Apply over USB (default). Discovers every USB-attached ODrive.
   python3 set_odrive_feedforward.py
 
+  # Apply over CAN — talks to all 6 ODrives via can0 in one shot.
+  # MUST stop stable_bot.service first (the EncoderListener / ODriveFeeder
+  # share can0 and will collide with endpoint discovery):
+  sudo systemctl stop stable_bot
+  python3 set_odrive_feedforward.py --transport can
+  sudo systemctl start stable_bot
+
   # Show what's currently set, change nothing:
-  python3 set_odrive_feedforward.py --status
+  python3 set_odrive_feedforward.py --status [--transport can]
 
   # Restore previous values from the backup file:
-  python3 set_odrive_feedforward.py --revert
+  python3 set_odrive_feedforward.py --revert [--transport can]
 
 Connection model
 ----------------
-This connects via USB (the standard `odrivetool` transport). Two
-practical setups work:
+USB transport (default): every ODrive currently visible on USB is
+configured. Two practical setups:
 
-  (a) All 6 ODrives plugged into a USB hub on the Pi at the same time.
-      One run of this script configures all six.
+  (a) All 6 ODrives plugged into a USB hub on the Pi at the same time
+      → one run does all six.
+  (b) Single USB cable, swap between ODrives → run once per drive,
+      the backup file accumulates entries keyed by serial number so
+      --revert still covers all six.
 
-  (b) Single USB cable, swap between ODrives. Run the script once
-      per drive — the backup file accumulates entries keyed by
-      serial number, so --revert across all six still works.
-
-CAN-only setups would need a different transport. odrivetool's CAN
-backend changes name across versions; ask before using on a no-USB
-setup.
+CAN transport (--transport can): connects to node IDs 0..5 on can0
+via the odrive library's CAN backend (no USB cables needed). Stop
+stable_bot.service first so the bus isn't busy with other RTRs.
+Override the interface or node-ID list with --can-iface / --node-ids
+if your setup differs.
 
 Pre-condition: every axis must be in IDLE state before changing
 config. The script aborts if any are not idle (you'd need to reboot
@@ -88,14 +95,14 @@ def set_attr(obj, dotted, value):
     setattr(obj, parts[-1], value)
 
 
-def discover_drives(timeout_per=8.0, max_drives=6):
+def discover_drives_usb(timeout_per=8.0, max_drives=6):
     """Collect every distinct ODrive (by serial) that responds within
     timeout. Calls odrive.find_any() repeatedly because the library
     returns one match at a time. Stops when a find times out OR we hit
     max_drives."""
     drives = []
     seen = set()
-    print(f"discovering ODrives (timeout {timeout_per}s per find, up to {max_drives})...")
+    print(f"discovering ODrives over USB (timeout {timeout_per}s per find, up to {max_drives})...")
     while len(drives) < max_drives:
         try:
             d = odrive.find_any(timeout=timeout_per)
@@ -113,6 +120,63 @@ def discover_drives(timeout_per=8.0, max_drives=6):
     if not drives:
         print("  (none found)")
     return drives
+
+
+# Path-string variants the odrive library has accepted across versions.
+# The first one that connects wins; we try them in order so this script
+# isn't fragile to minor library updates.
+_CAN_PATH_VARIANTS = (
+    "can:{iface},node_id={node}",
+    "can:{iface}:{node}",
+    "can:can_iface={iface},node_id={node}",
+)
+
+
+def _discover_one_can(node_id, iface, timeout):
+    last_err = None
+    for tmpl in _CAN_PATH_VARIANTS:
+        path = tmpl.format(iface=iface, node=node_id)
+        try:
+            return odrive.find_any(path=path, timeout=timeout), path
+        except Exception as e:
+            last_err = e
+    return None, last_err
+
+
+def discover_drives_can(node_ids, iface='can0', timeout_per=8.0):
+    """Connect to each node ID over the CAN bus. Requires whatever else
+    was using can0 (notably stable_bot.service via the EncoderListener +
+    ODriveFeeder) to have been stopped — the odrive library's endpoint
+    discovery is request/response and gets confused if the bus is busy
+    with other RTRs."""
+    drives = []
+    print(f"discovering ODrives over CAN ({iface}, node_ids={list(node_ids)}, "
+          f"timeout {timeout_per}s each)...")
+    for n in node_ids:
+        d, path_or_err = _discover_one_can(n, iface, timeout_per)
+        if d is None:
+            print(f"  [n={n}] no response  ({path_or_err})")
+            continue
+        sn = getattr(d, 'serial_number', None)
+        try:
+            fw = f"{d.fw_version_major}.{d.fw_version_minor}.{d.fw_version_revision}"
+        except Exception:
+            fw = "?"
+        sn_str = hex(sn) if sn is not None else '?'
+        drives.append(d)
+        print(f"  [n={n}] sn={sn_str}  fw={fw}  via {path_or_err}")
+    if not drives:
+        print("  (no drives reachable on CAN — is stable_bot.service stopped?)")
+    return drives
+
+
+def discover_drives(transport, timeout_per, max_drives, can_iface, node_ids):
+    if transport == 'usb':
+        return discover_drives_usb(timeout_per=timeout_per, max_drives=max_drives)
+    if transport == 'can':
+        ids = node_ids if node_ids else list(range(max_drives))
+        return discover_drives_can(ids, iface=can_iface, timeout_per=timeout_per)
+    raise ValueError(f"unknown transport: {transport!r}")
 
 
 def all_axes_idle(drives):
@@ -243,15 +307,34 @@ def main():
     g.add_argument('--apply', action='store_true', help='apply (default)')
     g.add_argument('--revert', action='store_true', help='restore from backup')
     g.add_argument('--status', action='store_true', help='show only')
+    p.add_argument('--transport', choices=('usb', 'can'), default='usb',
+                   help='how to talk to the ODrives (default: usb)')
+    p.add_argument('--can-iface', default='can0',
+                   help='CAN interface name when --transport can (default: can0)')
+    p.add_argument('--node-ids', type=lambda s: [int(x) for x in s.split(',')],
+                   default=None,
+                   help='comma-separated CAN node IDs to configure '
+                        '(default: 0..max_drives-1, i.e. 0,1,2,3,4,5)')
     p.add_argument('--max-drives', type=int, default=6,
                    help='stop after finding this many distinct drives (default 6)')
     p.add_argument('--timeout', type=float, default=8.0,
                    help='per-find timeout in seconds (default 8)')
     args = p.parse_args()
 
-    drives = discover_drives(timeout_per=args.timeout, max_drives=args.max_drives)
+    drives = discover_drives(
+        transport=args.transport,
+        timeout_per=args.timeout,
+        max_drives=args.max_drives,
+        can_iface=args.can_iface,
+        node_ids=args.node_ids,
+    )
     if not drives:
-        sys.exit("no ODrives found over USB. Check power + cable.")
+        if args.transport == 'usb':
+            sys.exit("no ODrives found over USB. Check power + cable.")
+        else:
+            sys.exit("no ODrives found on CAN. Stop stable_bot.service "
+                     "(`sudo systemctl stop stable_bot`) and verify can0 is up "
+                     "(`ip -brief link show can0`).")
 
     if args.status:
         cmd_status(drives)
