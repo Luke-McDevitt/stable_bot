@@ -3013,9 +3013,15 @@ class StewartControlNode(Node):
         '/level_diag', '/platform_rpy', '/leg_encoders',
         '/leg_currents', '/control_cmd',
     )
-    LR_Z_REACHED_POS_TOL_TURNS = 0.05
+    # Tolerances for the Z-reached gate. POS_TOL is generous (~7 mm leg
+    # displacement) because the live level loop drives small tilt
+    # corrections that keep the encoders moving even when the platform
+    # has visibly arrived at Z. STAB_TOL is the encoder-noise/limit-
+    # cycle envelope we accept as "stable" over the window.
+    LR_Z_REACHED_POS_TOL_TURNS = 0.10
+    LR_Z_REACHED_STAB_TOL_TURNS = 0.10
     LR_Z_REACHED_VEL_WINDOW_S = 0.5
-    LR_Z_REACHED_TIMEOUT_S = 5.0
+    LR_Z_REACHED_TIMEOUT_S = 10.0
     LR_STEP_AMP_HARD_CAP_DEG = 2.0
 
     def _lr_git_sha(self):
@@ -3281,39 +3287,46 @@ class StewartControlNode(Node):
         return True, "abort flagged"
 
     def _lr_wait_z_reached(self, z, abort_event):
-        """Wait until all 6 leg encoders are within tol of the IK target
-        AND have been within tol of each other over the last 0.5 s
-        (i.e. the platform isn't slewing). Returns True on success,
-        False on timeout/abort."""
-        try:
-            ik_targets, _clamped = _compute_motor_targets(
-                (0, 0, z), (0, 0, 0), self.geom, self.limits)
-        except Exception:
-            return False
-        if self.listener is None:
+        """Wait until leg encoders match the live commanded targets AND
+        the encoders have stopped slewing (max-min < tol over the
+        window). Returns True on success, False on timeout/abort.
+
+        We compare against feeder.get_pos_targets() (the targets the
+        level loop is actively writing) rather than a static IK of
+        (0,0,z). The active level loop adds tilt corrections on top
+        of bare IK, so a static target is offset from the actual
+        commanded leg positions by however much tilt-correction the
+        loop is currently applying — that's why the previous static-IK
+        gate timed out forever once the loop wound up its corrections."""
+        if self.listener is None or self.feeder is None:
             return False
         ring = []   # list of (t_mono, [pos[0..5]])
         deadline = time.monotonic() + self.LR_Z_REACHED_TIMEOUT_S
-        tol = self.LR_Z_REACHED_POS_TOL_TURNS
+        tol_pos = self.LR_Z_REACHED_POS_TOL_TURNS
+        tol_stab = self.LR_Z_REACHED_STAB_TOL_TURNS
         win_s = self.LR_Z_REACHED_VEL_WINDOW_S
         while time.monotonic() < deadline:
             if abort_event is not None and abort_event.is_set():
                 return False
             now = time.monotonic()
             enc = self.listener.get_all(max_age_s=0.5)
-            if all(v is not None for v in enc):
+            try:
+                tgt = list(self.feeder.get_pos_targets())
+            except Exception:
+                tgt = None
+            if all(v is not None for v in enc) and tgt is not None:
                 ring.append((now, list(enc)))
                 ring = [(t, p) for (t, p) in ring if now - t <= win_s]
-                # Check 1: within tol of IK target
+                # Check 1: each encoder near its currently-commanded target
                 near_target = all(
-                    abs(enc[i] - ik_targets[i]) < tol for i in range(6))
-                # Check 2: stable over the last win_s
+                    abs(enc[i] - float(tgt[i])) < tol_pos for i in range(6))
+                # Check 2: encoders stable over the last win_s
                 stable = False
                 if near_target and ring and (now - ring[0][0]) >= (win_s * 0.9):
                     stable = True
                     for i in range(6):
                         vals = [p[i] for (_t, p) in ring]
-                        if (max(vals) - min(vals)) > tol:
+                        if (max(vals) - min(vals)) > tol_stab:
                             stable = False
                             break
                 if near_target and stable:

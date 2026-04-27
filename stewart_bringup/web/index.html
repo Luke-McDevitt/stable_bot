@@ -1350,6 +1350,26 @@ function setupROSInterface() {
         toast('capture-rest-msg', line, r.success);
         return;
       }
+      if (r.cmd && r.cmd.startsWith('level_')) {
+        // Show the message in the sweep-progress line — this is where the user
+        // is already looking when they click Start sweep / Record / Step test,
+        // so failures don't disappear silently into the void.
+        const prog = $('lvl-sweep-progress');
+        if (prog) {
+          prog.innerText = (r.success ? '✓ ' : '✗ ') + r.cmd + ': ' + r.message;
+          prog.className = 'text-xs mono mt-2 min-h-4 ' +
+            (r.success ? 'text-emerald-400' : 'text-red-400');
+        }
+        if (r.cmd === 'level_get_gains' && r.gains) {
+          const g = r.gains;
+          const out = $('lvl-gains-readout');
+          if (out) out.innerText =
+            `KP ${g.kp}  KI ${g.ki}  α ${g.filter_alpha}\n` +
+            `deadband ${g.deadband_deg}°  rate ${g.rate_limit_deg_per_iter}°/iter  ` +
+            `max corr ${g.max_corr_deg}°`;
+        }
+        return;
+      }
       if (r.cmd === 'capture_endstop' || r.cmd === 'save_limits' || r.cmd === 'clear_endstops') {
         toast('endstop-capture-msg', line, r.success);
         // Update the captured-status indicators when capture-endstop reports back.
