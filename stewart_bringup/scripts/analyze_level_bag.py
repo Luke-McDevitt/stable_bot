@@ -29,6 +29,11 @@ from pathlib import Path
 import numpy as np
 
 try:
+    import yaml
+except ImportError:
+    yaml = None
+
+try:
     import rclpy.serialization
     import rosbag2_py
     from jugglebot_interfaces.msg import LevelDiag
@@ -38,6 +43,32 @@ except ImportError as e:
         f"  source /opt/ros/kilted/setup.bash\n"
         f"  source ~/ros2_ws/install/local_setup.bash"
     )
+
+
+def _detect_storage_id(bag_dir):
+    """Decide which rosbag2 storage plugin to use for this bag.
+
+    metadata.yaml is the authoritative source — every rosbag2 bag has
+    one and it carries the storage_identifier ("mcap" or "sqlite3").
+    Fall back to file extension if the YAML is unreadable, and
+    finally to "mcap" because that's the Kilted default."""
+    bag_dir = Path(bag_dir)
+    meta = bag_dir / 'metadata.yaml'
+    if meta.exists() and yaml is not None:
+        try:
+            with open(meta) as f:
+                data = yaml.safe_load(f) or {}
+            sid = (data.get('rosbag2_bagfile_information') or {}).get(
+                'storage_identifier')
+            if sid:
+                return str(sid)
+        except Exception:
+            pass
+    if any(bag_dir.glob('*.mcap')):
+        return 'mcap'
+    if any(bag_dir.glob('*.db3')):
+        return 'sqlite3'
+    return 'mcap'
 
 
 # Bit indices match _level_run's clip_flags assembly in stewart_control_node.
@@ -54,8 +85,12 @@ CLIP_BITS = {
 
 
 def read_level_diag(bag_dir):
-    """Iterate /level_diag in the bag and return [(t_s, msg), ...]."""
-    storage = rosbag2_py.StorageOptions(uri=str(bag_dir), storage_id='sqlite3')
+    """Iterate /level_diag in the bag and return [(t_s, msg), ...].
+
+    Auto-detects the storage backend (mcap on Kilted defaults; sqlite3
+    on older or explicitly-configured workspaces)."""
+    sid = _detect_storage_id(bag_dir)
+    storage = rosbag2_py.StorageOptions(uri=str(bag_dir), storage_id=sid)
     converter = rosbag2_py.ConverterOptions('', '')
     reader = rosbag2_py.SequentialReader()
     reader.open(storage, converter)
