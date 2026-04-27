@@ -669,6 +669,11 @@
         </div>
         <div id="lvl-bags-list" class="text-xs text-slate-400 space-y-1
                                         max-h-64 overflow-y-auto">—</div>
+        <!-- Persistent digest output. Lives outside the sweep-progress
+             line so the 5 Hz heartbeat can't overwrite it. -->
+        <pre id="lvl-digest-out" class="text-xs mono mt-2 p-2 bg-slate-900
+              border border-slate-700 rounded text-slate-400 whitespace-pre-wrap
+              max-h-48 overflow-y-auto" style="display:none"></pre>
       </div>
     </details>
 
@@ -1661,30 +1666,34 @@ function lvlRenderSweep(e) {
   return head + kids + '</div></details>';
 }
 function lvlExportDigest(name) {
-  const out = $('lvl-sweep-progress');
-  if (out) {
-    out.innerText = `running analyzer on ${name}…`;
-    out.className = 'text-xs mono text-slate-300 mt-2 min-h-4';
-  }
+  // Use the dedicated digest-output box rather than lvl-sweep-progress
+  // because the latter is overwritten by the 5 Hz /level_record_state
+  // heartbeat — error messages would vanish within 200 ms.
+  const out = $('lvl-digest-out');
+  const setOut = (text, ok) => {
+    if (!out) return;
+    out.style.display = 'block';
+    out.innerText = text;
+    out.className = 'text-xs mono mt-2 p-2 bg-slate-900 border rounded ' +
+      'whitespace-pre-wrap max-h-48 overflow-y-auto ' +
+      (ok === true  ? 'border-emerald-700 text-emerald-300' :
+       ok === false ? 'border-red-700 text-red-300' :
+                      'border-slate-700 text-slate-300');
+  };
+  setOut(`running analyzer on ${name}…`, null);
   fetch('/bags/digest', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({name}),
   }).then(r => r.json()).then(j => {
-    if (out) {
-      out.innerText = (j.ok ? '✓ ' : '✗ ') + 'digest ' + name + ': ' +
-        (j.message || '').split('\n').slice(0, 3).join(' · ');
-      out.className = 'text-xs mono mt-2 min-h-4 ' +
-        (j.ok ? 'text-emerald-400' : 'text-red-400');
-    }
-    if (j.ok) {
-      // Hint for the user: where the digest landed.
-      console.log('digest output:\n' + j.message);
-    }
+    const head = (j.ok ? '✓ ' : '✗ ') + 'digest ' + name + '\n';
+    const body = j.message || '(no output)';
+    setOut(head + body, !!j.ok);
+    // Always log full output to the browser console as a backup, even on success.
+    console.log((j.ok ? '[digest ok] ' : '[digest FAIL] ') + name + '\n' + body);
+    if (j.ok) lvlFetchBags();
   }).catch(e => {
-    if (out) {
-      out.innerText = '✗ digest failed: ' + e;
-      out.className = 'text-xs mono text-red-400 mt-2 min-h-4';
-    }
+    setOut('✗ digest failed: ' + e, false);
+    console.error('digest fetch failed:', e);
   });
 }
 function lvlFetchBags() {
