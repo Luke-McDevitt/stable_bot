@@ -229,12 +229,29 @@ The Pi migration is really just: "run all the same stuff, but on a
 different Linux box that happens to have native USB and no WSL2
 weirdness."
 
-## Laptop-only mode after migration
+## Syncing code changes to the Pi
 
-You can still run the WSL2 stack alongside the Pi — they don't conflict
-because each has its own CAN bus (WSL2 via usbipd, Pi via native USB).
-Useful for development: iterate code on the WSL2 side, rsync to the Pi
-when happy:
+Standard workflow: commit on WSL → push to GitHub → pull on the Pi →
+rebuild → restart services. Three commands, after `ssh sorak@<pi-ip>`
+(typical hotspot IP `10.31.1.98`):
+
+```bash
+cd ~/ros2_ws/src/stable_bot && git pull
+cd ~/ros2_ws && colcon build --symlink-install
+sudo systemctl restart stable_bot stable_bot_gui
+```
+
+This works because `install_on_pi.sh` appended both
+`/opt/ros/kilted/setup.bash` and `~/ros2_ws/install/local_setup.bash`
+to `~/.bashrc`, so colcon picks up ROS automatically on login.
+
+Tip: scope the build to just the package(s) you touched to save time
+on the Pi 4/5: `colcon build --packages-select stewart_bringup --symlink-install`.
+
+### Alternative: rsync (no GitHub round-trip)
+
+For uncommitted experiments — faster than push/pull but leaves the Pi
+in an unknown state vs. main:
 
 ```bash
 rsync -av --delete \
@@ -244,6 +261,9 @@ ssh sorak@stablebot.local \
   "cd ~/ros2_ws && colcon build --packages-select stewart_bringup --symlink-install && \
    sudo systemctl restart stable_bot.service"
 ```
+
+Either way the WSL2 stack can run alongside — each has its own CAN bus
+(WSL2 via usbipd, Pi via native USB), so they don't conflict.
 
 ---
 

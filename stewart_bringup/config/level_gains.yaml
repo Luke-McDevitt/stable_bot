@@ -1,0 +1,29 @@
+# Level-loop PI gains. Loaded by stewart_control_node at startup AND
+# on /control_cmd {cmd: level_reload_gains} so they can be tuned in
+# place without rebuilding. See stewart_bringup/docs/level_pi_tuning_plan.md.
+#
+# Phase 4 of the tuning plan sweeps these via auto-sweep bag runs.
+# Acceptance: settling-time(0.1°) <= 0.5 s AND steady-state RMS <= 0.05°
+# at every Z in the operating range (30–50 mm).
+
+# Proportional gain (deg correction per deg error)
+kp: 0.7
+
+# Integral gain (deg/s correction per deg error)
+ki: 0.2
+
+# Deadband — errors smaller than this don't accumulate into the integrator.
+# Below the IMU's static noise floor (~0.05° on the MTi-630).
+deadband_deg: 0.05
+
+# Per-iteration rate limit on the correction signal (deg / 20 ms tick).
+# Caps how fast the controller can move the platform; too low → controller
+# can't keep up with its own bandwidth → high-freq oscillation.
+rate_limit_deg_per_iter: 0.2
+
+# Hard cap on the correction signal magnitude. Safety clamp; should rarely
+# engage in normal operation.
+max_corr_deg: 5.0
+
+# IMU error low-pass filter coefficient (0..1). Higher = less filtering.
+filter_alpha: 0.3

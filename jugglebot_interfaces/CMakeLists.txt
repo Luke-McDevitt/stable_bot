@@ -37,6 +37,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SetMotorVelCurrLimitsMessage.msg"
   "msg/SetTrapTrajLimitsMessage.msg"
   "msg/LegsTargetReachedMessage.msg"
+  "msg/LevelDiag.msg"
 
   "srv/GetTiltReadingService.srv"
   "srv/ODriveCommandService.srv"

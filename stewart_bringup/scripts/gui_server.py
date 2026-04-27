@@ -43,6 +43,7 @@ _BRINGUP_DIR = _find_stewart_bringup_dir()
 DEFAULT_WEB_DIR = os.path.join(_BRINGUP_DIR, 'web')
 RESET_SCRIPT = os.path.join(_BRINGUP_DIR, 'scripts/reset_stewart_stack.py')
 LAUNCH_LOG = os.path.join(_BRINGUP_DIR, 'logs/last_launch.log')
+BAGS_DIR = os.path.expanduser('~/stable_bot_bags')
 
 # Global launch subprocess state (guarded by a lock)
 _launch_lock = threading.Lock()
@@ -113,6 +114,131 @@ def _stop_launch():
             return False, f"stop failed: {e}"
 
 
+def _dir_size(path):
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for fn in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, fn))
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return total
+
+
+def _list_bags():
+    """Enumerate ~/stable_bot_bags/. Returns a list of dicts ordered by
+    mtime descending. Single bags and sweep dirs are flagged via 'kind'.
+    Sweep entries include their child bags as a nested 'children' list."""
+    out = []
+    if not os.path.isdir(BAGS_DIR):
+        return out
+    try:
+        entries = os.listdir(BAGS_DIR)
+    except OSError:
+        return out
+    for name in entries:
+        full = os.path.join(BAGS_DIR, name)
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        if name.endswith('_notes.json'):
+            continue   # sidecars are surfaced under their bag entry
+        kind = 'sweep' if name.startswith('sweep_') and os.path.isdir(full) else 'bag'
+        entry = {
+            'name': name,
+            'path': full,
+            'kind': kind,
+            'mtime': st.st_mtime,
+            'size_bytes': _dir_size(full) if os.path.isdir(full)
+                          else st.st_size,
+        }
+        # Sidecar / manifest pickup.
+        if kind == 'bag':
+            sidecar = full + '_notes.json'
+            if os.path.isfile(sidecar):
+                try:
+                    with open(sidecar) as f:
+                        entry['notes'] = json.load(f)
+                except Exception:
+                    pass
+        else:
+            manifest = os.path.join(full, 'manifest.json')
+            if os.path.isfile(manifest):
+                try:
+                    with open(manifest) as f:
+                        entry['manifest'] = json.load(f)
+                except Exception:
+                    pass
+            # Child bags inside the sweep dir.
+            children = []
+            try:
+                for cn in sorted(os.listdir(full)):
+                    cf = os.path.join(full, cn)
+                    if not os.path.isdir(cf) or cn.endswith('_notes.json'):
+                        continue
+                    try:
+                        cst = os.stat(cf)
+                    except OSError:
+                        continue
+                    cnotes = None
+                    side = cf + '_notes.json'
+                    if os.path.isfile(side):
+                        try:
+                            with open(side) as f:
+                                cnotes = json.load(f)
+                        except Exception:
+                            pass
+                    children.append({
+                        'name': cn, 'path': cf,
+                        'mtime': cst.st_mtime,
+                        'size_bytes': _dir_size(cf),
+                        'notes': cnotes,
+                    })
+            except OSError:
+                pass
+            entry['children'] = children
+        out.append(entry)
+    out.sort(key=lambda e: e['mtime'], reverse=True)
+    return out
+
+
+def _resolve_bag_path(name):
+    """Resolve a user-supplied basename to an absolute path under BAGS_DIR.
+    Rejects anything that escapes BAGS_DIR (path-traversal guard).
+    Returns the abspath or None."""
+    if not name or '/' in name or name in ('.', '..'):
+        return None
+    full = os.path.realpath(os.path.join(BAGS_DIR, name))
+    base = os.path.realpath(BAGS_DIR)
+    if not full.startswith(base + os.sep):
+        return None
+    if not os.path.exists(full):
+        return None
+    return full
+
+
+def _delete_bag(name):
+    import shutil
+    full = _resolve_bag_path(name)
+    if full is None:
+        return False, "bad name"
+    sidecar = full + '_notes.json'
+    try:
+        if os.path.isdir(full):
+            shutil.rmtree(full)
+        else:
+            os.remove(full)
+        if os.path.isfile(sidecar):
+            os.remove(sidecar)
+        return True, f"deleted {name}"
+    except Exception as e:
+        return False, f"delete failed: {e}"
+
+
 def _launch_status():
     pid = None
     running = False
@@ -167,6 +293,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == '/launch_status':
             self._send_json(_launch_status())
             return
+        if self.path == '/bags':
+            self._send_json({'bags_dir': BAGS_DIR, 'entries': _list_bags()})
+            return
         return super().do_GET()
 
     def do_POST(self):
@@ -198,6 +327,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ok, msg = _stop_launch()
             self._send_json({'ok': ok, 'message': msg})
             return
+        if self.path == '/bags/delete':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _delete_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 400)
+            return
         self.send_error(404)
 
     # Quieter logging
@@ -225,7 +366,8 @@ def main():
     Handler.web_dir = args.web_dir
     srv = ReusingServer((args.host, args.port), Handler)
     print(f"serving {args.web_dir} on http://{args.host}:{args.port}")
-    print(f"endpoints: GET /launch_status, POST /reset, POST /launch, POST /stop_launch")
+    print(f"endpoints: GET /launch_status, GET /bags, POST /reset, POST /launch, "
+          f"POST /stop_launch, POST /bags/delete")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

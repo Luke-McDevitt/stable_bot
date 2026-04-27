@@ -63,6 +63,7 @@ from sensor_msgs.msg import Imu
 from jugglebot_interfaces.srv import (
     ActivateOrDeactivate, SetFloat, JogLeg, SetPose, StartHoming, ArmLeg,
 )
+from jugglebot_interfaces.msg import LevelDiag
 
 
 # ---------------- Constants -------------------------------------------
@@ -79,6 +80,8 @@ _BRINGUP_DIR = _find_stewart_bringup_dir()
 LEG_LIMITS_PATH = os.path.join(_BRINGUP_DIR, 'config/leg_limits.yaml')
 GLOBAL_LIMITS_PATH = os.path.join(_BRINGUP_DIR, 'config/global_limits.yaml')
 LEVEL_CAL_PATH = os.path.join(_BRINGUP_DIR, 'config/platform_level.yaml')
+LEVEL_GAINS_PATH = os.path.join(_BRINGUP_DIR, 'config/level_gains.yaml')
+BAGS_DIR = os.path.expanduser('~/stable_bot_bags')
 STALL_HOME_SCRIPT = os.path.expanduser(
     '~/Getting the robot working/Spin Motor Over CAN Test/stall_home.py')
 ROUTINES_DIR = os.path.join(_BRINGUP_DIR, 'config/routines')
@@ -264,6 +267,29 @@ def _load_level_cal():
     with open(LEVEL_CAL_PATH) as f:
         doc = yaml.safe_load(f) or {}
     return float(doc.get('ref_roll_deg', 0.0)), float(doc.get('ref_pitch_deg', 0.0))
+
+
+def _load_level_gains():
+    """Returns dict with kp, ki, deadband_deg, rate_limit_deg_per_iter,
+    max_corr_deg, filter_alpha. Falls back to historical hardcoded
+    values if the YAML is missing so the node still starts."""
+    defaults = {
+        'kp': 0.7, 'ki': 0.2, 'deadband_deg': 0.05,
+        'rate_limit_deg_per_iter': 0.2, 'max_corr_deg': 5.0,
+        'filter_alpha': 0.3,
+    }
+    if not os.path.exists(LEVEL_GAINS_PATH):
+        return defaults
+    try:
+        with open(LEVEL_GAINS_PATH) as f:
+            doc = yaml.safe_load(f) or {}
+    except Exception:
+        return defaults
+    out = dict(defaults)
+    for k in defaults:
+        if k in doc:
+            out[k] = float(doc[k])
+    return out
 
 
 def _compute_motor_targets(xyz, rpy, geom, limits):
@@ -614,6 +640,30 @@ class StewartControlNode(Node):
         self.level_ref_pitch = 0.0
         self.level_corr = [0.0, 0.0]
 
+        # Level-PI tuning support — see docs/level_pi_tuning_plan.md.
+        self.level_gains = _load_level_gains()
+        # Step-injection offsets read by _level_run on each tick. Driven
+        # by the step-test routine and the auto-sweep step battery.
+        self.level_step_offset_roll = 0.0
+        self.level_step_offset_pitch = 0.0
+        # External integrator-reset flag. _level_run picks it up at the
+        # top of the next tick and zeros integ_r/integ_p without any
+        # mechanical transient (cleaner than disarm-and-snap).
+        self._level_zero_integ_request = threading.Event()
+        # `ros2 bag record` subprocess for single recordings (not the
+        # auto-sweep — that manages its own per-Z bag children). Guarded
+        # by a lock; one bag at a time.
+        self._bag_lock = threading.Lock()
+        self._bag_proc = None
+        self._bag_dir = None
+        self._bag_t0 = 0.0
+        # Auto-sweep thread state.
+        self._sweep_lock = threading.Lock()
+        self._sweep_thread = None
+        self._sweep_stop = threading.Event()
+        self._sweep_state = {'state': 'idle'}   # current snapshot for /level_record_state
+        self._sweep_state_lock = threading.Lock()
+
         # Latest IMU (rpy, last_rx)
         self.imu_lock = threading.Lock()
         self.imu_rpy = None
@@ -663,6 +713,12 @@ class StewartControlNode(Node):
             String, 'control_result', 20)
         # Per-node decoded error state, published on request + ~1 Hz.
         self.pub_errors = self.create_publisher(String, 'odrive_errors', 10)
+        # Level-PI tuning publishers. /level_diag carries the per-tick
+        # controller state (typed, recorded into bags). /level_record_state
+        # carries the bag/sweep status for the GUI (JSON String, 5 Hz heartbeat).
+        self.pub_level_diag = self.create_publisher(LevelDiag, 'level_diag', 50)
+        self.pub_level_record_state = self.create_publisher(
+            String, 'level_record_state', 10)
 
         # Dead-man jog watchdog: if /jog_vel_cmd stops arriving for > 0.5 s
         # while any leg is in vel mode, force vel target back to 0 so the
@@ -703,6 +759,7 @@ class StewartControlNode(Node):
         # --- Timers ---
         self.create_timer(0.05, self._tick_state)      # 20 Hz encoders/rpy
         self.create_timer(0.5, self._tick_status)       # 2 Hz status
+        self.create_timer(0.2, self._tick_level_record_state)  # 5 Hz heartbeat
 
         self._open_bus_and_start_threads()
         self.get_logger().info("stewart_control_node ready.")
@@ -1686,6 +1743,35 @@ class StewartControlNode(Node):
                     min_tilt_deg=float(d.get('min_tilt_deg', 0.0)),
                     tilt_multiplier=float(d.get('tilt_multiplier', 1.0)))
                 extra['routines'] = self._list_routine_names()
+            elif cmd == 'level_record_start':
+                ok, reply_msg, ext = self._lr_start_bag(
+                    name=str(d.get('name') or 'untitled'),
+                    notes=str(d.get('notes') or ''))
+                extra.update(ext)
+            elif cmd == 'level_record_stop':
+                ok, reply_msg, ext = self._lr_stop_bag()
+                extra.update(ext)
+            elif cmd == 'level_zero_integrator':
+                self._level_zero_integ_request.set()
+                ok, reply_msg = True, "integrator zero requested"
+            elif cmd == 'level_step_test':
+                ok, reply_msg = self._lr_start_step_test_async(
+                    amp_deg=float(d.get('amp_deg', 1.0)),
+                    hold_s=float(d.get('hold_s', 3.0)),
+                    count=int(d.get('count', 1)))
+            elif cmd == 'level_auto_sweep_start':
+                ok, reply_msg, ext = self._lr_start_sweep(d)
+                extra.update(ext)
+            elif cmd == 'level_auto_sweep_abort':
+                ok, reply_msg = self._lr_abort_sweep()
+            elif cmd == 'level_reload_gains':
+                self.level_gains = _load_level_gains()
+                extra['gains'] = dict(self.level_gains)
+                ok, reply_msg = True, f"reloaded {LEVEL_GAINS_PATH}"
+            elif cmd == 'level_get_gains':
+                extra['gains'] = dict(self.level_gains)
+                extra['gains_file_path'] = LEVEL_GAINS_PATH
+                ok, reply_msg = True, "gains dumped"
             else:
                 ok, reply_msg = False, f"unknown cmd '{cmd}'"
         except Exception as e:
@@ -2769,14 +2855,34 @@ class StewartControlNode(Node):
         self.level_thread = None
 
     def _level_run(self):
+        # Level-loop body. Gains are read from self.level_gains at the
+        # top of every tick so /control_cmd level_reload_gains takes
+        # effect within one period without restarting the loop. Step
+        # offsets (self.level_step_offset_*) and the zero-integrator
+        # request flag are also read fresh per tick to keep the
+        # auto-sweep / step-test routines decoupled from this loop.
+        # See docs/level_pi_tuning_plan.md for the diagnostic spec.
         err_r_f = 0.0
         err_p_f = 0.0
         integ_r = 0.0
         integ_p = 0.0
         tilt_r_corr = 0.0
         tilt_p_corr = 0.0
+        nan6 = [float('nan')] * 6
         while not self.level_stop.is_set():
             t0 = time.monotonic()
+            # Snapshot gains for this tick (allows live reload).
+            g = self.level_gains
+            kp = g['kp']
+            ki = g['ki']
+            alpha = g['filter_alpha']
+            deadband = g['deadband_deg']
+            rate_limit = g['rate_limit_deg_per_iter']
+            max_corr = g['max_corr_deg']
+            if self._level_zero_integ_request.is_set():
+                integ_r = 0.0
+                integ_p = 0.0
+                self._level_zero_integ_request.clear()
             with self.imu_lock:
                 rpy = self.imu_rpy
                 last_rx = self.imu_last_rx
@@ -2784,38 +2890,63 @@ class StewartControlNode(Node):
                 time.sleep(CTRL_PERIOD_S)
                 continue
             # DYNAMIC reference: target IMU reading follows the commanded
-            # pose (current_rpy). That way a routine commanding roll=+2°
-            # produces an actual world-frame roll of +2° rather than being
-            # cancelled by the PI. When current_rpy == 0 (the "hold level"
-            # case) this collapses back to static ref = level_ref.
-            target_r = self.level_ref_roll  + self.current_rpy[0]
-            target_p = self.level_ref_pitch + self.current_rpy[1]
+            # pose (current_rpy) plus the tuning step-offset. When
+            # current_rpy == 0 and the step-offset == 0, this collapses
+            # back to static ref = level_ref.
+            step_or = self.level_step_offset_roll
+            step_op = self.level_step_offset_pitch
+            target_r = self.level_ref_roll  + self.current_rpy[0] + step_or
+            target_p = self.level_ref_pitch + self.current_rpy[1] + step_op
             err_r = rpy[0] - target_r
             err_p = rpy[1] - target_p
-            err_r_f = LEVEL_FILTER_ALPHA * err_r + (1 - LEVEL_FILTER_ALPHA) * err_r_f
-            err_p_f = LEVEL_FILTER_ALPHA * err_p + (1 - LEVEL_FILTER_ALPHA) * err_p_f
-            if abs(err_r_f) > LEVEL_DEADBAND:
-                integ_r += -err_r_f * LEVEL_KI * CTRL_PERIOD_S
-            if abs(err_p_f) > LEVEL_DEADBAND:
-                integ_p += -err_p_f * LEVEL_KI * CTRL_PERIOD_S
-            integ_r = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, integ_r))
-            integ_p = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, integ_p))
-            target_r = -err_r_f * LEVEL_KP + integ_r
-            target_p = -err_p_f * LEVEL_KP + integ_p
-            d_r = max(-LEVEL_RATE_LIMIT, min(LEVEL_RATE_LIMIT, target_r - tilt_r_corr))
-            d_p = max(-LEVEL_RATE_LIMIT, min(LEVEL_RATE_LIMIT, target_p - tilt_p_corr))
-            new_r = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, tilt_r_corr + d_r))
-            new_p = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, tilt_p_corr + d_p))
+            err_r_f = alpha * err_r + (1 - alpha) * err_r_f
+            err_p_f = alpha * err_p + (1 - alpha) * err_p_f
+            clip_flags = 0
+            if abs(err_r_f) > deadband:
+                integ_r += -err_r_f * ki * CTRL_PERIOD_S
+            else:
+                clip_flags |= (1 << 4)   # deadband_r
+            if abs(err_p_f) > deadband:
+                integ_p += -err_p_f * ki * CTRL_PERIOD_S
+            else:
+                clip_flags |= (1 << 5)   # deadband_p
+            if integ_r > max_corr or integ_r < -max_corr:
+                clip_flags |= (1 << 6)   # integ_clamp_r
+            integ_r = max(-max_corr, min(max_corr, integ_r))
+            if integ_p > max_corr or integ_p < -max_corr:
+                clip_flags |= (1 << 7)   # integ_clamp_p
+            integ_p = max(-max_corr, min(max_corr, integ_p))
+            # Unclipped PI output — captured for diagnostics. When this
+            # diverges from the post-clip corr, the controller is fighting
+            # saturation, which is exactly what the analyzer flags.
+            pi_out_r = -err_r_f * kp + integ_r
+            pi_out_p = -err_p_f * kp + integ_p
+            d_r_raw = pi_out_r - tilt_r_corr
+            d_p_raw = pi_out_p - tilt_p_corr
+            d_r = max(-rate_limit, min(rate_limit, d_r_raw))
+            d_p = max(-rate_limit, min(rate_limit, d_p_raw))
+            if d_r != d_r_raw:
+                clip_flags |= (1 << 0)   # rate_limit_r
+            if d_p != d_p_raw:
+                clip_flags |= (1 << 1)   # rate_limit_p
+            new_r_raw = tilt_r_corr + d_r
+            new_p_raw = tilt_p_corr + d_p
+            new_r = max(-max_corr, min(max_corr, new_r_raw))
+            new_p = max(-max_corr, min(max_corr, new_p_raw))
+            if new_r != new_r_raw:
+                clip_flags |= (1 << 2)   # max_corr_r
+            if new_p != new_p_raw:
+                clip_flags |= (1 << 3)   # max_corr_p
             # Back-calculation anti-windup: if the actual (rate-limited +
             # clamped) command differs from the unsaturated PI output,
-            # pull the integrator back by that deficit so it stops
-            # winding up against the saturation. Without this, the I term
-            # keeps growing during transients and produces a limit cycle
-            # around the target instead of settling.
-            integ_r += (new_r - target_r)
-            integ_p += (new_p - target_p)
-            integ_r = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, integ_r))
-            integ_p = max(-LEVEL_MAX_CORR, min(LEVEL_MAX_CORR, integ_p))
+            # pull the integrator back by that deficit so it stops winding
+            # up against the saturation. Without this, the I term keeps
+            # growing during transients and produces a limit cycle around
+            # the target instead of settling.
+            integ_r += (new_r - pi_out_r)
+            integ_p += (new_p - pi_out_p)
+            integ_r = max(-max_corr, min(max_corr, integ_r))
+            integ_p = max(-max_corr, min(max_corr, integ_p))
             tilt_r_corr = new_r
             tilt_p_corr = new_p
             self.level_corr = [tilt_r_corr, tilt_p_corr]
@@ -2823,13 +2954,496 @@ class StewartControlNode(Node):
             rpy_cmd = [self.current_rpy[0] + tilt_r_corr,
                        self.current_rpy[1] + tilt_p_corr,
                        self.current_rpy[2]]
+            motor_targets = list(nan6)
             if self.limits is not None and self.feeder is not None:
                 targets, _ = _compute_motor_targets(
                     tuple(xyz), tuple(rpy_cmd), self.geom, self.limits)
                 self.feeder.set_pos_targets(targets)
+                motor_targets = [float(v) for v in targets]
+            # Diag publish — outside the IK guard so we still get data
+            # when the feeder isn't running (e.g., during stand-down tests).
+            try:
+                msg = LevelDiag()
+                msg.t_imu = float(last_rx)
+                msg.t_tick = float(t0)
+                msg.roll = float(rpy[0])
+                msg.pitch = float(rpy[1])
+                msg.target_roll = float(target_r)
+                msg.target_pitch = float(target_p)
+                msg.err_r = float(err_r)
+                msg.err_p = float(err_p)
+                msg.err_r_filt = float(err_r_f)
+                msg.err_p_filt = float(err_p_f)
+                msg.integ_r = float(integ_r)
+                msg.integ_p = float(integ_p)
+                msg.pi_out_r = float(pi_out_r)
+                msg.pi_out_p = float(pi_out_p)
+                msg.corr_r = float(tilt_r_corr)
+                msg.corr_p = float(tilt_p_corr)
+                msg.clip_flags = int(clip_flags)
+                msg.motor_targets = motor_targets
+                if self.listener is not None:
+                    enc = self.listener.get_all(max_age_s=0.5)
+                    msg.leg_enc = [float(v) if v is not None else float('nan')
+                                   for v in enc]
+                    msg.leg_iq = [float(v) for v in self.listener.get_iq(max_age_s=2.0)]
+                else:
+                    msg.leg_enc = list(nan6)
+                    msg.leg_iq = list(nan6)
+                msg.dt_actual = float(time.monotonic() - t0)
+                msg.target_xyzrpy = [
+                    float(xyz[0]), float(xyz[1]), float(xyz[2]),
+                    float(rpy_cmd[0]), float(rpy_cmd[1]), float(rpy_cmd[2]),
+                ]
+                self.pub_level_diag.publish(msg)
+            except Exception:
+                # Never let diag publication crash the control loop.
+                pass
             sl = CTRL_PERIOD_S - (time.monotonic() - t0)
             if sl > 0:
                 time.sleep(sl)
+
+    # ---- Level-PI tuning: bag recording + step tests + auto-sweep ----
+    # See docs/level_pi_tuning_plan.md. Inbound commands arrive via
+    # /control_cmd JSON ('level_record_*' / 'level_step_test' /
+    # 'level_auto_sweep_*'). State for the GUI is published as JSON on
+    # /level_record_state at 5 Hz.
+
+    LR_BAG_TOPICS = (
+        '/level_diag', '/platform_rpy', '/leg_encoders',
+        '/leg_currents', '/control_cmd',
+    )
+    LR_Z_REACHED_POS_TOL_TURNS = 0.05
+    LR_Z_REACHED_VEL_WINDOW_S = 0.5
+    LR_Z_REACHED_TIMEOUT_S = 5.0
+    LR_STEP_AMP_HARD_CAP_DEG = 2.0
+
+    def _lr_git_sha(self):
+        try:
+            r = subprocess.run(
+                ['git', '-C', _BRINGUP_DIR, 'rev-parse', '--short', 'HEAD'],
+                capture_output=True, text=True, timeout=2.0)
+            if r.returncode == 0:
+                return r.stdout.strip()
+        except Exception:
+            pass
+        return 'unknown'
+
+    def _lr_safe_name(self, s):
+        """Sanitize a user-supplied test name into a filename component."""
+        s = (s or 'untitled').strip()
+        out = ''.join(c if c.isalnum() or c in '-_' else '_' for c in s)
+        return out[:64] or 'untitled'
+
+    def _lr_set_state(self, state, **kw):
+        """Update the sweep state snapshot (used by the heartbeat)."""
+        with self._sweep_state_lock:
+            self._sweep_state = {'state': state, 't_unix': time.time(), **kw}
+
+    def _tick_level_record_state(self):
+        """5 Hz heartbeat for the GUI. Publishes the latest state snapshot
+        plus a quick check of whether a bag is currently recording."""
+        with self._sweep_state_lock:
+            snap = dict(self._sweep_state)
+        bag_alive = False
+        with self._bag_lock:
+            if self._bag_proc is not None and self._bag_proc.poll() is None:
+                bag_alive = True
+                snap['single_bag_dir'] = self._bag_dir
+                snap['single_bag_elapsed_s'] = round(
+                    time.monotonic() - self._bag_t0, 1)
+        snap['bag_recording'] = bag_alive
+        snap['gains'] = dict(self.level_gains)
+        snap['level_enabled'] = bool(self.level_enabled)
+        m = String()
+        m.data = json.dumps(snap)
+        self.pub_level_record_state.publish(m)
+
+    # ---- single bag ----
+    def _lr_save_notes(self, bag_dir, name, notes, extra_meta):
+        """Sidecar notes.json next to the bag dir. Captures gains snapshot,
+        free-text notes, git SHA — the per-trial 'why' that the bag itself
+        can't carry."""
+        try:
+            payload = {
+                'name': name,
+                'notes': notes,
+                'gains': dict(self.level_gains),
+                'gains_file_path': LEVEL_GAINS_PATH,
+                'git_sha': self._lr_git_sha(),
+                'started_utc': datetime.datetime.utcnow().isoformat() + 'Z',
+                'topics': list(self.LR_BAG_TOPICS),
+                **(extra_meta or {}),
+            }
+            with open(os.path.join(bag_dir + '_notes.json'), 'w') as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            self.get_logger().warn(f"sidecar notes write failed: {e}")
+
+    def _lr_spawn_bag(self, bag_dir):
+        """Start a `ros2 bag record` subprocess writing to bag_dir.
+        Returns the Popen. Re-source ROS in the child so this works
+        whether or not the parent process has it on PATH."""
+        os.makedirs(os.path.dirname(bag_dir), exist_ok=True)
+        topics = ' '.join(self.LR_BAG_TOPICS)
+        cmd = (
+            'source /opt/ros/kilted/setup.bash && '
+            'source ~/ros2_ws/install/local_setup.bash && '
+            f'exec ros2 bag record -o {bag_dir} {topics}'
+        )
+        return subprocess.Popen(
+            ['bash', '-c', cmd],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+
+    def _lr_stop_proc(self, proc, timeout_s=5.0):
+        """SIGINT a bag-record subprocess and wait. Returns True on clean
+        stop, False on hard kill."""
+        if proc is None or proc.poll() is not None:
+            return True
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+            try:
+                proc.wait(timeout=timeout_s)
+                return True
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                proc.wait(timeout=2.0)
+                return False
+        except Exception:
+            return False
+
+    def _lr_start_bag(self, name, notes, extra_meta=None):
+        with self._bag_lock:
+            if self._bag_proc is not None and self._bag_proc.poll() is None:
+                return False, "bag already recording", {}
+            stamp = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+            safe = self._lr_safe_name(name)
+            bag_dir = os.path.join(BAGS_DIR, f"{stamp}_{safe}")
+            try:
+                self._bag_proc = self._lr_spawn_bag(bag_dir)
+            except Exception as e:
+                return False, f"spawn failed: {e}", {}
+            self._bag_dir = bag_dir
+            self._bag_t0 = time.monotonic()
+        self._lr_save_notes(bag_dir, name, notes, extra_meta)
+        return True, f"recording -> {bag_dir}", {'bag_dir': bag_dir}
+
+    def _lr_stop_bag(self):
+        with self._bag_lock:
+            proc = self._bag_proc
+            bag_dir = self._bag_dir
+            t0 = self._bag_t0
+            self._bag_proc = None
+            self._bag_dir = None
+        if proc is None:
+            return False, "no bag recording", {}
+        clean = self._lr_stop_proc(proc)
+        size = 0
+        try:
+            for root, _dirs, files in os.walk(bag_dir):
+                for fn in files:
+                    size += os.path.getsize(os.path.join(root, fn))
+        except Exception:
+            pass
+        duration = time.monotonic() - t0
+        return True, "stopped", {
+            'bag_dir': bag_dir,
+            'duration_s': round(duration, 2),
+            'size_bytes': int(size),
+            'clean_stop': clean,
+        }
+
+    # ---- step test (used standalone and inside auto-sweep) ----
+    def _lr_step_battery(self, amp_deg, hold_s, count, abort_event):
+        """Drive self.level_step_offset_roll as a square wave:
+        +amp / hold_s / 0 / hold_s, count times. Always restores
+        offset to 0 on exit (including abort). Returns True if all
+        cycles ran, False if aborted."""
+        amp = max(-self.LR_STEP_AMP_HARD_CAP_DEG,
+                  min(self.LR_STEP_AMP_HARD_CAP_DEG, float(amp_deg)))
+        try:
+            for k in range(int(count)):
+                if abort_event is not None and abort_event.is_set():
+                    return False
+                self.level_step_offset_roll = amp
+                end = time.monotonic() + hold_s
+                while time.monotonic() < end:
+                    if abort_event is not None and abort_event.is_set():
+                        return False
+                    time.sleep(0.02)
+                self.level_step_offset_roll = 0.0
+                end = time.monotonic() + hold_s
+                while time.monotonic() < end:
+                    if abort_event is not None and abort_event.is_set():
+                        return False
+                    time.sleep(0.02)
+            return True
+        finally:
+            self.level_step_offset_roll = 0.0
+
+    def _lr_start_step_test_async(self, amp_deg, hold_s, count):
+        """Fire-and-forget step test. Reuses the sweep abort flag so the
+        GUI's big red button stops everything."""
+        if not self.level_enabled:
+            return False, "enable level loop before step test"
+        if self._sweep_thread is not None and self._sweep_thread.is_alive():
+            return False, "auto-sweep is running; abort it first"
+        # Use the sweep abort flag so a single 'abort' command cancels
+        # whichever thing is running.
+        self._sweep_stop.clear()
+        def runner():
+            self._lr_set_state('step_test_running', amp_deg=amp_deg,
+                               hold_s=hold_s, count=count)
+            self._lr_step_battery(amp_deg, hold_s, count, self._sweep_stop)
+            self._lr_set_state('idle')
+        threading.Thread(target=runner, daemon=True).start()
+        return True, f"step test x{int(count)} amp {amp_deg}°"
+
+    # ---- auto-sweep ----
+    def _lr_validate_sweep(self, params):
+        """Clamp + validate user-supplied sweep params. Returns
+        (ok, msg, normalized_params)."""
+        try:
+            z_min = float(params.get('z_min'))
+            z_max = float(params.get('z_max'))
+            z_step = float(params.get('z_step'))
+        except Exception:
+            return False, "z_min/z_max/z_step required", None
+        if z_step <= 0:
+            return False, "z_step must be > 0", None
+        if z_min > z_max:
+            z_min, z_max = z_max, z_min
+        if (z_max - z_min) / z_step > 50:
+            return False, "more than 50 levels — increase z_step", None
+        amp = float(params.get('step_amp_deg', 1.0))
+        if abs(amp) > self.LR_STEP_AMP_HARD_CAP_DEG:
+            return False, f"step_amp_deg > {self.LR_STEP_AMP_HARD_CAP_DEG}° hard cap", None
+        if self.limits is None:
+            return False, "leg_limits.yaml not loaded — home first", None
+        # IK every Z; reject if any clamps. _compute_motor_targets sets
+        # the second return to True when it had to clip into leg_limits.
+        zs = []
+        z = z_min
+        while z <= z_max + 1e-6:
+            try:
+                _t, clamped = _compute_motor_targets(
+                    (0, 0, z), (0, 0, 0), self.geom, self.limits)
+            except Exception as e:
+                return False, f"IK failed at Z={z}: {e}", None
+            if clamped:
+                return False, f"Z={z:.1f} mm exceeds leg limits", None
+            zs.append(round(z, 2))
+            z += z_step
+        norm = {
+            'z_values': zs,
+            'step_count': max(1, int(params.get('step_count', 8))),
+            'step_amp_deg': amp,
+            'step_hold_s': float(params.get('step_hold_s', 3.0)),
+            'baseline_s': float(params.get('baseline_s', 30.0)),
+            'prefix': self._lr_safe_name(params.get('prefix') or 'sweep'),
+        }
+        return True, "ok", norm
+
+    def _lr_start_sweep(self, params):
+        if self._sweep_thread is not None and self._sweep_thread.is_alive():
+            return False, "auto-sweep already running", {}
+        if not self.level_enabled:
+            return False, "enable level loop before auto-sweep", {}
+        ok, msg, norm = self._lr_validate_sweep(params)
+        if not ok:
+            return False, msg, {}
+        # Estimate wall-clock so the GUI can show it without re-running
+        # the math. Per-Z time budget matches _lr_run_sweep below.
+        per_z = (self.LR_Z_REACHED_TIMEOUT_S
+                 + norm['baseline_s']
+                 + 2 * norm['step_hold_s'] * norm['step_count'])
+        norm['estimated_total_s'] = round(per_z * len(norm['z_values']), 1)
+        self._sweep_stop.clear()
+        self._sweep_thread = threading.Thread(
+            target=self._lr_run_sweep, args=(norm,), daemon=True)
+        self._sweep_thread.start()
+        return True, f"sweep started, {len(norm['z_values'])} levels", {
+            'normalized_params': norm,
+        }
+
+    def _lr_abort_sweep(self):
+        # Set the abort flag (covers both standalone step tests and the
+        # full sweep). Then SIGINT any per-Z bag still recording so we
+        # don't leave a stuck child behind.
+        self._sweep_stop.set()
+        with self._bag_lock:
+            proc = self._bag_proc
+            self._bag_proc = None
+            self._bag_dir = None
+        if proc is not None:
+            self._lr_stop_proc(proc)
+        return True, "abort flagged"
+
+    def _lr_wait_z_reached(self, z, abort_event):
+        """Wait until all 6 leg encoders are within tol of the IK target
+        AND have been within tol of each other over the last 0.5 s
+        (i.e. the platform isn't slewing). Returns True on success,
+        False on timeout/abort."""
+        try:
+            ik_targets, _clamped = _compute_motor_targets(
+                (0, 0, z), (0, 0, 0), self.geom, self.limits)
+        except Exception:
+            return False
+        if self.listener is None:
+            return False
+        ring = []   # list of (t_mono, [pos[0..5]])
+        deadline = time.monotonic() + self.LR_Z_REACHED_TIMEOUT_S
+        tol = self.LR_Z_REACHED_POS_TOL_TURNS
+        win_s = self.LR_Z_REACHED_VEL_WINDOW_S
+        while time.monotonic() < deadline:
+            if abort_event is not None and abort_event.is_set():
+                return False
+            now = time.monotonic()
+            enc = self.listener.get_all(max_age_s=0.5)
+            if all(v is not None for v in enc):
+                ring.append((now, list(enc)))
+                ring = [(t, p) for (t, p) in ring if now - t <= win_s]
+                # Check 1: within tol of IK target
+                near_target = all(
+                    abs(enc[i] - ik_targets[i]) < tol for i in range(6))
+                # Check 2: stable over the last win_s
+                stable = False
+                if near_target and ring and (now - ring[0][0]) >= (win_s * 0.9):
+                    stable = True
+                    for i in range(6):
+                        vals = [p[i] for (_t, p) in ring]
+                        if (max(vals) - min(vals)) > tol:
+                            stable = False
+                            break
+                if near_target and stable:
+                    return True
+            time.sleep(0.05)
+        return False
+
+    def _lr_run_sweep(self, params):
+        zs = params['z_values']
+        prefix = params['prefix']
+        sweep_stamp = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+        sweep_dir = os.path.join(BAGS_DIR, f'sweep_{sweep_stamp}_{prefix}')
+        try:
+            os.makedirs(sweep_dir, exist_ok=True)
+        except Exception as e:
+            self._lr_set_state('aborted', error=f'mkdir: {e}')
+            return
+        sweep_t0_unix = time.time()
+        bags = []
+        try:
+            for idx, z in enumerate(zs):
+                if self._sweep_stop.is_set():
+                    break
+                # Phase: command Z, wait for arrival
+                self._lr_set_state(
+                    'sweep_running', phase='z_settle', z=z,
+                    test_idx=idx + 1, test_total=len(zs))
+                self.current_xyz = [0.0, 0.0, float(z)]
+                self.current_rpy = [0.0, 0.0, 0.0]
+                if not self._lr_wait_z_reached(z, self._sweep_stop):
+                    if self._sweep_stop.is_set():
+                        break
+                    self._lr_set_state(
+                        'aborted', reason=f'Z={z}: settle timeout',
+                        z=z, test_idx=idx + 1, test_total=len(zs))
+                    return
+                # Phase: zero integrator, start bag, baseline
+                self._level_zero_integ_request.set()
+                # Per-Z bag goes inside the sweep dir, not in BAGS_DIR root.
+                bag_name = f'z{int(round(z*10)):04d}'   # Z=40.0 → z0400 (deci-mm)
+                bag_dir = os.path.join(
+                    sweep_dir, datetime.datetime.utcnow().strftime('%H%M%SZ_') + bag_name)
+                meta = {
+                    'sweep_dir': sweep_dir,
+                    'sweep_test_idx': idx + 1,
+                    'sweep_test_total': len(zs),
+                    'commanded_z_mm': z,
+                    'step_count': params['step_count'],
+                    'step_amp_deg': params['step_amp_deg'],
+                    'step_hold_s': params['step_hold_s'],
+                    'baseline_s': params['baseline_s'],
+                }
+                with self._bag_lock:
+                    if self._bag_proc is not None and self._bag_proc.poll() is None:
+                        self._lr_stop_proc(self._bag_proc)
+                    try:
+                        self._bag_proc = self._lr_spawn_bag(bag_dir)
+                        self._bag_dir = bag_dir
+                        self._bag_t0 = time.monotonic()
+                    except Exception as e:
+                        self._lr_set_state(
+                            'aborted', reason=f'bag spawn: {e}',
+                            z=z, test_idx=idx + 1, test_total=len(zs))
+                        return
+                self._lr_save_notes(bag_dir, bag_name,
+                                    'auto-sweep child bag', meta)
+                # Baseline
+                self._lr_set_state(
+                    'sweep_running', phase='baseline', z=z,
+                    test_idx=idx + 1, test_total=len(zs),
+                    baseline_s=params['baseline_s'])
+                end = time.monotonic() + params['baseline_s']
+                while time.monotonic() < end:
+                    if self._sweep_stop.is_set():
+                        break
+                    time.sleep(0.05)
+                # Step battery
+                if not self._sweep_stop.is_set():
+                    self._lr_set_state(
+                        'sweep_running', phase='steps', z=z,
+                        test_idx=idx + 1, test_total=len(zs),
+                        step_total=params['step_count'])
+                    self._lr_step_battery(
+                        params['step_amp_deg'],
+                        params['step_hold_s'],
+                        params['step_count'],
+                        self._sweep_stop)
+                # Stop bag for this Z
+                with self._bag_lock:
+                    proc = self._bag_proc
+                    self._bag_proc = None
+                    self._bag_dir = None
+                if proc is not None:
+                    self._lr_stop_proc(proc)
+                bags.append({'z_mm': z, 'bag_dir': bag_dir})
+                if self._sweep_stop.is_set():
+                    break
+            # Always write a manifest, even on abort (so partial sweeps
+            # are still analyzable).
+            try:
+                manifest = {
+                    'sweep_dir': sweep_dir,
+                    'started_utc': datetime.datetime.utcfromtimestamp(
+                        sweep_t0_unix).isoformat() + 'Z',
+                    'ended_utc': datetime.datetime.utcnow().isoformat() + 'Z',
+                    'aborted': bool(self._sweep_stop.is_set()),
+                    'params': params,
+                    'gains': dict(self.level_gains),
+                    'git_sha': self._lr_git_sha(),
+                    'bags': bags,
+                }
+                with open(os.path.join(sweep_dir, 'manifest.json'), 'w') as f:
+                    json.dump(manifest, f, indent=2)
+            except Exception as e:
+                self.get_logger().warn(f"manifest write failed: {e}")
+            if self._sweep_stop.is_set():
+                self._lr_set_state(
+                    'aborted', sweep_dir=sweep_dir,
+                    completed_levels=len(bags), total_levels=len(zs))
+            else:
+                self._lr_set_state(
+                    'idle', last_sweep_dir=sweep_dir,
+                    completed_levels=len(bags), total_levels=len(zs))
+        except Exception as e:
+            self._lr_set_state('aborted', error=str(e))
+            self.get_logger().error(f"sweep crashed: {e}")
+        finally:
+            # Ensure step offsets are zeroed even on uncaught exit.
+            self.level_step_offset_roll = 0.0
+            self.level_step_offset_pitch = 0.0
 
     # ---- homing subprocess ----
     def _do_start_homing(self, d):

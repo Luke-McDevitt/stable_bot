@@ -537,6 +537,141 @@
       <p id="stab-msg" class="text-xs text-slate-400 mt-2 min-h-4"></p>
     </div>
 
+    <!-- Level-PI Tuning — bag recording + step tests + auto-sweep.
+         Source of truth: stewart_bringup/docs/level_pi_tuning_plan.md -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700" id="lvl-tune-panel">
+      <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">
+        Level-PI Tuning
+        <span id="lvl-state-badge" class="text-xs normal-case text-slate-500 ml-2">idle</span>
+      </summary>
+      <p class="text-xs text-slate-500 mt-2 mb-3">
+        Records <span class="mono">/level_diag</span> and friends so the
+        controller can be tuned to ≤0.1° error. Enable the level loop
+        first. See <span class="mono">docs/level_pi_tuning_plan.md</span>.
+      </p>
+
+      <!-- A: Single test -->
+      <div class="border border-slate-700 rounded p-2 mb-3">
+        <div class="text-xs uppercase text-slate-400 mb-2">Single test</div>
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <label class="text-xs text-slate-400">name
+            <input id="lvl-name" type="text" value="untitled"
+              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full">
+          </label>
+          <label class="text-xs text-slate-400">notes (optional)
+            <input id="lvl-notes" type="text" placeholder="e.g. after belt re-tighten"
+              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full">
+          </label>
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <button id="lvl-record-btn"
+            class="bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">
+            Record
+          </button>
+          <button id="lvl-stop-btn"
+            class="bg-amber-600 hover:bg-amber-500 rounded py-1 text-xs">
+            Stop
+          </button>
+          <button id="lvl-step-btn"
+            class="bg-indigo-600 hover:bg-indigo-500 rounded py-1 text-xs"
+            title="Drives roll +1°/3s/0/3s, once. Use during a recording.">
+            Step test
+          </button>
+        </div>
+        <div class="text-xs text-slate-400 mt-2">
+          <span id="lvl-record-status">not recording</span>
+        </div>
+      </div>
+
+      <!-- B: Auto-sweep -->
+      <div class="border border-slate-700 rounded p-2 mb-3">
+        <div class="text-xs uppercase text-slate-400 mb-2">
+          Auto-sweep (Z range × step battery)
+        </div>
+        <div class="grid grid-cols-3 gap-2 mb-2">
+          <label class="text-xs text-slate-400">Z min (mm)
+            <input id="lvl-z-min" type="number" value="25" step="1"
+              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full">
+          </label>
+          <label class="text-xs text-slate-400">Z max (mm)
+            <input id="lvl-z-max" type="number" value="55" step="1"
+              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full">
+          </label>
+          <label class="text-xs text-slate-400">Z step (mm)
+            <input id="lvl-z-step" type="number" value="5" step="1" min="1"
+              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full">
+          </label>
+        </div>
+        <div class="grid grid-cols-4 gap-2 mb-2">
+          <label class="text-xs text-slate-400">step count
+            <input id="lvl-step-count" type="number" value="8" step="1" min="1" max="50"
+              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full">
+          </label>
+          <label class="text-xs text-slate-400">step amp °
+            <input id="lvl-step-amp" type="number" value="1.0" step="0.1" min="-2" max="2"
+              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full">
+          </label>
+          <label class="text-xs text-slate-400">step hold s
+            <input id="lvl-step-hold" type="number" value="3.0" step="0.5" min="0.5"
+              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full">
+          </label>
+          <label class="text-xs text-slate-400">baseline s
+            <input id="lvl-baseline" type="number" value="30" step="5" min="5"
+              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full">
+          </label>
+        </div>
+        <label class="text-xs text-slate-400 block mb-2">prefix
+          <input id="lvl-prefix" type="text" value="sweep"
+            class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full">
+        </label>
+        <div class="text-xs text-slate-400 mb-2">
+          Estimated duration: <span id="lvl-eta" class="mono">—</span>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="lvl-sweep-start"
+            class="bg-emerald-600 hover:bg-emerald-500 rounded py-2 text-sm">
+            Start sweep
+          </button>
+          <button id="lvl-sweep-abort"
+            class="bg-red-600 hover:bg-red-500 rounded py-2 text-sm">
+            Abort
+          </button>
+        </div>
+        <div class="text-xs mono text-slate-400 mt-2 min-h-4" id="lvl-sweep-progress">
+          —
+        </div>
+      </div>
+
+      <!-- C: Gains -->
+      <div class="border border-slate-700 rounded p-2 mb-3">
+        <div class="text-xs uppercase text-slate-400 mb-2">Live gains</div>
+        <div class="mono text-xs text-slate-300" id="lvl-gains-readout">—</div>
+        <div class="grid grid-cols-2 gap-2 mt-2">
+          <button id="lvl-gains-reload"
+            class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">
+            Reload from level_gains.yaml
+          </button>
+          <button id="lvl-zero-integ"
+            class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">
+            Zero integrator
+          </button>
+        </div>
+      </div>
+
+      <!-- D: Recent bags -->
+      <div class="border border-slate-700 rounded p-2">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-xs uppercase text-slate-400">Recent bags</div>
+          <button id="lvl-bags-refresh"
+            class="bg-slate-600 hover:bg-slate-500 rounded px-2 py-1 text-xs">
+            Refresh
+          </button>
+        </div>
+        <div id="lvl-bags-list" class="text-xs text-slate-400 space-y-1
+                                        max-h-64 overflow-y-auto">—</div>
+      </div>
+    </details>
+
     <!-- Active Stabilization (Ball-Hold) — scaffold for v10; spec §11.7 — hidden -->
     <details class="bg-slate-800 rounded-lg p-4 border border-slate-700" id="ball-hold-panel" style="display:none">
       <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">
@@ -1188,6 +1323,13 @@ function setupROSInterface() {
   topic.bag_status = new ROSLIB.Topic({
     ros, name: '/bag_recorder/status', messageType: 'std_msgs/msg/String' });
   // (no UI side-effect yet — surfaced when GUI Tier-2 logging panel lands)
+
+  // Level-PI tuning state (5 Hz heartbeat from stewart_control_node).
+  topic.level_record_state = new ROSLIB.Topic({
+    ros, name: '/level_record_state', messageType: 'std_msgs/msg/String' });
+  topic.level_record_state.subscribe(m => {
+    try { renderLevelRecordState(JSON.parse(m.data)); } catch (e) {}
+  });
   topic.control_result.subscribe(m => {
     try {
       const r = JSON.parse(m.data);
@@ -1342,6 +1484,7 @@ function setupROSInterface() {
 
   // Speed cap is seeded from /status topic above (topic discovery works
   // even when service discovery doesn't in this setup).
+  wireLevelTuningPanel();
 }
 
 // --- UI helpers ---
@@ -1349,6 +1492,217 @@ function publishCmd(obj) {
   // Send a command over the /control_cmd topic (instead of service call).
   if (!ros || !topic.control_cmd) return;
   topic.control_cmd.publish(new ROSLIB.Message({ data: JSON.stringify(obj) }));
+}
+
+// --- Level-PI tuning panel ---
+let lvlSweepConfirmed = false;   // first-sweep-this-session advisory gate
+function lvlReadSweepParams() {
+  const f = id => Number($(id).value);
+  return {
+    z_min: f('lvl-z-min'),
+    z_max: f('lvl-z-max'),
+    z_step: f('lvl-z-step'),
+    step_count: Math.max(1, parseInt($('lvl-step-count').value, 10) || 1),
+    step_amp_deg: f('lvl-step-amp'),
+    step_hold_s: f('lvl-step-hold'),
+    baseline_s: f('lvl-baseline'),
+    prefix: $('lvl-prefix').value || 'sweep',
+  };
+}
+function lvlEstimateSweepSeconds(p) {
+  if (!(p.z_step > 0) || !(p.z_max >= p.z_min)) return null;
+  const levels = Math.floor((p.z_max - p.z_min) / p.z_step) + 1;
+  // Per-Z budget mirrors _lr_run_sweep: settle timeout + baseline + step battery.
+  const perZ = 5 + p.baseline_s + 2 * p.step_hold_s * p.step_count;
+  return { levels, total: perZ * levels };
+}
+function recomputeLvlEta() {
+  try {
+    const e = lvlEstimateSweepSeconds(lvlReadSweepParams());
+    if (!e) { $('lvl-eta').innerText = '—'; return; }
+    const m = Math.floor(e.total / 60);
+    const s = Math.round(e.total - m * 60);
+    $('lvl-eta').innerText = `${e.levels} levels · ${m}m ${s}s`;
+  } catch (_) { $('lvl-eta').innerText = '—'; }
+}
+function renderLevelRecordState(s) {
+  const badge = $('lvl-state-badge');
+  const rec = $('lvl-record-status');
+  const prog = $('lvl-sweep-progress');
+  if (!badge) return;
+  badge.innerText = s.state || '—';
+  badge.className = 'text-xs normal-case ml-2 ' + (
+    s.state === 'idle'                ? 'text-slate-500' :
+    s.state === 'aborted'             ? 'text-red-400'   :
+    s.state === 'sweep_running'       ? 'text-emerald-400' :
+    s.state === 'step_test_running'   ? 'text-indigo-400'  :
+                                        'text-slate-300'
+  );
+  if (s.bag_recording) {
+    rec.innerText = `recording → ${s.single_bag_dir || '—'} (${s.single_bag_elapsed_s ?? 0}s)`;
+    rec.className = 'text-xs text-emerald-400';
+  } else {
+    rec.innerText = 'not recording';
+    rec.className = 'text-xs text-slate-400';
+  }
+  if (s.gains) {
+    $('lvl-gains-readout').innerText =
+      `KP ${s.gains.kp}  KI ${s.gains.ki}  α ${s.gains.filter_alpha}\n` +
+      `deadband ${s.gains.deadband_deg}°  rate ${s.gains.rate_limit_deg_per_iter}°/iter  ` +
+      `max corr ${s.gains.max_corr_deg}°`;
+  }
+  if (s.state === 'sweep_running') {
+    const parts = [];
+    if (s.test_idx && s.test_total)
+      parts.push(`Test ${s.test_idx}/${s.test_total}`);
+    if (s.z !== undefined) parts.push(`Z=${Number(s.z).toFixed(1)}mm`);
+    if (s.phase) parts.push(s.phase);
+    prog.innerText = parts.join(' · ');
+    prog.className = 'text-xs mono text-emerald-400 mt-2 min-h-4';
+  } else if (s.state === 'step_test_running') {
+    prog.innerText = `step test (amp ${s.amp_deg}° × ${s.count})`;
+    prog.className = 'text-xs mono text-indigo-400 mt-2 min-h-4';
+  } else if (s.state === 'aborted') {
+    prog.innerText = `aborted: ${s.reason || s.error || '—'}` +
+      (s.completed_levels !== undefined ? ` (${s.completed_levels}/${s.total_levels} done)` : '');
+    prog.className = 'text-xs mono text-red-400 mt-2 min-h-4';
+  } else if (s.state === 'idle' && s.last_sweep_dir) {
+    prog.innerText = `last sweep: ${s.last_sweep_dir} (${s.completed_levels}/${s.total_levels})`;
+    prog.className = 'text-xs mono text-slate-400 mt-2 min-h-4';
+  } else {
+    prog.innerText = '—';
+    prog.className = 'text-xs mono text-slate-400 mt-2 min-h-4';
+  }
+}
+function lvlFmtBytes(n) {
+  if (!n && n !== 0) return '—';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+  return (n / 1073741824).toFixed(2) + ' GB';
+}
+function lvlFmtMtime(unix) {
+  try { return new Date(unix * 1000).toISOString().replace('T', ' ').slice(0, 19) + 'Z'; }
+  catch { return '—'; }
+}
+function lvlEscapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+}
+function lvlRenderBag(e) {
+  const notes = e.notes || {};
+  const meta = [];
+  if (notes.gains) meta.push(`KP ${notes.gains.kp} KI ${notes.gains.ki}`);
+  if (notes.git_sha) meta.push(`git ${notes.git_sha}`);
+  if (notes.notes) meta.push(`"${lvlEscapeHtml(notes.notes)}"`);
+  return `
+    <div class="border-l-2 border-slate-700 pl-2 py-1">
+      <div class="flex items-center justify-between gap-2">
+        <div class="mono text-slate-300 truncate" title="${lvlEscapeHtml(e.path)}">${lvlEscapeHtml(e.name)}</div>
+        <button class="text-red-400 hover:text-red-300 text-xs"
+          onclick="lvlDeleteBag('${lvlEscapeHtml(e.name)}')">×</button>
+      </div>
+      <div class="text-slate-500">
+        ${lvlFmtMtime(e.mtime)} · ${lvlFmtBytes(e.size_bytes)}
+        ${meta.length ? ' · ' + meta.join(' · ') : ''}
+      </div>
+    </div>`;
+}
+function lvlRenderSweep(e) {
+  const m = e.manifest || {};
+  const aborted = m.aborted ? '<span class="text-red-400"> (aborted)</span>' : '';
+  const head = `
+    <details class="border-l-2 border-emerald-700 pl-2 py-1">
+      <summary class="cursor-pointer">
+        <span class="mono text-emerald-300">${lvlEscapeHtml(e.name)}</span>${aborted}
+        <span class="text-slate-500"> · ${(e.children || []).length} bags · ${lvlFmtBytes(e.size_bytes)}</span>
+        <button class="text-red-400 hover:text-red-300 text-xs ml-2"
+          onclick="event.preventDefault(); lvlDeleteBag('${lvlEscapeHtml(e.name)}')">×</button>
+      </summary>
+      <div class="text-slate-500 my-1">
+        ${lvlFmtMtime(e.mtime)} ·
+        ${m.gains ? `KP ${m.gains.kp} KI ${m.gains.ki}` : ''}
+        ${m.git_sha ? ` · git ${m.git_sha}` : ''}
+      </div>
+      <div class="ml-2 space-y-1">`;
+  const kids = (e.children || []).map(c => `
+        <div class="text-slate-400">
+          <span class="mono">${lvlEscapeHtml(c.name)}</span>
+          <span class="text-slate-500"> · ${lvlFmtBytes(c.size_bytes)}${
+            c.notes && c.notes.commanded_z_mm !== undefined
+              ? ` · Z=${c.notes.commanded_z_mm}` : ''}</span>
+        </div>`).join('');
+  return head + kids + '</div></details>';
+}
+function lvlFetchBags() {
+  const out = $('lvl-bags-list');
+  if (!out) return;
+  fetch('/bags')
+    .then(r => r.json())
+    .then(j => {
+      const entries = (j.entries || []);
+      if (!entries.length) { out.innerHTML = '<div class="text-slate-500">no bags yet — start a recording or auto-sweep above</div>'; return; }
+      out.innerHTML = entries.map(e =>
+        e.kind === 'sweep' ? lvlRenderSweep(e) : lvlRenderBag(e)).join('');
+    })
+    .catch(e => { out.innerText = `failed to fetch /bags: ${e}`; });
+}
+function lvlDeleteBag(name) {
+  if (!confirm(`delete "${name}" and its sidecar?`)) return;
+  fetch('/bags/delete', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(_ => lvlFetchBags())
+    .catch(e => alert('delete failed: ' + e));
+}
+function wireLevelTuningPanel() {
+  if (!$('lvl-tune-panel')) return;
+  // Single-test buttons
+  $('lvl-record-btn').addEventListener('click', () => publishCmd({
+    cmd: 'level_record_start',
+    name: $('lvl-name').value,
+    notes: $('lvl-notes').value,
+  }));
+  $('lvl-stop-btn').addEventListener('click', () => {
+    publishCmd({cmd: 'level_record_stop'});
+    setTimeout(lvlFetchBags, 600);   // give the bag a moment to finalize
+  });
+  $('lvl-step-btn').addEventListener('click', () => publishCmd({
+    cmd: 'level_step_test', amp_deg: 1.0, hold_s: 3.0, count: 1,
+  }));
+  // Sweep buttons
+  $('lvl-sweep-start').addEventListener('click', () => {
+    if (!lvlSweepConfirmed) {
+      if (!confirm(
+        'First sweep this session — confirm you are at the bench and the ' +
+        'platform has clear space to move. Abort button stops everything.'
+      )) return;
+      lvlSweepConfirmed = true;
+    }
+    publishCmd({cmd: 'level_auto_sweep_start', ...lvlReadSweepParams()});
+  });
+  $('lvl-sweep-abort').addEventListener('click', () => {
+    publishCmd({cmd: 'level_auto_sweep_abort'});
+    setTimeout(lvlFetchBags, 800);
+  });
+  // Gains + recompute ETA on input change
+  $('lvl-gains-reload').addEventListener('click', () =>
+    publishCmd({cmd: 'level_reload_gains'}));
+  $('lvl-zero-integ').addEventListener('click', () =>
+    publishCmd({cmd: 'level_zero_integrator'}));
+  ['lvl-z-min', 'lvl-z-max', 'lvl-z-step', 'lvl-step-count',
+   'lvl-step-amp', 'lvl-step-hold', 'lvl-baseline'].forEach(id => {
+    $(id).addEventListener('input', recomputeLvlEta);
+  });
+  $('lvl-bags-refresh').addEventListener('click', lvlFetchBags);
+  recomputeLvlEta();
+  // Auto-fetch when the panel is opened (cheap, only if user expands it).
+  $('lvl-tune-panel').addEventListener('toggle', () => {
+    if ($('lvl-tune-panel').open) lvlFetchBags();
+  });
+  // Ask the node for current gains right away so the readout is live
+  // even before the first heartbeat arrives.
+  setTimeout(() => publishCmd({cmd: 'level_get_gains'}), 200);
 }
 
 // Paint the Level ON/OFF buttons (main + stab panel) based on current
