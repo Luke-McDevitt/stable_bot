@@ -1222,41 +1222,13 @@ class StewartControlNode(Node):
         self._stop_level_loop()
 
     # ---- Feeder safety hook (last line of defense) ----
-    # Buffer (turns) inside soft limits where vel-mode commands toward the
-    # limit get zeroed. At MM_PER_REV = 71.047, 0.02 turns ≈ 1.4 mm — close
-    # enough to react before the soft limit, far enough to allow normal
-    # operation away from the edge.
-    VEL_LIMIT_BUFFER_TURNS = 0.02
-    # Runaway threshold: ONLY fires when the target has been STABLE (not
-    # changed by more than RUNAWAY_TARGET_STABLE_TURNS in the last
-    # RUNAWAY_TICKS ticks) AND the encoder is moving fast in the wrong
-    # direction relative to the target. This avoids false-positives on
-    # normal jogs and pose moves, which legitimately produce high encoder
-    # velocity for a short time.
-    RUNAWAY_VEL_TURNS_PER_S = 5.0
-    RUNAWAY_TARGET_STABLE_TURNS = 0.005  # target hasn't moved by more than this
-    RUNAWAY_TICKS = 3   # 3 * 20 ms = 60 ms of sustained runaway before firing
-    _last_safety_warn = 0.0
-
-    # Per-leg encoder history for runaway detection.
-    # _enc_history[n] = (last_enc, last_t, consecutive_runaway_ticks, last_target)
-    _enc_history = [None] * 6
-
     def _feeder_safety_check(self, modes, vel, pos_targets):
         """Called by ODriveFeeder every 20 ms (50 Hz) before any CAN frame
-        is sent. Returns (safe_vel, safe_pos_targets) with:
-          - pos targets clamped to per-leg [lo, hi] from leg_limits.yaml
-          - vel zeroed if ANY vel-mode leg is at/past a soft limit and the
-            commanded vel direction would push it further past
-
-        This catches motion regardless of which higher-level path commanded
-        it. Without this, a velocity jog could happily drive the leg past
-        the soft endstop until something mechanical stops it.
+        is sent. Returns (safe_vel, safe_pos_targets) with pos targets
+        clamped to per-leg [lo, hi] from leg_limits.yaml.
         """
         if self.limits is None:
             return vel, pos_targets
-
-        # Position clamp — per-leg, only for legs in pos mode.
         safe_pos = list(pos_targets)
         for n in range(6):
             if modes[n] != 'pos':
@@ -1267,113 +1239,7 @@ class StewartControlNode(Node):
                 safe_pos[n] = lo
             elif safe_pos[n] > hi:
                 safe_pos[n] = hi
-
-        # Runaway detection: in pos mode, fire ONLY when the target has
-        # been stable AND the encoder is racing in the wrong direction.
-        # This catches an ODrive with misconfigured encoder direction
-        # (closed-loop runaway despite a steady target) without false-
-        # firing on legitimate jog/pose commanded motion (which legitimately
-        # produces high encoder velocity for a brief time).
-        if self.listener is not None and self.feeder is not None:
-            enc = self.listener.get_all(max_age_s=0.2)
-            now = time.monotonic()
-            for n in range(6):
-                if modes[n] != 'pos' or enc[n] is None:
-                    self._enc_history[n] = None
-                    continue
-                target = float(safe_pos[n])
-                hist = self._enc_history[n]
-                if hist is None:
-                    self._enc_history[n] = (enc[n], now, 0, target)
-                    continue
-                prev_enc, prev_t, run_count, prev_target = hist
-                dt = now - prev_t
-                # Reject suspiciously old / new history entries.
-                if not (0.005 < dt < 0.2):
-                    self._enc_history[n] = (enc[n], now, 0, target)
-                    continue
-                # If the target has moved meaningfully, the controller is
-                # legitimately commanding motion. Reset the runaway counter.
-                target_moved = abs(target - prev_target) > self.RUNAWAY_TARGET_STABLE_TURNS
-                if target_moved:
-                    self._enc_history[n] = (enc[n], now, 0, target)
-                    continue
-                # Target stable. Check encoder velocity.
-                enc_vel = (enc[n] - prev_enc) / dt
-                error = target - enc[n]
-                # Encoder velocity should DRIVE error toward zero. If error
-                # > 0 we want enc_vel > 0 (encoder rising toward target);
-                # if error < 0 we want enc_vel < 0. If signs disagree AND
-                # encoder is moving fast, the encoder is DIVERGING from
-                # the target — that's runaway.
-                diverging = (error > 0 and enc_vel < 0) or (error < 0 and enc_vel > 0)
-                if (abs(enc_vel) > self.RUNAWAY_VEL_TURNS_PER_S
-                        and diverging):
-                    run_count += 1
-                    if run_count >= self.RUNAWAY_TICKS:
-                        self.get_logger().error(
-                            f"!!! RUNAWAY on leg {n}: target stable at "
-                            f"{target:+.3f}, encoder at {enc[n]:+.3f} "
-                            f"(error {error:+.3f}) but encoder velocity "
-                            f"{enc_vel:+.2f} turns/s "
-                            f"(~{abs(enc_vel) * MM_PER_REV:.0f} mm/s) is "
-                            f"DIVERGING from target for {run_count} ticks. "
-                            f"FORCE-DISARMING leg {n}. Most likely cause: "
-                            f"ODrive node {n} has motor/encoder direction "
-                            f"misconfigured — re-run motor + encoder offset "
-                            f"calibration in the ODrive GUI on Windows.")
-                        # Mark idle in feeder + clear armed; send IDLE via CAN.
-                        self.leg_armed[n] = False
-                        try:
-                            _send_cmd(self.bus, n, CMD_SET_AXIS_STATE,
-                                      struct.pack('<I', STATE_IDLE))
-                        except Exception:
-                            pass
-                        self.feeder.set_mode(n, 'idle')
-                        self._enc_history[n] = (enc[n], now, 0, target)
-                        continue
-                else:
-                    run_count = 0
-                self._enc_history[n] = (enc[n], now, run_count, target)
-
-        # Velocity safety — only relevant if any leg is in vel mode and we
-        # have a fresh encoder reading to check against.
-        safe_vel = vel
-        if vel != 0.0 and self.listener is not None:
-            any_vel = any(m == 'vel' for m in modes)
-            if any_vel:
-                enc = self.listener.get_all(max_age_s=0.5)
-                buf = self.VEL_LIMIT_BUFFER_TURNS
-                blocked_leg = None
-                for n in range(6):
-                    if modes[n] != 'vel' or enc[n] is None:
-                        continue
-                    lo = self.limits[n]['lo']
-                    hi = self.limits[n]['hi']
-                    # +vel drives encoder more positive → toward hi.
-                    # -vel drives encoder more negative → toward lo.
-                    if vel > 0 and enc[n] >= hi - buf:
-                        blocked_leg = n
-                        break
-                    if vel < 0 and enc[n] <= lo + buf:
-                        blocked_leg = n
-                        break
-                if blocked_leg is not None:
-                    safe_vel = 0.0
-                    # Throttle warnings to once per second so the log
-                    # doesn't fill up while the user holds the slider.
-                    now = time.monotonic()
-                    if now - self._last_safety_warn > 1.0:
-                        self._last_safety_warn = now
-                        self.get_logger().warn(
-                            f"feeder safety: leg {blocked_leg} at limit "
-                            f"(enc={enc[blocked_leg]:+.3f}, "
-                            f"lo={self.limits[blocked_leg]['lo']:+.3f}, "
-                            f"hi={self.limits[blocked_leg]['hi']:+.3f}); "
-                            f"refusing vel={vel:+.3f} that would drive "
-                            f"past the limit.")
-
-        return safe_vel, safe_pos
+        return vel, safe_pos
 
     # ---- IMU ----
     def _imu_cb(self, msg):
@@ -1896,18 +1762,6 @@ class StewartControlNode(Node):
         return True, (f"clamped at {new_target:+.4f}" if clamped
                       else f"L{n} → {new_target:+.4f}")
 
-    # Hard safety cap on per-leg motion commanded by a single pose. At
-    # MM_PER_REV = 71.047, 0.1 turns ≈ 7 mm of leg extension. Tightened
-    # from 0.5 → 0.1 after the 2026-04-26 second slam: per-leg sign
-    # conventions in leg_limits.yaml may be inconsistent (project memory
-    # only confirms +vel=down for node 0; nodes 1-5 are TBD), so even a
-    # 0.5-turn limit can produce a 35 mm slam in the wrong direction.
-    # Until each leg's direction is empirically nailed down (capture
-    # both endstops at least once), this cap stays small.
-    # Bypass with allow_large=True only after every leg has both
-    # endstops captured and you've verified motion direction by hand.
-    MAX_POSE_DELTA_TURNS = 0.1
-
     def _do_set_pose(self, x, y, z, r, p, yw, allow_large=False):
         if not self.armed:
             return False, "not armed"
@@ -1919,35 +1773,8 @@ class StewartControlNode(Node):
             return True, "pose set (level loop will track)"
         targets, any_clamped = _compute_motor_targets(
             (x, y, z), (r, p, yw), self.geom, self.limits)
-
-        # SAFETY: refuse to commit if any leg would jump >MAX_POSE_DELTA_TURNS
-        # from its current encoder reading. This is the last line of defense
-        # against the 2026-04-26 slamming bug — even if leg_limits.yaml has
-        # the wrong sign for one leg, this stops the motion before it reaches
-        # the endstop.
-        if not allow_large and self.listener is not None:
-            enc = self.listener.get_all(max_age_s=1.0)
-            offending = []
-            for i in range(6):
-                if enc[i] is None:
-                    offending.append(f"leg{i}: no fresh encoder")
-                    continue
-                delta = float(targets[i]) - float(enc[i])
-                if abs(delta) > self.MAX_POSE_DELTA_TURNS:
-                    offending.append(
-                        f"leg{i}: target={targets[i]:+.3f} would jump "
-                        f"{delta:+.3f} turns (~{abs(delta) * MM_PER_REV:.1f} "
-                        f"mm) from current {enc[i]:+.3f}")
-            if offending:
-                return False, (
-                    "POSE REFUSED — would cause large per-leg moves "
-                    "(>{:.2f} turns ≈ {:.0f} mm). Likely cause: a leg's "
-                    "sign convention in leg_limits.yaml doesn't match the "
-                    "current encoder zero. Recapture endstops with both "
-                    "BOTTOM and TOP for the offending leg(s). Details: "
-                    .format(self.MAX_POSE_DELTA_TURNS,
-                            self.MAX_POSE_DELTA_TURNS * MM_PER_REV)
-                    + "; ".join(offending))
+        # _compute_motor_targets already clamps to per-leg [lo, hi] from
+        # leg_limits.yaml. Trust the soft limits — no per-step delta cap.
         self.feeder.set_pos_targets(targets)
         return True, ("pose sent (CLAMPED)" if any_clamped else "pose sent")
 

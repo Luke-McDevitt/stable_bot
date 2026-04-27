@@ -30,18 +30,14 @@
       <!-- rosbridge connection -->
       <span id="conn-dot" class="w-3 h-3 rounded-full bg-red-500" title="rosbridge"></span>
       <span id="conn-label" class="text-sm text-slate-300">disconnected</span>
-      <!-- vision stack heartbeat (spec v8 §11.0): green when /oak/rgb/image_compressed
-           has produced a frame in the last 2 s -->
-      <span id="vis-dot" class="w-3 h-3 rounded-full bg-slate-600" title="vision stack"></span>
-      <span id="vis-label" class="text-xs text-slate-400">vision idle</span>
-      <!-- active mode label -->
+      <!-- vision stack heartbeat / mode label / ball-type — hidden (closed-loop ball
+           demos rolled back 2026-04-26 pending motor recommutation). -->
+      <span id="vis-dot" class="w-3 h-3 rounded-full bg-slate-600" title="vision stack" style="display:none"></span>
+      <span id="vis-label" class="text-xs text-slate-400" style="display:none">vision idle</span>
       <span id="mode-label"
             class="text-xs mono px-2 py-0.5 rounded bg-slate-700 text-slate-300"
-            title="active demo mode">LEVEL_HOLD</span>
-      <!-- Ball type (spec v9 §9, Q47): selected once before each run; persisted
-           to localStorage; published as `ball_config:<json>` on /control_cmd
-           so the bag captures which ball was in use. -->
-      <label class="text-xs text-slate-400 flex items-center gap-1">
+            title="active demo mode" style="display:none">LEVEL_HOLD</span>
+      <label class="text-xs text-slate-400 flex items-center gap-1" style="display:none">
         Ball:
         <select id="ball-type-select"
                 class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-0.5"
@@ -67,8 +63,8 @@
   <!-- LEFT COLUMN: vision debug + calibration + status + arming + live readouts -->
   <section class="lg:col-span-1 space-y-4">
 
-    <!-- Vision Debug (spec v8 §11.1): live OAK feed + telemetry strip -->
-    <details open class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <!-- Vision Debug (spec v8 §11.1): live OAK feed + telemetry strip — hidden -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700" style="display:none">
       <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">Vision Debug</summary>
       <div class="mt-2">
         <div id="vision-feed-wrap" class="bg-slate-900 rounded relative overflow-hidden" style="aspect-ratio: 16 / 9;">
@@ -102,8 +98,8 @@
       </div>
     </details>
 
-    <!-- Calibration (Stage C only, spec v7 §6 + §11.1) -->
-    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <!-- Calibration (Stage C only, spec v7 §6 + §11.1) — hidden -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700" style="display:none">
       <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">Calibration (Stage C)</summary>
       <p class="text-xs text-slate-500 mt-2 mb-2">
         Camera-to-world via the ArUco ring. Re-run after every camera arm move.
@@ -247,8 +243,8 @@
   <!-- MIDDLE COLUMN: closed-loop demos (top), then jog + pose + legacy demo -->
   <section class="lg:col-span-1 space-y-4">
 
-    <!-- Shared SVG canvas for Demos 1, 2, 3 (spec v8 §11.0, §11.2) -->
-    <div id="demo-svg-wrap" class="bg-slate-800 rounded-lg p-3 border-2 border-slate-700 transition-colors duration-200">
+    <!-- Shared SVG canvas for Demos 1, 2, 3 (spec v8 §11.0, §11.2) — hidden -->
+    <div id="demo-svg-wrap" class="bg-slate-800 rounded-lg p-3 border-2 border-slate-700 transition-colors duration-200" style="display:none">
       <h2 class="text-sm uppercase text-slate-400 mb-2 flex justify-between items-center">
         <span>Demos</span>
         <span class="text-xs mono normal-case px-2 py-0.5 rounded bg-slate-700"
@@ -288,8 +284,8 @@
       </p>
     </div>
 
-    <!-- Demo 1: Orbit (closed-loop, spec v8 §11.2.1) -->
-    <div id="demo1-panel" class="bg-slate-800 rounded-lg p-4 border-2 border-slate-700 transition-colors duration-200">
+    <!-- Demo 1: Orbit (closed-loop, spec v8 §11.2.1) — hidden -->
+    <div id="demo1-panel" class="bg-slate-800 rounded-lg p-4 border-2 border-slate-700 transition-colors duration-200" style="display:none">
       <h2 class="text-sm uppercase text-slate-400 mb-2">Demo 1 — Orbit</h2>
       <div class="grid grid-cols-2 gap-2 text-xs mb-2">
         <label>Radius (mm)
@@ -321,8 +317,8 @@
       </div>
     </div>
 
-    <!-- Demo 2: Click-to-Goto (spec v8 §11.2.2) -->
-    <div id="demo2-panel" class="bg-slate-800 rounded-lg p-4 border-2 border-slate-700 transition-colors duration-200">
+    <!-- Demo 2: Click-to-Goto (spec v8 §11.2.2) — hidden -->
+    <div id="demo2-panel" class="bg-slate-800 rounded-lg p-4 border-2 border-slate-700 transition-colors duration-200" style="display:none">
       <h2 class="text-sm uppercase text-slate-400 mb-2">Demo 2 — Click-to-Goto</h2>
       <p class="text-xs text-slate-500 mb-2">
         When armed, click any safe spot on the SVG above to drive the ball there.
@@ -349,8 +345,8 @@
       </div>
     </div>
 
-    <!-- Demo 3: Path drawing (stretch goal, spec v8 §11.2.3) -->
-    <div id="demo3-panel" class="bg-slate-800 rounded-lg p-4 border-2 border-slate-700 transition-colors duration-200">
+    <!-- Demo 3: Path drawing (stretch goal, spec v8 §11.2.3) — hidden -->
+    <div id="demo3-panel" class="bg-slate-800 rounded-lg p-4 border-2 border-slate-700 transition-colors duration-200" style="display:none">
       <h2 class="text-sm uppercase text-slate-400 mb-2">
         Demo 3 — Path drawing
         <span class="text-amber-400 text-xs">(stretch)</span>
@@ -412,8 +408,8 @@
       <div id="d3-status" class="text-xs text-slate-400 mt-2 mono min-h-4"></div>
     </div>
 
-    <!-- 3D Viewer (scaffold for v9; spec v9 §11.6) -->
-    <details id="view3d-panel" class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <!-- 3D Viewer (scaffold for v9; spec v9 §11.6) — hidden -->
+    <details id="view3d-panel" class="bg-slate-800 rounded-lg p-4 border border-slate-700" style="display:none">
       <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">
         3D Viewer
         <span class="text-amber-400 normal-case text-xs">(coming v9 — scaffold only)</span>
@@ -541,8 +537,8 @@
       <p id="stab-msg" class="text-xs text-slate-400 mt-2 min-h-4"></p>
     </div>
 
-    <!-- Active Stabilization (Ball-Hold) — scaffold for v10; spec §11.7 -->
-    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700" id="ball-hold-panel">
+    <!-- Active Stabilization (Ball-Hold) — scaffold for v10; spec §11.7 — hidden -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700" id="ball-hold-panel" style="display:none">
       <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">
         Active Stabilization (Ball-Hold)
         <span class="text-amber-400 normal-case text-xs">(scaffold for v10)</span>
