@@ -1,0 +1,23 @@
+{
+  "firmware_version": "0.6.11",
+  "hw_version": "4.4-58",
+  "extracted_from_serial": "0x347d35583233",
+  "extracted_at_unix": 1777319400.0,
+  "extracted_via": "probe_odrive_property.py + manual write (0.6.10 lib hides ids behind parent._<name>_property._info indirection)",
+  "endpoints": {
+    "axis0.controller.config.vel_integrator_gain": {
+      "id": 382,
+      "type": "float32",
+      "writable": true
+    },
+    "axis0.config.motor.wL_FF_enable": {
+      "id": 305,
+      "type": "bool",
+      "writable": true
+    },
+    "save_configuration": {
+      "id": 710,
+      "type": "function"
+    }
+  }
+}

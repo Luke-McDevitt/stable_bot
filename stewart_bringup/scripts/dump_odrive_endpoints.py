@@ -74,10 +74,67 @@ def _walk(root, dotted):
     return obj, parts[-1]
 
 
-def _extract_id(parent, leaf_name):
-    """Try several reflection paths to extract the endpoint ID for
-    `parent.leaf_name`. Returns (id, where_we_found_it) or (None, ...)."""
-    # 1. Look in the parent's "remote attributes" table by name.
+_CODEC_NAME_TO_TYPE = {
+    # ODrive's codec_name → our JSON 'type' tag (matches what the CAN
+    # script's _pack_value / _unpack_value expect).
+    'float':  'float32',
+    'float32': 'float32',
+    'float64': 'float64',
+    'bool':   'bool',
+    'uint8':  'uint8',
+    'uint16': 'uint16',
+    'uint32': 'uint32',
+    'int8':   'int8',
+    'int16':  'int16',
+    'int32':  'int32',
+}
+
+
+def _extract_id_and_type(parent, leaf_name):
+    """Get (endpoint_id, type_tag, source_string) for a parameter on
+    `parent` named `leaf_name`. Returns (None, None, None) on failure.
+
+    odrive 0.6.10 (sync_tree / async_tree) stores property metadata
+    behind a `_<leaf_name>_property` sibling on the parent — the leaf
+    itself, when accessed, fetches and returns the typed value. Function
+    endpoints behave differently: the leaf IS the function object, and
+    its metadata lives on `leaf._info`. We try both."""
+    # Path A: typed property — parent._<leaf_name>_property._info
+    prop = getattr(parent, f'_{leaf_name}_property', None)
+    if prop is not None:
+        info = getattr(prop, '_info', None)
+        if info is not None:
+            ep_id = getattr(info, 'endpoint_id', None)
+            codec_name = getattr(info, 'codec_name', None)
+            if isinstance(ep_id, int):
+                kind = _CODEC_NAME_TO_TYPE.get(codec_name, codec_name or 'unknown')
+                return ep_id, kind, f'parent._{leaf_name}_property._info'
+
+    # Path B: function endpoint — leaf._info
+    try:
+        leaf = getattr(parent, leaf_name)
+    except Exception:
+        leaf = None
+    if leaf is not None:
+        info = getattr(leaf, '_info', None)
+        if info is not None:
+            ep_id = getattr(info, 'endpoint_id', None)
+            if isinstance(ep_id, int):
+                # FunctionInfo has inputs/outputs lists; PropertyInfo
+                # has codec_name. Distinguish them by the first.
+                if hasattr(info, 'inputs') and hasattr(info, 'outputs'):
+                    return ep_id, 'function', 'leaf._info (function)'
+                codec_name = getattr(info, 'codec_name', None)
+                kind = _CODEC_NAME_TO_TYPE.get(codec_name, codec_name or 'unknown')
+                return ep_id, kind, 'leaf._info'
+
+    # Path C (fallbacks): older library layouts that exposed the id
+    # directly on the leaf or on a remote-attributes table.
+    if leaf is not None:
+        for id_attr in _ID_ATTRS:
+            v = getattr(leaf, id_attr, None)
+            if isinstance(v, int):
+                return v, 'unknown', f'leaf.{id_attr}'
     for table_attr in _PARENT_TABLE_ATTRS:
         table = getattr(parent, table_attr, None)
         if table is None:
@@ -86,37 +143,18 @@ def _extract_id(parent, leaf_name):
             entry = table[leaf_name]
         except (KeyError, TypeError):
             continue
-        # Found the entry; pull an ID off it.
         for id_attr in _ID_ATTRS:
             v = getattr(entry, id_attr, None)
             if isinstance(v, int):
-                return v, f'parent.{table_attr}["{leaf_name}"].{id_attr}'
-        if isinstance(entry, int):
-            return entry, f'parent.{table_attr}["{leaf_name}"]'
-    # 2. Get the leaf as an object and look for an ID directly on it.
-    try:
-        leaf = getattr(parent, leaf_name)
-    except Exception:
-        leaf = None
-    if leaf is not None:
-        for id_attr in _ID_ATTRS:
-            v = getattr(leaf, id_attr, None)
-            if isinstance(v, int):
-                return v, f'leaf.{id_attr}'
-        # Walk leaf.__dict__ for anything int-named like an id
-        d = getattr(leaf, '__dict__', None) or {}
-        for k, v in d.items():
-            if 'id' in k.lower() and isinstance(v, int):
-                return v, f'leaf.__dict__["{k}"]'
-    # 3. The library may store endpoints on the *parent* under a name
-    #    derived from leaf_name (e.g. _vel_integrator_gain or similar).
-    for prefix in ('', '_'):
-        for cand in (f'{prefix}{leaf_name}_id',
-                     f'{prefix}{leaf_name}_endpoint_id'):
-            v = getattr(parent, cand, None)
-            if isinstance(v, int):
-                return v, f'parent.{cand}'
-    return None, None
+                return v, 'unknown', f'parent.{table_attr}["{leaf_name}"].{id_attr}'
+
+    return None, None, None
+
+
+# Back-compat shim for callers that only care about the id.
+def _extract_id(parent, leaf_name):
+    ep_id, _kind, source = _extract_id_and_type(parent, leaf_name)
+    return ep_id, source
 
 
 def _diagnostic_dump(parent, leaf_name):
@@ -201,20 +239,26 @@ def main():
         'endpoints': {},
     }
     failures = []
-    for path, kind in TARGETS:
+    for path, expected_kind in TARGETS:
         try:
             parent, leaf = _walk(drv, path)
         except Exception as e:
             print(f"\n[{path}] could not walk path: {e}")
             failures.append(path)
             continue
-        ep_id, source = _extract_id(parent, leaf)
+        ep_id, kind_seen, source = _extract_id_and_type(parent, leaf)
         if ep_id is None:
             print(f"\n[{path}] could not extract endpoint id")
             _diagnostic_dump(parent, leaf)
             failures.append(path)
             continue
+        # Prefer the type discovered from the device (PropertyInfo.codec_name)
+        # over the type we expected — they should match, but the device is
+        # the source of truth.
+        kind = kind_seen if kind_seen and kind_seen != 'unknown' else expected_kind
         out['endpoints'][path] = {'id': ep_id, 'type': kind}
+        if expected_kind != 'function' and kind_seen and kind_seen != expected_kind:
+            print(f"  WARN: expected type {expected_kind}, device reports {kind_seen}")
         print(f"[{path}] id={ep_id}  type={kind}  (via {source})")
 
     print(f"\nwriting {out_path}")
