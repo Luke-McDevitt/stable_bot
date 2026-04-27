@@ -45,11 +45,12 @@ configured. Two practical setups:
       the backup file accumulates entries keyed by serial number so
       --revert still covers all six.
 
-CAN transport (--transport can): connects to node IDs 0..5 on can0
-via the odrive library's CAN backend (no USB cables needed). Stop
-stable_bot.service first so the bus isn't busy with other RTRs.
-Override the interface or node-ID list with --can-iface / --node-ids
-if your setup differs.
+CAN transport (--transport can): NOT SUPPORTED by odrive 0.6.x —
+the Python library rewrite shipped without a CAN backend (only USB
+and serial). The flag is left in place so that if a future release
+restores CAN transport, this script will pick it up via the runtime
+detection in `_odrive_lib_supports_can()`. For now, a clear error
+message tells the user to use USB instead.
 
 Pre-condition: every axis must be in IDLE state before changing
 config. The script aborts if any are not idle (you'd need to reboot
@@ -170,10 +171,43 @@ def discover_drives_can(node_ids, iface='can0', timeout_per=8.0):
     return drives
 
 
+def _odrive_lib_supports_can():
+    """Detect whether the installed odrive Python library actually has a
+    CAN backend. As of odrive 0.6.10, find_sync's signature does not
+    include a path/transport argument and DeviceManager has no add_can_*
+    method — the 0.6.x rewrite ships USB+serial only. Older 0.5.x had
+    CAN; future versions may restore it."""
+    import inspect as _inspect
+    sig = _inspect.signature(odrive.find_sync)
+    if 'path' in sig.parameters or 'transport' in sig.parameters:
+        return True
+    try:
+        dm = odrive.device_manager.get_device_manager()
+        if any(n.startswith('add_can') or 'can_channel' in n
+               for n in dir(dm)):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def discover_drives(transport, timeout_per, max_drives, can_iface, node_ids):
     if transport == 'usb':
         return discover_drives_usb(timeout_per=timeout_per, max_drives=max_drives)
     if transport == 'can':
+        if not _odrive_lib_supports_can():
+            sys.exit(
+                "ERROR: the installed odrive Python library doesn't expose a\n"
+                "CAN transport (this is the case for odrive 0.6.x — the rewrite\n"
+                "shipped USB+serial only). odrivetool's --path also lists only\n"
+                "usb and serial. Options:\n"
+                "  1. Use --transport usb (default). Plug into each ODrive in\n"
+                "     turn, or all 6 via a USB hub for one-shot.\n"
+                "  2. Set the params manually with `odrivetool` over USB.\n"
+                "  3. Hand-roll Tx_SDO writes via python-can — significant\n"
+                "     extra code, only worth it if USB really isn't available.\n"
+                "If a future odrive release restores CAN transport, this\n"
+                "function's detection path will pick it up automatically.")
         ids = node_ids if node_ids else list(range(max_drives))
         return discover_drives_can(ids, iface=can_iface, timeout_per=timeout_per)
     raise ValueError(f"unknown transport: {transport!r}")
