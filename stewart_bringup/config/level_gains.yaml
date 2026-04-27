@@ -5,21 +5,34 @@
 # Phase 4 of the tuning plan sweeps these via auto-sweep bag runs.
 # Acceptance: settling-time(0.1°) <= 0.5 s AND steady-state RMS <= 0.05°
 # at every Z in the operating range (30–50 mm).
+#
+# Iteration history (most recent on top):
+#   2026-04-27 (iter 2): kp 0.7→1.5, ki 0.2→0.5, deadband 0.05→0.02,
+#       rate_limit 0.2→0.3. Static RMS at Z=40-50 was already ≤0.07° at
+#       iter-1 gains (good), but step response was much slower than the
+#       3 s hold so rise/settling metrics came back null. Iter 2 targets
+#       a faster transient for the closed-loop ball-tracking outer loop.
+#       Deadband dropped below MTi-630 noise floor so the integrator can
+#       chase the slow 0.08 Hz drift the previous bags showed.
+#   2026-04-27 (iter 1, baseline): kp 0.7, ki 0.2, deadband 0.05,
+#       rate_limit 0.2.
 
 # Proportional gain (deg correction per deg error)
-kp: 0.7
+kp: 1.5
 
 # Integral gain (deg/s correction per deg error)
-ki: 0.2
+ki: 0.5
 
 # Deadband — errors smaller than this don't accumulate into the integrator.
-# Below the IMU's static noise floor (~0.05° on the MTi-630).
-deadband_deg: 0.05
+# Iteration 2: dropped below the MTi-630's static noise floor (~0.05°)
+# so the integrator can chase the slow drift seen in iter-1 bags
+# (0.08 Hz limit cycle was the deadband freezing-and-releasing the integ).
+deadband_deg: 0.02
 
 # Per-iteration rate limit on the correction signal (deg / 20 ms tick).
-# Caps how fast the controller can move the platform; too low → controller
-# can't keep up with its own bandwidth → high-freq oscillation.
-rate_limit_deg_per_iter: 0.2
+# Bumped 0.2 → 0.3 to give the higher KP room to drive faster transients
+# without the rate-limit becoming the active constraint.
+rate_limit_deg_per_iter: 0.3
 
 # Hard cap on the correction signal magnitude. Safety clamp; should rarely
 # engage in normal operation.
