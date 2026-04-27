@@ -1,0 +1,117 @@
+# Level-loop PI Tuning Plan
+
+**Date drafted:** 2026-04-26
+**Owner:** Luke
+**Status:** ready to start (DEFER until ODrive recommutation is done)
+
+## Why
+
+The level loop in `stewart_control_node._level_run` (KP=0.7, KI=0.2, deadband=0.05°,
+rate-limit=0.2°/iter, MAX_CORR=5°, alpha=0.3) does not settle inside the
+0.1° error band. Symptom is a slow limit cycle around the target,
+not high-frequency jitter, so IMU noise (sub-millidegree on the
+MTi-630) is ruled out. Hand-tuning so far has not converged.
+We want a data-driven tuning loop instead.
+
+## Pre-condition (do this first)
+
+Re-do ODrive motor + encoder offset calibration on every node. Do
+**not** tune gains against a plant whose commutation is broken — gains
+fit to a broken plant will be wrong as soon as the plant is fixed.
+
+## Phase 1 — Instrument the loop (control_node)
+
+Publish a single dense `/level_diag` topic at 50 Hz with the full
+controller state per tick. Don't try to recover this from existing
+topics (sampled at different rates, can't align integrator state).
+
+**Fields** (all in one custom msg):
+
+- `t_imu` (IMU receive monotonic), `t_tick` (tick start)
+- `roll`, `pitch` (raw IMU)
+- `target_roll`, `target_pitch` (commanded — `current_rpy` + `level_ref`)
+- `err_r`, `err_p`, `err_r_filt`, `err_p_filt`
+- `integ_r`, `integ_p`
+- `pi_out_r`, `pi_out_p` (= `-err*KP + integ` — *unclipped*)
+- `corr_r`, `corr_p` (= `tilt_*_corr` after rate-limit + MAX_CORR clamp)
+- `clip_flags` (bitfield: rate-limited / max-corr clipped / deadband)
+- `motor_targets[6]`, `leg_enc[6]`, `leg_iq[6]`
+- `dt_actual` (loop jitter — important if >> 20 ms)
+
+Use a custom msg in `jugglebot_interfaces` (e.g. `LevelDiag.msg`) to
+avoid Float32MultiArray-with-magic-indices.
+
+## Phase 2 — Bag recording in the GUI
+
+Two ROS services on `stewart_control_node`:
+
+- `/level_record/start` (string name, optional) → spawns
+  `ros2 bag record -o <path> /level_diag /platform_rpy /leg_encoders /leg_currents /control_cmd`
+  Default path `~/stable_bot_bags/<UTC-timestamp>_<name>`.
+- `/level_record/stop` → `SIGINT` to the subprocess; returns final
+  path + duration + size.
+
+GUI additions (un-hide the Active Stabilization panel for this work):
+
+- "Record" / "Stop" toggle button + filename input + size/duration readout
+- "Step test" button: programmatic disturbance — commands roll = +1°
+  for 3 s, then back to 0. Repeatable so step responses are
+  comparable across runs.
+- "Recent bags" list with download/delete (served by `gui_server.py`).
+
+## Phase 3 — Offline analysis script
+
+`scripts/analyze_level_bag.py` using `rosbag2_py` + matplotlib + numpy:
+
+**Plots:**
+
+- `err_filt` vs time
+- `integ` vs time
+- `corr` vs time
+- FFT of `err_filt` to find the limit-cycle frequency
+
+**Step metrics:**
+
+- Rise time, peak overshoot, 5 %-settling time, 1 %-settling time
+
+**Steady-state stats:**
+
+- Mean, std-dev, peak-to-peak of `err_filt` over the last 5 s
+
+**Saturation count:**
+
+- % of ticks where `clip_flags != 0`. High % = controller is fighting
+  the rate-limiter, gains are too aggressive.
+
+## Phase 4 — Tuning protocol
+
+1. **Baseline bag** (after recommutation): 30 s idle, level_hold
+   engaged, no disturbance. Measure RMS error and dominant frequency
+   from the FFT.
+2. **Step bag**: 5 step tests (+1° roll / 3 s hold / back to 0).
+   Average the responses to reduce noise.
+3. **From the step response:**
+   - Overshoot > 10 % and oscillates: KP too high, or KP/KI ratio
+     wrong. Try KI = KP/3 instead of current KP/3.5.
+   - Sluggish with steady-state error: KI too low; raise toward KP/2.
+   - High-freq oscillation (> 3 Hz): rate-limit can't catch the
+     controller's bandwidth — lower KP first.
+   - Iterate, re-record, compare. Stop when settling-time(0.1°) ≤ 0.5 s
+     and steady-state RMS ≤ 0.05°.
+4. Lock gains in `config/level_gains.yaml` rather than as Python
+   constants. Tuning script can then sweep them via a parameter file
+   without code changes.
+
+## Build order
+
+1. Phase 1 + 2 together → push → deploy
+2. Phase 3 script
+3. Phase 4 (iterative, user-driven; I just maintain the plotting script)
+
+## Rough size
+
+- Phase 1: ~80 lines (control_node + msg)
+- Phase 2: ~150 lines (services + GUI panel + gui_server endpoints)
+- Phase 3: ~250 lines (analysis script)
+- Custom msg requires rebuilding `jugglebot_interfaces` (one extra
+  colcon step on the Pi).
