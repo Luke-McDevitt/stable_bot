@@ -1,0 +1,61 @@
+{
+  "bag_path": "/home/sorak/stable_bot_bags/20260427T170718Z_new_KP_tuning_v2",
+  "name": "20260427T170718Z_new_KP_tuning_v2",
+  "duration_s": 3.6209824085235596,
+  "n_diag_msgs": 179,
+  "tick_period_actual_mean_ms": 0.3981131738521336,
+  "tick_period_actual_max_ms": 3.186240093782544,
+  "baseline": {
+    "window_s": [
+      0.0,
+      3.600923776626587
+    ],
+    "samples": 178,
+    "sample_rate_hz": 49.72323450262587,
+    "rms_roll_deg": 1.0923604530937807,
+    "rms_pitch_deg": 1.2710456053173411,
+    "p2p_roll_deg": 4.000317275524139,
+    "p2p_pitch_deg": 4.6082576513290405,
+    "mean_roll_deg": -0.0671919903644685,
+    "mean_pitch_deg": -0.8181303499078147,
+    "std_roll_deg": 1.0902919773684991,
+    "std_pitch_deg": 0.9727382285878574,
+    "fft_peak_freq_hz": 0.2793440140596959,
+    "fft_peak_amp_deg": 1.1502734780348816,
+    "saturation_pct_any": 1.1235955056179776,
+    "saturation_pct_by_flag": {
+      "rate_limit_r": 0.0,
+      "rate_limit_p": 1.1235955056179776,
+      "max_corr_r": 0.0,
+      "max_corr_p": 0.0,
+      "deadband_r": 0.0,
+      "deadband_p": 0.0,
+      "integ_clamp_r": 0.0,
+      "integ_clamp_p": 0.0
+    }
+  },
+  "steps_per_trial": [],
+  "steps_aggregated": null,
+  "sidecar": {
+    "name": "new KP tuning v2",
+    "notes": "",
+    "gains": {
+      "kp": 1.0,
+      "ki": 0.3,
+      "deadband_deg": 0.02,
+      "rate_limit_deg_per_iter": 0.25,
+      "max_corr_deg": 5.0,
+      "filter_alpha": 0.3
+    },
+    "gains_file_path": "/home/sorak/ros2_ws/src/stewart_bringup/config/level_gains.yaml",
+    "git_sha": "16b9f9b",
+    "started_utc": "2026-04-27T17:07:18.132089Z",
+    "topics": [
+      "/level_diag",
+      "/platform_rpy",
+      "/leg_encoders",
+      "/leg_currents",
+      "/control_cmd"
+    ]
+  }
+}
