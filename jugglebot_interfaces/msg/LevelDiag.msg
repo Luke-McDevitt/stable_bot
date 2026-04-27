@@ -44,7 +44,9 @@ uint16 clip_flags
 # Per-leg state, 6 entries each
 float64[6] motor_targets   # commanded leg position (turns) sent to feeder
 float64[6] leg_enc         # actual leg position from encoders (turns); NaN if stale
+float64[6] leg_vel         # actual leg velocity from encoders (turns/s); NaN if stale
 float64[6] leg_iq          # measured Iq (Amps); NaN if stale
+float64[6] leg_iq_sp       # commanded Iq setpoint by ODrive controller (Amps); NaN if stale
 
 # Loop jitter — period seconds of this tick. Should be ~0.020.
 float32 dt_actual

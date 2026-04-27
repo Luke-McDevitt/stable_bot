@@ -322,6 +322,7 @@ class EncoderListener:
         self.error_rtr_period = error_rtr_period
         self.lock = threading.Lock()
         self.pos_by_node = {}     # node -> (pos_turns, rx_monotonic)
+        self.vel_by_node = {}     # node -> (vel_turns_per_sec, rx)  — same CAN frame as pos
         self.err_by_node = {}     # node -> (active_errors, disarm_reason, rx)
         self.iq_by_node = {}      # node -> (iq_setpoint, iq_measured, rx)
         self.stop_flag = threading.Event()
@@ -348,9 +349,17 @@ class EncoderListener:
             cmd = msg.arbitration_id & 0x1F
             node = msg.arbitration_id >> 5
             if cmd == CMD_GET_ENCODER and len(msg.data) >= 4:
+                # ODrive's Get_Encoder_Estimates frame is 8 bytes:
+                # bytes [0:4] = pos (turns float), [4:8] = vel (turns/s float).
+                # Older firmware used to send only 4 bytes; keep that path for safety.
                 pos = struct.unpack('<f', bytes(msg.data[:4]))[0]
+                vel = (struct.unpack('<f', bytes(msg.data[4:8]))[0]
+                       if len(msg.data) >= 8 else float('nan'))
                 with self.lock:
-                    self.pos_by_node[node] = (pos, time.monotonic())
+                    now = time.monotonic()
+                    self.pos_by_node[node] = (pos, now)
+                    if not (vel != vel):   # not NaN
+                        self.vel_by_node[node] = (vel, now)
             elif cmd == CMD_GET_ERROR and len(msg.data) >= 8:
                 active = struct.unpack('<I', bytes(msg.data[0:4]))[0]
                 disarm = struct.unpack('<I', bytes(msg.data[4:8]))[0]
@@ -425,6 +434,32 @@ class EncoderListener:
                 v = self.iq_by_node.get(n)
                 if v is not None and (now - v[2]) < max_age_s:
                     out[n] = float(v[1])
+        return out
+
+    def get_iq_setpoint(self, max_age_s=2.0):
+        """Returns list of 6 iq_setpoint floats (A) — what the ODrive
+        controller is commanding the motor to draw — or NaN if stale.
+        The gap between iq_setpoint and iq_measured tells you about
+        the motor's electrical/torque tracking."""
+        out = [float('nan')] * 6
+        with self.lock:
+            now = time.monotonic()
+            for n in range(6):
+                v = self.iq_by_node.get(n)
+                if v is not None and (now - v[2]) < max_age_s:
+                    out[n] = float(v[0])
+        return out
+
+    def get_vel(self, max_age_s=0.5):
+        """Returns list of 6 leg velocities (turns/s) or NaN if no fresh
+        reading. Comes from the same Get_Encoder_Estimates frame as pos."""
+        out = [float('nan')] * 6
+        with self.lock:
+            now = time.monotonic()
+            for n in range(6):
+                v = self.vel_by_node.get(n)
+                if v is not None and (now - v[1]) < max_age_s:
+                    out[n] = float(v[0])
         return out
 
 
@@ -2986,10 +3021,15 @@ class StewartControlNode(Node):
                     enc = self.listener.get_all(max_age_s=0.5)
                     msg.leg_enc = [float(v) if v is not None else float('nan')
                                    for v in enc]
+                    msg.leg_vel = [float(v) for v in self.listener.get_vel(max_age_s=0.5)]
                     msg.leg_iq = [float(v) for v in self.listener.get_iq(max_age_s=2.0)]
+                    msg.leg_iq_sp = [float(v) for v in
+                                     self.listener.get_iq_setpoint(max_age_s=2.0)]
                 else:
                     msg.leg_enc = list(nan6)
+                    msg.leg_vel = list(nan6)
                     msg.leg_iq = list(nan6)
+                    msg.leg_iq_sp = list(nan6)
                 msg.dt_actual = float(time.monotonic() - t0)
                 msg.target_xyzrpy = [
                     float(xyz[0]), float(xyz[1]), float(xyz[2]),

@@ -262,19 +262,35 @@ def write_timeseries_csv(samples, out_path):
     if not samples:
         return
     t0 = samples[0][0]
+    # Whether the bag was recorded with an older LevelDiag that didn't
+    # include leg_vel / leg_iq_sp. Old bags can still be analyzed; the
+    # new columns just stay NaN.
+    has_vel = hasattr(samples[0][1], 'leg_vel')
+    has_iqsp = hasattr(samples[0][1], 'leg_iq_sp')
+    headers = [
+        't_s', 'roll', 'pitch',
+        'err_r', 'err_p', 'err_r_filt', 'err_p_filt',
+        'integ_r', 'integ_p',
+        'pi_out_r', 'pi_out_p',
+        'corr_r', 'corr_p',
+        'target_roll', 'target_pitch',
+        'clip_flags', 'dt_actual',
+    ]
+    # Per-leg columns — wide but trivially compressible. Lets us plot
+    # commanded-vs-actual position, leg velocity, iq_sp vs iq_measured.
+    for n in range(6):
+        headers.append(f'mt_{n}')
+        headers.append(f'enc_{n}')
+        if has_vel:
+            headers.append(f'vel_{n}')
+        if has_iqsp:
+            headers.append(f'iq_sp_{n}')
+        headers.append(f'iq_{n}')
     with open(out_path, 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow([
-            't_s', 'roll', 'pitch',
-            'err_r', 'err_p', 'err_r_filt', 'err_p_filt',
-            'integ_r', 'integ_p',
-            'pi_out_r', 'pi_out_p',
-            'corr_r', 'corr_p',
-            'target_roll', 'target_pitch',
-            'clip_flags', 'dt_actual',
-        ])
+        w.writerow(headers)
         for t, m in samples:
-            w.writerow([
+            row = [
                 f"{t - t0:.4f}",
                 f"{m.roll:.5f}", f"{m.pitch:.5f}",
                 f"{m.err_r:.5f}", f"{m.err_p:.5f}",
@@ -285,7 +301,16 @@ def write_timeseries_csv(samples, out_path):
                 f"{m.target_roll:.5f}", f"{m.target_pitch:.5f}",
                 int(m.clip_flags),
                 f"{m.dt_actual:.5f}",
-            ])
+            ]
+            for n in range(6):
+                row.append(f"{m.motor_targets[n]:.5f}")
+                row.append(f"{m.leg_enc[n]:.5f}")
+                if has_vel:
+                    row.append(f"{m.leg_vel[n]:.5f}")
+                if has_iqsp:
+                    row.append(f"{m.leg_iq_sp[n]:.5f}")
+                row.append(f"{m.leg_iq[n]:.5f}")
+            w.writerow(row)
 
 
 def _read_sidecar(bag_dir):
