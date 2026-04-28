@@ -880,6 +880,8 @@ class StewartControlNode(Node):
         # motor cannot run away if the browser disconnects mid-drag.
         self._last_jog_vel_rx = 0.0
         self._last_jog_vel_value = 0.0
+        # CAN bus utilization (rolling delta vs previous _tick_status sample)
+        self._last_can_stats = None
 
         # --- Subs ---
         self.create_subscription(
@@ -1453,6 +1455,67 @@ class StewartControlNode(Node):
                 safe_pos[n] = hi
         return vel, safe_pos
 
+    # ---- CAN bus utilization ----
+    # Read kernel-side packet/byte counters from /sys/class/net/can0/
+    # statistics/. Cumulative since interface up; we sample twice (one
+    # tick apart) and divide to get rates.
+    CAN_IFACE = 'can0'
+    CAN_BITRATE_BPS = 1_000_000  # classic CAN @ 1 Mbps (matches our `ip link set` cmd)
+    # Average per-frame overhead for classic CAN, 11-bit IDs, with ~5%
+    # bit-stuffing on the variable bits. Used to estimate wire bits/frame
+    # from kernel byte/packet counters.
+    _CAN_OVERHEAD_BITS = 47
+    _CAN_STUFF_FACTOR = 1.05
+
+    def _read_can_iface_stats(self):
+        """Returns {'rx_packets', 'tx_packets', 'rx_bytes', 'tx_bytes',
+        't_mono'} or None if can0 isn't up. We don't open the file
+        descriptors persistently — on the Pi these reads are <100us.
+        """
+        base = f'/sys/class/net/{self.CAN_IFACE}/statistics'
+        try:
+            return {
+                'rx_packets': int(open(f'{base}/rx_packets').read().strip()),
+                'tx_packets': int(open(f'{base}/tx_packets').read().strip()),
+                'rx_bytes':   int(open(f'{base}/rx_bytes').read().strip()),
+                'tx_bytes':   int(open(f'{base}/tx_bytes').read().strip()),
+                't_mono':     time.monotonic(),
+            }
+        except Exception:
+            return None
+
+    def _compute_can_rates(self, prev, cur):
+        """Given two stats samples, compute per-second rates and an
+        estimated bus utilization. The byte counters in /sys are DATA
+        payload bytes (not wire bits), so we add per-frame overhead
+        and a bit-stuffing factor to approximate actual bus bits."""
+        if prev is None or cur is None:
+            return None
+        dt = cur['t_mono'] - prev['t_mono']
+        if dt <= 0:
+            return None
+        d_rxp = cur['rx_packets'] - prev['rx_packets']
+        d_txp = cur['tx_packets'] - prev['tx_packets']
+        d_rxb = cur['rx_bytes']   - prev['rx_bytes']
+        d_txb = cur['tx_bytes']   - prev['tx_bytes']
+        rx_fps = d_rxp / dt
+        tx_fps = d_txp / dt
+        total_fps = rx_fps + tx_fps
+        # Wire-bit estimate: data bytes × 8 × stuff_factor + per-frame overhead
+        wire_bits = (
+            (d_rxb + d_txb) * 8 * self._CAN_STUFF_FACTOR
+            + (d_rxp + d_txp) * self._CAN_OVERHEAD_BITS
+        )
+        bus_bps = wire_bits / dt
+        return {
+            'can_rx_fps': float(rx_fps),
+            'can_tx_fps': float(tx_fps),
+            'can_total_fps': float(total_fps),
+            'can_bus_kbps': float(bus_bps / 1000.0),
+            'can_bus_utilization_pct': float(
+                bus_bps / self.CAN_BITRATE_BPS * 100.0),
+        }
+
     # ---- IMU ----
     def _imu_cb(self, msg):
         q = msg.orientation
@@ -1525,6 +1588,14 @@ class StewartControlNode(Node):
             err_r = float('nan')
             err_p = float('nan')
 
+        # CAN bus utilization — sample now, diff against previous tick.
+        # Tick is at 5 Hz, so each datapoint covers ~200 ms; well below
+        # the 1-sec window we'd want for human-readable rates but smooth
+        # enough on a steady traffic pattern.
+        can_now = self._read_can_iface_stats()
+        can_rates = self._compute_can_rates(self._last_can_stats, can_now)
+        self._last_can_stats = can_now
+
         status = {
             'armed': bool(self.armed),
             'limits_loaded': self.limits is not None,
@@ -1547,6 +1618,8 @@ class StewartControlNode(Node):
             'playing_routine_elapsed_s': float(self.playing_routine_elapsed),
             'playing_routine_duration_s': float(self.playing_routine_duration),
         }
+        if can_rates is not None:
+            status.update(can_rates)
         m = String()
         m.data = json.dumps(status)
         self.pub_status.publish(m)

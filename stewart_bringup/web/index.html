@@ -124,6 +124,8 @@
 
     <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
       <h2 class="text-sm uppercase text-slate-400 mb-2">Status</h2>
+      <!-- Headline CAN utilization line; the kbps + util% turn yellow >70%, red >85% -->
+      <div id="status-can" class="mono text-xs mb-1 text-slate-400">CAN: <span id="status-can-text">—</span></div>
       <pre id="status-box" class="mono text-xs whitespace-pre-wrap text-slate-200">(waiting...)</pre>
     </div>
 
@@ -1486,6 +1488,7 @@ function setupROSInterface() {
       updateLevelButtons(!!s.level_enabled);
       updateStabReadouts(s);
       updatePlaybackUI(s);
+      updateCanUsage(s);
       // Seed the speed-cap slider from /status as a fallback in case the
       // /get_speed_cap service call is unavailable due to discovery issues.
       if (!velCapInitialized && s.hard_max_vel_turns_per_sec) {
@@ -1844,6 +1847,33 @@ function renderKeyframeList(kfs) {
     `rp=${(k.roll || 0).toFixed(1)},${(k.pitch || 0).toFixed(1)}°  ` +
     `xy=${(k.x || 0).toFixed(1)},${(k.y || 0).toFixed(1)}`
   ).join('\n');
+}
+
+// Headline CAN utilization line at the top of the Status panel.
+// /status carries can_bus_kbps, can_bus_utilization_pct, and the per-
+// direction frame rates. We threshold-color the cells so a creeping
+// bus problem (>70% util, >1 Mbps headroom shrinking) is visible at
+// a glance.
+function updateCanUsage(s) {
+  const tx = $('status-can-text');
+  if (!tx) return;
+  if (typeof s.can_bus_kbps !== 'number') {
+    tx.innerText = '— (waiting)';
+    tx.parentElement.className = 'mono text-xs mb-1 text-slate-500';
+    return;
+  }
+  const kbps = Math.round(s.can_bus_kbps);
+  const util = s.can_bus_utilization_pct || 0;
+  const rxFps = Math.round(s.can_rx_fps || 0);
+  const txFps = Math.round(s.can_tx_fps || 0);
+  tx.innerText =
+    `${kbps} kbps (${util.toFixed(1)}% of 1 Mbps)  · ` +
+    `rx ${rxFps}/s  tx ${txFps}/s`;
+  let cls = 'mono text-xs mb-1 ';
+  if (util >= 85) cls += 'text-red-400';
+  else if (util >= 70) cls += 'text-yellow-400';
+  else cls += 'text-emerald-400';
+  tx.parentElement.className = cls;
 }
 
 function updatePlaybackUI(s) {
