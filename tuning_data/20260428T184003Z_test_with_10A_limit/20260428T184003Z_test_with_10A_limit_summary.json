@@ -1,0 +1,202 @@
+{
+  "bag_path": "/home/sorak/stable_bot_bags/20260428T184003Z_test_with_10A_limit",
+  "name": "20260428T184003Z_test_with_10A_limit",
+  "duration_s": 35.96896958351135,
+  "n_diag_msgs": 1338,
+  "tick_period_actual_mean_ms": 0.6272968448208149,
+  "tick_period_actual_max_ms": 6.937549915164709,
+  "health": {
+    "yaw_first_deg": -39.739864349365234,
+    "yaw_last_deg": -40.536277770996094,
+    "yaw_range_deg": 5.631263732910156,
+    "yaw_drift_rate_deg_per_s": -0.022141680199700402,
+    "per_leg_state": [
+      {
+        "leg": 0,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 1,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 2,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 3,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 4,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 5,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      }
+    ],
+    "any_leg_dropped_out": false,
+    "per_leg_active_errors": [
+      {
+        "leg": 0,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 1,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 2,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 3,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 4,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 5,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      }
+    ],
+    "any_leg_active_error": false,
+    "per_leg_feeder_mode": [
+      {
+        "leg": 0,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 1,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 2,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 3,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 4,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 5,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      }
+    ],
+    "any_leg_not_in_pos": false
+  },
+  "baseline": {
+    "window_s": [
+      0.0,
+      35.94944524765015
+    ],
+    "samples": 1337,
+    "sample_rate_hz": 49.63996473143222,
+    "rms_roll_deg": 1.6905919445607387,
+    "rms_pitch_deg": 1.5621532665779716,
+    "p2p_roll_deg": 5.525197982788086,
+    "p2p_pitch_deg": 3.1624412834644318,
+    "mean_roll_deg": -1.342588482646128,
+    "mean_pitch_deg": -1.1022826311460678,
+    "std_roll_deg": 1.0274031775693646,
+    "std_pitch_deg": 1.1069308150710815,
+    "fft_peak_freq_hz": 0.07999994316105112,
+    "fft_peak_amp_deg": 1.0788153847059918,
+    "saturation_pct_any": 41.51084517576664,
+    "saturation_pct_by_flag": {
+      "rate_limit_r": 0.22438294689603588,
+      "rate_limit_p": 0.0,
+      "max_corr_r": 30.067314884068814,
+      "max_corr_p": 23.93418100224383,
+      "deadband_r": 0.0,
+      "deadband_p": 7.479431563201197,
+      "integ_clamp_r": 0.0,
+      "integ_clamp_p": 0.0
+    }
+  },
+  "steps_per_trial": [],
+  "steps_aggregated": null,
+  "sidecar": {
+    "name": "test with 10A limit",
+    "notes": "",
+    "gains": {
+      "kp": 1.0,
+      "ki": 0.3,
+      "deadband_deg": 0.02,
+      "rate_limit_deg_per_iter": 0.25,
+      "max_corr_deg": 5.0,
+      "filter_alpha": 0.3
+    },
+    "gains_file_path": "/home/sorak/ros2_ws/src/stewart_bringup/config/level_gains.yaml",
+    "git_sha": "0eb0a72",
+    "started_utc": "2026-04-28T18:40:03.362046Z",
+    "topics": [
+      "/level_diag",
+      "/platform_rpy",
+      "/leg_encoders",
+      "/leg_currents",
+      "/control_cmd"
+    ]
+  }
+}
