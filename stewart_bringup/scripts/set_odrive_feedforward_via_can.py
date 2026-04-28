@@ -24,6 +24,17 @@ Usage:
   python3 set_odrive_feedforward_via_can.py [--apply | --revert | --status]
   sudo systemctl start stable_bot
 
+  # Override default values without editing the file:
+  python3 set_odrive_feedforward_via_can.py --apply \
+      --vel-integrator-gain 0.333 --wl-ff true
+
+  # ODrive factory defaults (no FF, default integrator gain):
+  python3 set_odrive_feedforward_via_can.py --apply \
+      --vel-integrator-gain 0.333 --wl-ff false
+
+  # Just disable FF, keep current integrator gain:
+  python3 set_odrive_feedforward_via_can.py --apply --wl-ff false
+
 Modes:
   --status (default if nothing else): SDO-read each parameter on each
            node, print current values
@@ -57,18 +68,55 @@ OPCODE_WRITE = 0x01
 
 DEFAULT_TARGETS = [
     # (endpoint name in JSON, value to write on --apply, type-cast)
-    # 2026-04-28 step 3: wL_FF_enable disabled. Step 2 (FF on, default
-    # integrator gain) showed mixed Z-dependent benefit — Z=40/55 were
-    # better than iter-3 pre-fix, but Z=35/50 were 2-4× worse. wL_FF's
-    # contribution is non-monotonic in Z, which means it's the wrong
-    # tradeoff at any single tuning point. Dropping it returns the
-    # inner loop to ODrive factory defaults; from there we can use
-    # high-rate capture to diagnose residual phase-lag issues without
-    # FF as a confound.
+    # Default values applied when no per-target CLI flag is given.
+    # CLI flags --vel-integrator-gain and --wl-ff override these for
+    # the corresponding endpoint without touching the file. History:
+    #   - Step 1 (kp=0.05, FF=on): inner-loop unstable, RMS 0.5-0.7°
+    #   - Step 2 (kp=0.333, FF=on): mixed; some Zs better, some worse
+    #   - Step 3 (kp=0.333, FF=off, current values): ODrive factory
+    #     defaults; expected to reproduce iter-3 pre-fix performance
     ('axis0.controller.config.vel_integrator_gain', 0.333, float),
     ('axis0.config.motor.wL_FF_enable',             False, bool),
 ]
 SAVE_ENDPOINT = 'save_configuration'
+
+
+def _parse_tristate_bool(s):
+    """Parse 'true'/'false'/'yes'/'no'/'on'/'off'/'1'/'0' as a real bool.
+    argparse's bool-cast accepts any non-empty string as True, which is
+    a footgun ('--wl-ff false' would set it True). This is strict."""
+    s = (s or '').strip().lower()
+    if s in ('true', 't', 'yes', 'y', 'on', '1'):
+        return True
+    if s in ('false', 'f', 'no', 'n', 'off', '0'):
+        return False
+    raise argparse.ArgumentTypeError(
+        f"expected true/false (got {s!r})")
+
+
+def _build_targets(args):
+    """Return the list of (path, value, cast) to apply, with any CLI
+    overrides folded in. The base list comes from DEFAULT_TARGETS;
+    --vel-integrator-gain and --wl-ff replace the matching entry."""
+    out = []
+    for path, default_val, cast in DEFAULT_TARGETS:
+        val = default_val
+        if path == 'axis0.controller.config.vel_integrator_gain' \
+                and getattr(args, 'vel_integrator_gain', None) is not None:
+            val = args.vel_integrator_gain
+        elif path == 'axis0.config.motor.wL_FF_enable' \
+                and getattr(args, 'wl_ff', None) is not None:
+            val = args.wl_ff
+        out.append((path, val, cast))
+    return out
+
+
+def _print_target_banner(targets):
+    """Print a clear before-action summary so the operator knows
+    exactly what's about to be written."""
+    print("Targets for this run:")
+    for path, val, _cast in targets:
+        print(f"  {path} = {val!r}")
 
 # Where dump_odrive_endpoints.py wrote the IDs.
 def _default_endpoint_json():
@@ -239,8 +287,8 @@ def _resolve_save(eps):
     return ent['id']
 
 
-def cmd_status(client, eps, node_ids):
-    targets = _resolve_targets(eps, DEFAULT_TARGETS)
+def cmd_status(client, eps, node_ids, target_values):
+    targets = _resolve_targets(eps, target_values)
     print(f"reading current values from nodes {list(node_ids)}...")
     for n in node_ids:
         print(f"\nnode {n}:")
@@ -252,8 +300,9 @@ def cmd_status(client, eps, node_ids):
                 print(f"  {path}: {val}")
 
 
-def cmd_apply(client, eps, node_ids):
-    targets = _resolve_targets(eps, DEFAULT_TARGETS)
+def cmd_apply(client, eps, node_ids, target_values):
+    _print_target_banner(target_values)
+    targets = _resolve_targets(eps, target_values)
     save_id = _resolve_save(eps)
 
     # Read previous values for backup BEFORE writing anything.
@@ -305,7 +354,7 @@ def cmd_apply(client, eps, node_ids):
     print("\nDone.")
 
 
-def cmd_revert(client, eps, node_ids):
+def cmd_revert(client, eps, node_ids, target_values):
     save_id = _resolve_save(eps)
     if not BACKUP_PATH.exists():
         sys.exit(f"no backup found at {BACKUP_PATH}")
@@ -318,7 +367,7 @@ def cmd_revert(client, eps, node_ids):
             print(f"node {n}: no backup, skipping")
             continue
         print(f"node {n}: reverting")
-        for path, _val, _cast in DEFAULT_TARGETS:
+        for path, _val, _cast in target_values:
             if path not in per:
                 continue
             ep_id = eps['endpoints'][path]['id']
@@ -349,6 +398,16 @@ def main():
     p.add_argument('--endpoints',
                    help=f'path to endpoints JSON (default: '
                         f'<repo>/stewart_bringup/data/odrive_endpoints.json)')
+    p.add_argument('--vel-integrator-gain', type=float, default=None,
+                   metavar='GAIN',
+                   help='override axis0.controller.config.vel_integrator_gain '
+                        '(float). If not given, uses DEFAULT_TARGETS in this '
+                        'file. ODrive stock default is 0.333.')
+    p.add_argument('--wl-ff', type=_parse_tristate_bool, default=None,
+                   metavar='true|false',
+                   help='override axis0.config.motor.wL_FF_enable (bool). '
+                        'If not given, uses DEFAULT_TARGETS in this file. '
+                        'ODrive stock default is false.')
     args = p.parse_args()
 
     if not (args.status or args.apply or args.revert):
@@ -361,12 +420,13 @@ def main():
 
     client = SdoClient(channel=args.channel)
     try:
+        target_values = _build_targets(args)
         if args.apply:
-            cmd_apply(client, eps, args.node_ids)
+            cmd_apply(client, eps, args.node_ids, target_values)
         elif args.revert:
-            cmd_revert(client, eps, args.node_ids)
+            cmd_revert(client, eps, args.node_ids, target_values)
         else:
-            cmd_status(client, eps, args.node_ids)
+            cmd_status(client, eps, args.node_ids, target_values)
     finally:
         client.close()
 
