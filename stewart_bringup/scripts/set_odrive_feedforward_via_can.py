@@ -38,6 +38,15 @@ Usage:
   # Bump CAN encoder broadcast rate (10 ms → 2 ms = 500 Hz):
   python3 set_odrive_feedforward_via_can.py --apply --encoder-rate-ms 2
 
+  # Recover from watchdog disarm + persistent VELOCITY mode:
+  python3 set_odrive_feedforward_via_can.py --apply \
+      --control-mode position --input-mode passthrough --clear-errors
+
+  # Full "prepare for level loop" baseline (one command):
+  python3 set_odrive_feedforward_via_can.py --apply \
+      --control-mode position --input-mode passthrough --clear-errors \
+      --vel-integrator-gain 0.333 --wl-ff true --encoder-rate-ms 2
+
 Modes:
   --status (default if nothing else): SDO-read each parameter on each
            node, print current values
@@ -97,6 +106,49 @@ def _parse_tristate_bool(s):
         f"expected true/false (got {s!r})")
 
 
+# ODrive ControlMode enum (per ODrive 0.6.x firmware)
+_CONTROL_MODE = {
+    'voltage':  0, 'voltage_control':  0,
+    'torque':   1, 'torque_control':   1,
+    'velocity': 2, 'velocity_control': 2,
+    'position': 3, 'position_control': 3,
+}
+
+# ODrive InputMode enum (per ODrive 0.6.x firmware)
+_INPUT_MODE = {
+    'inactive':     0,
+    'passthrough':  1,
+    'vel_ramp':     2, 'vel-ramp':     2,
+    'pos_filter':   3, 'pos-filter':   3,
+    'mix_channels': 4, 'mix-channels': 4,
+    'trap_traj':    5, 'trap-traj':    5,
+    'torque_ramp':  6, 'torque-ramp':  6,
+    'mirror':       7,
+    'tuning':       8,
+}
+
+
+def _parse_named_int(s, lookup, what):
+    """Accept either an enum name or an integer. Returns int."""
+    s = (s or '').strip().lower()
+    if s in lookup:
+        return lookup[s]
+    try:
+        return int(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{what}: expected one of {sorted(set(lookup.values()))} "
+            f"or a name like {sorted(lookup.keys())[0]!r} (got {s!r})")
+
+
+def _parse_control_mode(s):
+    return _parse_named_int(s, _CONTROL_MODE, 'control_mode')
+
+
+def _parse_input_mode(s):
+    return _parse_named_int(s, _INPUT_MODE, 'input_mode')
+
+
 def _build_targets(args):
     """Return the list of (path, value, cast) to apply, with any CLI
     overrides folded in. The base list comes from DEFAULT_TARGETS;
@@ -117,6 +169,13 @@ def _build_targets(args):
     if getattr(args, 'encoder_rate_ms', None) is not None:
         out.append(('axis0.config.can.encoder_msg_rate_ms',
                     int(args.encoder_rate_ms), int))
+    # Optional: append controller mode targets only if given.
+    if getattr(args, 'control_mode', None) is not None:
+        out.append(('axis0.controller.config.control_mode',
+                    int(args.control_mode), int))
+    if getattr(args, 'input_mode', None) is not None:
+        out.append(('axis0.controller.config.input_mode',
+                    int(args.input_mode), int))
     return out
 
 
@@ -309,10 +368,17 @@ def cmd_status(client, eps, node_ids, target_values):
                 print(f"  {path}: {val}")
 
 
-def cmd_apply(client, eps, node_ids, target_values):
+def cmd_apply(client, eps, node_ids, target_values, clear_errors=False):
     _print_target_banner(target_values)
+    if clear_errors:
+        print("  (will call clear_errors() on each axis after writes)")
     targets = _resolve_targets(eps, target_values)
     save_id = _resolve_save(eps)
+    clear_id = (eps.get('endpoints', {}).get('clear_errors', {}) or {}).get('id')
+    if clear_errors and clear_id is None:
+        sys.exit("--clear-errors requested but 'clear_errors' endpoint "
+                 "isn't in odrive_endpoints.json. Re-run dump_odrive_endpoints.py "
+                 "to pick it up, then commit the new JSON.")
 
     # Read previous values for backup BEFORE writing anything.
     print("backing up current values...")
@@ -356,6 +422,11 @@ def cmd_apply(client, eps, node_ids, target_values):
                     isinstance(new_val, float)
                     and abs(verify - new_val) < 1e-6)
                 print(f"  {'✓' if ok else '✗'} verify {path}: {verify}")
+        # Optionally clear errors (after writes, before save). This is
+        # what unsticks a watchdog-disarmed axis without rebooting.
+        if clear_errors and clear_id is not None:
+            client.call_function(n, clear_id)
+            print(f"  ✓ clear_errors()")
         # Save configuration. The drive will reboot.
         client.call_function(n, save_id)
         print(f"  ✓ save_configuration() — node will reboot, waiting 3s")
@@ -425,6 +496,22 @@ def main():
                         'sweet spot for 6 drives on a 1 Mbps bus. NOT '
                         'written unless this flag is given — keeps unrelated '
                         '--apply runs from touching the rate.')
+    p.add_argument('--control-mode', type=_parse_control_mode, default=None,
+                   metavar='MODE',
+                   help='set axis0.controller.config.control_mode. Accepts '
+                        'a name (voltage/torque/velocity/position) or a '
+                        'number (0-3). For the level loop you want '
+                        '"position" (=3). Persists to flash on save.')
+    p.add_argument('--input-mode', type=_parse_input_mode, default=None,
+                   metavar='MODE',
+                   help='set axis0.controller.config.input_mode. Accepts a '
+                        'name (passthrough/vel_ramp/trap_traj/...) or a '
+                        'number (0-8). For the level loop you want '
+                        '"passthrough" (=1). Persists to flash on save.')
+    p.add_argument('--clear-errors', action='store_true',
+                   help='also call clear_errors() on each axis before save. '
+                        'Use this when drives have stuck active_errors '
+                        '(e.g. WATCHDOG_TIMER_EXPIRED, 0x01000000).')
     args = p.parse_args()
 
     if not (args.status or args.apply or args.revert):
@@ -439,7 +526,8 @@ def main():
     try:
         target_values = _build_targets(args)
         if args.apply:
-            cmd_apply(client, eps, args.node_ids, target_values)
+            cmd_apply(client, eps, args.node_ids, target_values,
+                      clear_errors=args.clear_errors)
         elif args.revert:
             cmd_revert(client, eps, args.node_ids, target_values)
         else:

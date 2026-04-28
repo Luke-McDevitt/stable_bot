@@ -50,8 +50,19 @@ TARGETS = [
     # position data over the bus — 2 ms (500 Hz) is the bandwidth
     # sweet spot for 6 drives on a 1 Mbps bus.
     ('axis0.config.can.encoder_msg_rate_ms',        'uint32'),
-    # Function endpoint — invoked by writing to it (any value).
+    # Persistent controller config. Watchdog-disarm bug surfaced when
+    # WebGUI's "Run Configuration Script" persisted control_mode=2
+    # (VELOCITY) while the level loop sends Set_Input_Pos. The drive
+    # ignored those, watchdog timed out, drive disarmed. Setting the
+    # right values from CAN sidesteps a USB cable shuffle every time
+    # this needs to be re-asserted.
+    ('axis0.controller.config.control_mode',        'uint32'),
+    ('axis0.controller.config.input_mode',          'uint32'),
+    # Function endpoints — invoked by writing to them.
     ('save_configuration',                          'function'),
+    # clear_errors clears active_errors + disarm_reason on the axis
+    # (and motor/encoder/etc. sub-systems) without rebooting.
+    ('clear_errors',                                'function'),
 ]
 
 # Reflection paths the odrive library has used across versions to
