@@ -35,6 +35,9 @@ Usage:
   # Just disable FF, keep current integrator gain:
   python3 set_odrive_feedforward_via_can.py --apply --wl-ff false
 
+  # Bump CAN encoder broadcast rate (10 ms → 2 ms = 500 Hz):
+  python3 set_odrive_feedforward_via_can.py --apply --encoder-rate-ms 2
+
 Modes:
   --status (default if nothing else): SDO-read each parameter on each
            node, print current values
@@ -97,7 +100,9 @@ def _parse_tristate_bool(s):
 def _build_targets(args):
     """Return the list of (path, value, cast) to apply, with any CLI
     overrides folded in. The base list comes from DEFAULT_TARGETS;
-    --vel-integrator-gain and --wl-ff replace the matching entry."""
+    --vel-integrator-gain and --wl-ff replace the matching entry.
+    --encoder-rate-ms appends a new target (won't be written if the
+    flag isn't given — keeps unrelated --apply runs from touching it)."""
     out = []
     for path, default_val, cast in DEFAULT_TARGETS:
         val = default_val
@@ -108,6 +113,10 @@ def _build_targets(args):
                 and getattr(args, 'wl_ff', None) is not None:
             val = args.wl_ff
         out.append((path, val, cast))
+    # Optional: append CAN broadcast rate target only if flag was given.
+    if getattr(args, 'encoder_rate_ms', None) is not None:
+        out.append(('axis0.config.can.encoder_msg_rate_ms',
+                    int(args.encoder_rate_ms), int))
     return out
 
 
@@ -408,6 +417,14 @@ def main():
                    help='override axis0.config.motor.wL_FF_enable (bool). '
                         'If not given, uses DEFAULT_TARGETS in this file. '
                         'ODrive stock default is false.')
+    p.add_argument('--encoder-rate-ms', type=int, default=None,
+                   metavar='MS',
+                   help='set axis0.config.can.encoder_msg_rate_ms (period '
+                        'between encoder broadcasts in ms). ODrive default '
+                        'is 10 (= 100 Hz). 2 (= 500 Hz) is the bandwidth '
+                        'sweet spot for 6 drives on a 1 Mbps bus. NOT '
+                        'written unless this flag is given — keeps unrelated '
+                        '--apply runs from touching the rate.')
     args = p.parse_args()
 
     if not (args.status or args.apply or args.revert):

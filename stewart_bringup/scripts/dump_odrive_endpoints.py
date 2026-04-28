@@ -45,6 +45,11 @@ except ImportError:
 TARGETS = [
     ('axis0.controller.config.vel_integrator_gain', 'float32'),
     ('axis0.config.motor.wL_FF_enable',             'bool'),
+    # CAN broadcast rate for encoder estimates. 10 ms is the
+    # ODrive default (= 100 Hz). Lower this to get higher-rate
+    # position data over the bus — 2 ms (500 Hz) is the bandwidth
+    # sweet spot for 6 drives on a 1 Mbps bus.
+    ('axis0.config.can.encoder_msg_rate_ms',        'uint32'),
     # Function endpoint — invoked by writing to it (any value).
     ('save_configuration',                          'function'),
 ]
