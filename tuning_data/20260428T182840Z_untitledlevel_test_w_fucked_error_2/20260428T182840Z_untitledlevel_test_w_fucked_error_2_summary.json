@@ -1,0 +1,202 @@
+{
+  "bag_path": "/home/sorak/stable_bot_bags/20260428T182840Z_untitledlevel_test_w_fucked_error_2",
+  "name": "20260428T182840Z_untitledlevel_test_w_fucked_error_2",
+  "duration_s": 11.32256007194519,
+  "n_diag_msgs": 556,
+  "tick_period_actual_mean_ms": 0.6019488518170697,
+  "tick_period_actual_max_ms": 4.455031827092171,
+  "health": {
+    "yaw_first_deg": -39.13302230834961,
+    "yaw_last_deg": -43.48672866821289,
+    "yaw_range_deg": 4.531703948974609,
+    "yaw_drift_rate_deg_per_s": -0.3845160751808071,
+    "per_leg_state": [
+      {
+        "leg": 0,
+        "closed_loop_pct": 99.10071942446042,
+        "idle_count": 5,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": 11.242292165756226
+      },
+      {
+        "leg": 1,
+        "closed_loop_pct": 99.10071942446042,
+        "idle_count": 5,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": 11.242292165756226
+      },
+      {
+        "leg": 2,
+        "closed_loop_pct": 99.10071942446042,
+        "idle_count": 5,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": 11.242292165756226
+      },
+      {
+        "leg": 3,
+        "closed_loop_pct": 99.10071942446042,
+        "idle_count": 5,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": 11.242292165756226
+      },
+      {
+        "leg": 4,
+        "closed_loop_pct": 99.10071942446042,
+        "idle_count": 5,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": 11.242292165756226
+      },
+      {
+        "leg": 5,
+        "closed_loop_pct": 99.10071942446042,
+        "idle_count": 5,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": 11.242292165756226
+      }
+    ],
+    "any_leg_dropped_out": true,
+    "per_leg_active_errors": [
+      {
+        "leg": 0,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 1,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 2,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 3,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 4,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 5,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      }
+    ],
+    "any_leg_active_error": false,
+    "per_leg_feeder_mode": [
+      {
+        "leg": 0,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 1,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 2,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 3,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 4,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 5,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      }
+    ],
+    "any_leg_not_in_pos": false
+  },
+  "baseline": {
+    "window_s": [
+      0.0,
+      11.302546501159668
+    ],
+    "samples": 555,
+    "sample_rate_hz": 49.6817118456354,
+    "rms_roll_deg": 5.378895402670738,
+    "rms_pitch_deg": 12.174311816732025,
+    "p2p_roll_deg": 4.166032075881958,
+    "p2p_pitch_deg": 11.25486969947815,
+    "mean_roll_deg": -5.361885857367301,
+    "mean_pitch_deg": -12.101276424768809,
+    "std_roll_deg": 0.42742929875819446,
+    "std_pitch_deg": 1.3315318630643695,
+    "fft_peak_freq_hz": 0.08951659792006378,
+    "fft_peak_amp_deg": 0.37492416910782733,
+    "saturation_pct_any": 100.0,
+    "saturation_pct_by_flag": {
+      "rate_limit_r": 1.0810810810810811,
+      "rate_limit_p": 100.0,
+      "max_corr_r": 77.29729729729729,
+      "max_corr_p": 96.3963963963964,
+      "deadband_r": 0.0,
+      "deadband_p": 0.0,
+      "integ_clamp_r": 0.0,
+      "integ_clamp_p": 0.0
+    }
+  },
+  "steps_per_trial": [],
+  "steps_aggregated": null,
+  "sidecar": {
+    "name": "untitledlevel test w fucked error 2",
+    "notes": "",
+    "gains": {
+      "kp": 1.0,
+      "ki": 0.3,
+      "deadband_deg": 0.02,
+      "rate_limit_deg_per_iter": 0.25,
+      "max_corr_deg": 5.0,
+      "filter_alpha": 0.3
+    },
+    "gains_file_path": "/home/sorak/ros2_ws/src/stewart_bringup/config/level_gains.yaml",
+    "git_sha": "f465053",
+    "started_utc": "2026-04-28T18:28:40.928855Z",
+    "topics": [
+      "/level_diag",
+      "/platform_rpy",
+      "/leg_encoders",
+      "/leg_currents",
+      "/control_cmd"
+    ]
+  }
+}
