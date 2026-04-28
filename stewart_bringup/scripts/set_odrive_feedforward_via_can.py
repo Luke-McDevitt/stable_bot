@@ -85,10 +85,13 @@ DEFAULT_TARGETS = [
     # the corresponding endpoint without touching the file. History:
     #   - Step 1 (kp=0.05, FF=on): inner-loop unstable, RMS 0.5-0.7°
     #   - Step 2 (kp=0.333, FF=on): mixed; some Zs better, some worse
-    #   - Step 3 (kp=0.333, FF=off, current values): ODrive factory
-    #     defaults; expected to reproduce iter-3 pre-fix performance
+    #   - Step 3 (kp=0.333, FF=off):  REGRESSION. Mean error grew 30x;
+    #     last-good sweep (sha=fac92de) had wL_FF=True with these
+    #     same gains and held mean ±0.03°, RMS 0.13-0.18°. Defaults
+    #     restored to the working state on 2026-04-28 after firmware
+    #     harmonization to 0.6.11-1.
     ('axis0.controller.config.vel_integrator_gain', 0.333, float),
-    ('axis0.config.motor.wL_FF_enable',             False, bool),
+    ('axis0.config.motor.wL_FF_enable',             True,  bool),
 ]
 SAVE_ENDPOINT = 'save_configuration'
 
