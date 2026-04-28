@@ -57,7 +57,14 @@ OPCODE_WRITE = 0x01
 
 DEFAULT_TARGETS = [
     # (endpoint name in JSON, value to write on --apply, type-cast)
-    ('axis0.controller.config.vel_integrator_gain', 0.05, float),
+    # 2026-04-28 step 2: vel_integrator_gain bumped 0.05 → 0.333
+    # (ODrive's stock default). The 0.05 value combined with
+    # wL_FF_enable=True produced wildly inconsistent step responses
+    # and 5-18× worse baseline RMS than ODrive defaults (see
+    # tuning_data/sweep_20260428T150033Z_sweep and
+    # sweep_20260428T155232Z_sweep). If 0.333 + FF is also bad,
+    # next step is to drop wL_FF_enable to False.
+    ('axis0.controller.config.vel_integrator_gain', 0.333, float),
     ('axis0.config.motor.wL_FF_enable',             True, bool),
 ]
 SAVE_ENDPOINT = 'save_configuration'
