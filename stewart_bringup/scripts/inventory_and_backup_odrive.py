@@ -126,50 +126,18 @@ def main():
         f.write(f"captured_iso={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
     print(f"  ✓ wrote {ident_path}")
 
-    if args.no_backup:
-        print("\n--no-backup: skipping odrivetool backup-config.")
-        return
-
-    # Settle gap. The identity-probe subprocess called close_device_manager()
-    # explicitly, but libodrive's C++ runtime takes a moment to actually
-    # release the USB endpoint at the kernel level. Empirically 3 s is
-    # plenty; 0.5 s was not.
-    time.sleep(3.0)
-
-    print(f"  running odrivetool backup-config → {config_path} ...")
-    try:
-        result = subprocess.run(
-            ['odrivetool', 'backup-config', str(config_path)],
-            capture_output=True, text=True, timeout=45,
-        )
-    except FileNotFoundError:
-        sys.exit("ERROR: 'odrivetool' not in PATH (expected in ~/.local/bin/).")
-    except subprocess.TimeoutExpired:
-        # Don't pretend we know the cause; tell the user how to recover.
-        print(f"\n  ✗ odrivetool backup-config timed out (45 s).")
-        print(f"  This usually means libodrive hadn't finished releasing the USB.")
-        print(f"  Recovery: unplug + replug the USB cable, then run manually:")
-        print(f"      odrivetool backup-config '{config_path}'")
-        print(f"  Identity .txt is already saved; you only need to run the")
-        print(f"  backup-config step manually for this drive.")
-        sys.exit(1)
-
-    if result.returncode != 0:
-        print("  ✗ backup-config FAILED:", file=sys.stderr)
-        if result.stderr.strip():
-            print("    stderr:", result.stderr.strip()[-1000:], file=sys.stderr)
-        if result.stdout.strip():
-            print("    stdout:", result.stdout.strip()[-500:], file=sys.stderr)
-        print(f"\n  Recovery: run manually:", file=sys.stderr)
-        print(f"      odrivetool backup-config '{config_path}'", file=sys.stderr)
-        sys.exit(1)
-
-    sz = config_path.stat().st_size if config_path.exists() else 0
-    print(f"  ✓ wrote {config_path} ({sz} bytes)")
-    print(f"\nDONE — drive at node {info['can_node']} "
-          f"(sn {info['serial']}, fw {info['fw']}-{info['fw_unreleased']}, "
-          f"commit {info['commit']}).")
-    print("Unplug USB, plug to next drive, run this script again.")
+    # We DO NOT auto-invoke `odrivetool backup-config` here. Even with
+    # close_device_manager() + multi-second sleep, libodrive's C++
+    # runtime keeps USB claimed long enough that the back-to-back
+    # subprocess hangs. Manual invocation in a *fresh* shell after this
+    # script exits works reliably (the user's typing delay is plenty).
+    # So: print the next command, the user runs it. Two commands per
+    # drive, but it always works.
+    print(f"\nNow run this to save the config backup:")
+    print(f"  odrivetool backup-config '{config_path}'")
+    print(f"\nThen unplug USB, plug next drive, run this script again.")
+    print(f"(The identity .txt is already on disk; the line above is")
+    print(f" the only remaining step for this drive.)")
 
 
 if __name__ == '__main__':
