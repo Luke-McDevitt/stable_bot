@@ -3771,6 +3771,12 @@ class StewartControlNode(Node):
                 bag_name = f'z{int(round(z*10)):04d}'   # Z=40.0 → z0400 (deci-mm)
                 bag_dir = os.path.join(
                     sweep_dir, datetime.datetime.utcnow().strftime('%H%M%SZ_') + bag_name)
+                # Inner-loop config snapshot for this Z (same as the
+                # single-bag path in _lr_start_bag). Captured per-Z so
+                # if a parameter drifts mid-sweep — say, a drive's
+                # `current_soft_max` self-throttles after thermal
+                # buildup — the per-Z sidecar will capture it.
+                inner_cfg = self._lr_capture_inner_loop_config()
                 meta = {
                     'sweep_dir': sweep_dir,
                     'sweep_test_idx': idx + 1,
@@ -3780,7 +3786,11 @@ class StewartControlNode(Node):
                     'step_amp_deg': params['step_amp_deg'],
                     'step_hold_s': params['step_hold_s'],
                     'baseline_s': params['baseline_s'],
+                    'level_loop_hz': self.level_loop_hz,
+                    'ctrl_period_s': self.ctrl_period_s,
                 }
+                if inner_cfg is not None:
+                    meta['inner_loop_config'] = inner_cfg
                 bag_spawn_failed = False
                 with self._bag_lock:
                     if self._bag_proc is not None and self._bag_proc.poll() is None:
