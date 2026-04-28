@@ -2,7 +2,7 @@
   "firmware_version": "0.6.11",
   "hw_version": "4.4-58",
   "extracted_from_serial": "0x347d35583233",
-  "extracted_at_unix": 1777396205.9209135,
+  "extracted_at_unix": 1777397663.5532215,
   "endpoints": {
     "axis0.controller.config.vel_integrator_gain": {
       "id": 382,
@@ -16,8 +16,20 @@
       "id": 275,
       "type": "uint32"
     },
+    "axis0.controller.config.control_mode": {
+      "id": 378,
+      "type": "uint8"
+    },
+    "axis0.controller.config.input_mode": {
+      "id": 379,
+      "type": "uint8"
+    },
     "save_configuration": {
       "id": 710,
+      "type": "function"
+    },
+    "clear_errors": {
+      "id": 734,
       "type": "function"
     }
   }
