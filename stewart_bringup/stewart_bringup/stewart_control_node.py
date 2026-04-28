@@ -2720,6 +2720,38 @@ class StewartControlNode(Node):
         m.data = json.dumps({'nodes': nodes, 'ts': time.time()})
         self.pub_errors.publish(m)
 
+    def _prepare_for_level(self):
+        # Defensive runtime self-heal before the level loop starts streaming
+        # Set_Input_Pos. We've been bitten twice by the drives' runtime
+        # control_mode being VELOCITY at this point — once because flash had
+        # been left at VELOCITY by the WebGUI, and once when a leg was armed
+        # in vel mode by mistake. Either way, Set_Input_Pos gets silently
+        # ignored, the watchdog times out, the leg disarms.
+        #
+        # The standard ODrive CAN command 0x00B writes runtime control_mode
+        # and input_mode immediately, no save / reboot required. Belt-and-
+        # suspenders: also force the feeder into 'pos' mode and re-seed
+        # pos_targets from the latest encoder reading so we don't slam
+        # toward a stale target on the first tick.
+        if self.bus is None or self.feeder is None or self.listener is None:
+            return False, "bus/feeder/listener not running"
+        enc = self.listener.get_all(max_age_s=1.0)
+        stale = [i for i, e in enumerate(enc) if e is None]
+        if stale:
+            return False, f"stale encoder reading on legs {stale} — refusing to seed"
+        with self.bus_lock:
+            for n in range(6):
+                try:
+                    _send_cmd(self.bus, n, CMD_SET_CONTROLLER_MODE,
+                              struct.pack('<II', CONTROL_MODE_POSITION,
+                                          INPUT_MODE_PASSTHROUGH))
+                except Exception as e:
+                    return False, f"set_controller_mode leg {n} failed: {e}"
+                self.feeder.set_pos_target_one(n, float(enc[n]))
+                self.feeder.set_mode(n, 'pos')
+        time.sleep(0.05)
+        return True, "all 6 legs prepped (pos+passthrough, seeded from encoders)"
+
     def _do_enable_level(self, want):
         if want:
             if not self.armed:
@@ -2727,11 +2759,15 @@ class StewartControlNode(Node):
             cal = _load_level_cal()
             if cal is None:
                 return False, f"no {LEVEL_CAL_PATH} — capture level first"
+            ok, prep_msg = self._prepare_for_level()
+            if not ok:
+                return False, f"level prep failed: {prep_msg}"
             self.level_ref_roll, self.level_ref_pitch = cal
             self._start_level_loop()
             return True, (f"level enabled "
                           f"(ref roll={self.level_ref_roll:+.3f} "
-                          f"pitch={self.level_ref_pitch:+.3f})")
+                          f"pitch={self.level_ref_pitch:+.3f}; "
+                          f"{prep_msg})")
         self._stop_level_loop()
         return True, "level disabled"
 
@@ -2860,11 +2896,16 @@ class StewartControlNode(Node):
                 res.success = False
                 res.message = f"no {LEVEL_CAL_PATH} — capture level first"
                 return res
+            ok, prep_msg = self._prepare_for_level()
+            if not ok:
+                res.success = False
+                res.message = f"level prep failed: {prep_msg}"
+                return res
             self.level_ref_roll, self.level_ref_pitch = cal
             self._start_level_loop()
             res.success = True
             res.message = (f"level enabled (ref roll={self.level_ref_roll:+.3f}"
-                           f" pitch={self.level_ref_pitch:+.3f})")
+                           f" pitch={self.level_ref_pitch:+.3f}; {prep_msg})")
         else:
             self._stop_level_loop()
             res.success = True
