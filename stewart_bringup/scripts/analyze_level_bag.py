@@ -493,6 +493,58 @@ def _read_sidecar(bag_dir):
     return {}
 
 
+def _summarize_inner_loop_config(sidecar):
+    """Surface the per-drive inner-loop config snapshot from the sidecar.
+    Returns a dict with:
+      - present: bool (was the snapshot captured at all?)
+      - any_differ_across_drives: bool (asymmetry flag — if true, an
+        endpoint's value differs across the 6 drives, which is exactly
+        the smoking gun for issues like the wL_FF=False regression
+        landing on only some drives)
+      - per_endpoint: {path: {values: [...6...], differs: bool}}
+    JSON keys for nodes are strings (rosbag2/json roundtrip), so we
+    normalize to ints here.
+    """
+    cfg = sidecar.get('inner_loop_config') if sidecar else None
+    if not isinstance(cfg, dict) or not cfg:
+        return {'present': False}
+    norm = {}
+    for k, v in cfg.items():
+        try:
+            n = int(k)
+        except Exception:
+            continue
+        if isinstance(v, dict):
+            norm[n] = v
+    if not norm:
+        return {'present': False}
+    paths = set()
+    for d in norm.values():
+        paths |= set(d.keys())
+    per_endpoint = {}
+    any_differ = False
+    for path in sorted(paths):
+        vals = [norm.get(n, {}).get(path) for n in range(6)]
+        unique = set()
+        for v in vals:
+            if v is None:
+                continue
+            # Python bools are ints — separate them for cleanliness.
+            unique.add((type(v).__name__, repr(v)))
+        differs = len(unique) > 1
+        if differs:
+            any_differ = True
+        per_endpoint[path] = {
+            'values': vals,
+            'differs_across_drives': differs,
+        }
+    return {
+        'present': True,
+        'any_differ_across_drives': any_differ,
+        'per_endpoint': per_endpoint,
+    }
+
+
 def analyze_bag(bag_dir, out_dir, name=None):
     """Single-bag analysis. Writes <out_dir>/<name>_summary.json + _timeseries.csv."""
     bag_dir = Path(bag_dir)
@@ -527,6 +579,7 @@ def analyze_bag(bag_dir, out_dir, name=None):
             trial_results.append(m)
 
     pos_trials = [r for r in trial_results if (r.get('amp_deg') or 0) > 0]
+    sidecar = _read_sidecar(bag_dir)
     summary = {
         'bag_path': str(bag_dir),
         'name': name,
@@ -537,10 +590,11 @@ def analyze_bag(bag_dir, out_dir, name=None):
         'tick_period_actual_max_ms': float(
             np.max([m.dt_actual for _t, m in samples]) * 1000),
         'health': _compute_health(samples),
+        'inner_loop_config': _summarize_inner_loop_config(sidecar),
         'baseline': baseline,
         'steps_per_trial': trial_results,
         'steps_aggregated': aggregate_steps(pos_trials),
-        'sidecar': _read_sidecar(bag_dir),
+        'sidecar': sidecar,
     }
 
     summary_path = out_dir / f"{name}_summary.json"
@@ -589,6 +643,7 @@ def analyze_sweep(sweep_dir, out_base):
             base = s.get('baseline') or {}
             agg = s.get('steps_aggregated') or {}
             health = s.get('health') or {}
+            ilc = s.get('inner_loop_config') or {}
             per_z.append({
                 'z_mm': entry.get('z_mm'),
                 'bag': bag_name,
@@ -608,6 +663,12 @@ def analyze_sweep(sweep_dir, out_base):
                 'any_leg_active_error': health.get('any_leg_active_error'),
                 'any_leg_not_in_pos': health.get('any_leg_not_in_pos'),
                 'yaw_range_deg': health.get('yaw_range_deg'),
+                # Inner-loop config asymmetry — if any drive's
+                # config differs from the others on any endpoint,
+                # this is the smoking gun (see wL_FF=False regression
+                # 2026-04-28).
+                'inner_loop_config_asymmetric': ilc.get(
+                    'any_differ_across_drives'),
             })
         except Exception:
             pass

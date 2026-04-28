@@ -100,6 +100,8 @@ MOTOR_EXTENSION_SIGN = -1
 
 # CAN command IDs (ODrive Pro 0.6.x)
 CMD_HEARTBEAT         = 0x001
+CMD_RX_SDO            = 0x004   # outbound SDO request to a drive
+CMD_TX_SDO            = 0x005   # response from a drive
 CMD_GET_ERROR         = 0x003
 CMD_SET_AXIS_STATE    = 0x007
 CMD_GET_ENCODER       = 0x009
@@ -161,7 +163,17 @@ LEVEL_FILTER_ALPHA = 0.3
 LEVEL_RATE_LIMIT = 0.2
 LEVEL_MAX_CORR = 5.0
 LEVEL_DEADBAND = 0.05
-CTRL_PERIOD_S = 0.02
+# Reference rate at which the level gains were originally tuned.
+# `filter_alpha` and `rate_limit_deg_per_iter` are interpreted PHYSICALLY
+# (cutoff Hz, slew °/s respectively) and scaled at use-time to the actual
+# loop rate, so a YAML tuned at 50 Hz remains valid at 200 Hz.
+LEVEL_REF_HZ = 50.0
+# Default loop rate. Override via the `--level-loop-hz <Hz>` CLI flag.
+# 200 Hz puts the outer loop well above the platform's mechanical bandwidth
+# while staying ~42% bus-headroom on a 1 Mbps CAN: ~574 kbps total
+# (Set_Input_Pos × 6 @ 200 Hz + encoder broadcasts × 6 @ 500 Hz + heartbeats
+# + RTRs).
+LEVEL_DEFAULT_HZ = 200.0
 
 
 # ---------------- Geometry + IK ---------------------------------------
@@ -326,6 +338,12 @@ class EncoderListener:
         self.err_by_node = {}     # node -> (active_errors, disarm_reason, rx)
         self.iq_by_node = {}      # node -> (iq_setpoint, iq_measured, rx)
         self.state_by_node = {}   # node -> (axis_state_uint8, rx)  — from Heartbeat (cmd 0x001)
+        # Pending SDO read replies keyed by (node_id, endpoint_id). Filled
+        # by _rx_loop when a Tx_SDO frame arrives; consumed by read_sdo.
+        # We keep the bus_lock + send out of the way of the listener
+        # thread by sending requests via the parent's bus directly.
+        self.sdo_replies = {}
+        self.sdo_lock = threading.Lock()
         self.stop_flag = threading.Event()
         self._rx = threading.Thread(target=self._rx_loop, daemon=True)
         self._tx = threading.Thread(target=self._tx_loop, daemon=True)
@@ -371,6 +389,15 @@ class EncoderListener:
                 iq_m  = struct.unpack('<f', bytes(msg.data[4:8]))[0]
                 with self.lock:
                     self.iq_by_node[node] = (iq_sp, iq_m, time.monotonic())
+            elif cmd == CMD_TX_SDO and len(msg.data) >= 4:
+                # SDO read response. Prologue is <BHB> (opcode, ep_id,
+                # reserved); the remaining bytes are the typed value.
+                _opcode, ep_id, _res = struct.unpack(
+                    '<BHB', bytes(msg.data[:4]))
+                payload = bytes(msg.data[4:])
+                with self.sdo_lock:
+                    self.sdo_replies[(node, ep_id)] = (
+                        payload, time.monotonic())
             elif cmd == CMD_HEARTBEAT and len(msg.data) >= 5:
                 # ODrive 0.6.x heartbeat layout: [0:4]=axis_error (legacy,
                 # often 0), [4]=axis_state, [5]=procedure_result, etc. We
@@ -483,6 +510,67 @@ class EncoderListener:
                 if v is not None and (now - v[1]) < max_age_s:
                     out[n] = float(v[0])
         return out
+
+    def read_sdo(self, bus_lock, node_id, endpoint_id, kind, timeout=1.0):
+        """Single-frame SDO read. The listener handles dispatch in its
+        own thread; this just sends the request and polls sdo_replies.
+
+        Caller must pass `bus_lock` (the parent node's lock) so the send
+        doesn't race with the feeder. `kind` is one of float32/float64/
+        bool/uint8/uint16/uint32/int8/int16/int32 — same vocabulary as
+        the configurator's _unpack_value."""
+        # Clear any stale reply for this (node, endpoint) so we don't
+        # match against a leftover.
+        key = (node_id, int(endpoint_id))
+        with self.sdo_lock:
+            self.sdo_replies.pop(key, None)
+        # Send Rx_SDO read request: <BHB> = (opcode=0, endpoint_id, 0)
+        arb = (node_id << 5) | CMD_RX_SDO
+        prologue = struct.pack('<BHB', 0x00, int(endpoint_id), 0)
+        # CAN classic: pad payload to 8 bytes; some adapters dislike short DLC.
+        data = prologue + b'\x00' * (8 - len(prologue))
+        with bus_lock:
+            try:
+                self.bus.send(can.Message(
+                    arbitration_id=arb, data=data,
+                    is_extended_id=False), timeout=0.2)
+            except Exception:
+                return None
+        # Poll for the reply.
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self.sdo_lock:
+                entry = self.sdo_replies.pop(key, None)
+            if entry is not None:
+                payload, _t_rx = entry
+                return _decode_sdo_value(payload, kind)
+            time.sleep(0.001)
+        return None
+
+
+def _decode_sdo_value(data, kind):
+    """Decode an SDO-read payload (bytes after the 4-byte prologue).
+    Mirrors the configurator's _unpack_value so the value semantics
+    are identical between the two code paths."""
+    if not data:
+        return None
+    if kind in ('float32', 'float'):
+        return struct.unpack('<f', data[:4])[0] if len(data) >= 4 else None
+    if kind == 'float64':
+        return struct.unpack('<d', data[:8])[0] if len(data) >= 8 else None
+    if kind == 'bool':
+        return bool(data[0])
+    if kind in ('uint8', 'int8'):
+        return int(data[0])
+    if kind == 'uint16':
+        return struct.unpack('<H', data[:2])[0] if len(data) >= 2 else None
+    if kind == 'uint32':
+        return struct.unpack('<I', data[:4])[0] if len(data) >= 4 else None
+    if kind == 'int16':
+        return struct.unpack('<h', data[:2])[0] if len(data) >= 2 else None
+    if kind == 'int32':
+        return struct.unpack('<i', data[:4])[0] if len(data) >= 4 else None
+    return None
 
 
 class ODriveFeeder:
@@ -638,9 +726,19 @@ class ODriveFeeder:
 
 # ---------------- The node --------------------------------------------
 class StewartControlNode(Node):
-    def __init__(self):
+    def __init__(self, level_loop_hz=None):
         super().__init__('stewart_control_node')
         self.get_logger().info("starting stewart_control_node")
+        # Outer-loop sample period. Driven by --level-loop-hz; defaults to
+        # LEVEL_DEFAULT_HZ. ki, alpha, and rate_limit are scaled at use
+        # time so the gains in level_gains.yaml retain their physical
+        # meaning regardless of the loop rate.
+        rate_hz = float(level_loop_hz) if level_loop_hz else LEVEL_DEFAULT_HZ
+        self.ctrl_period_s = 1.0 / max(1.0, rate_hz)
+        self.level_loop_hz = rate_hz
+        self.get_logger().info(
+            f"level loop rate: {rate_hz:.1f} Hz "
+            f"(period {self.ctrl_period_s*1000:.2f} ms)")
 
         self.geom = _build_platform()
         self.limits = _load_leg_limits()
@@ -2480,7 +2578,9 @@ class StewartControlNode(Node):
             'leg_limits_path': LEG_LIMITS_PATH,
             'leg_limits_snapshot': leg_limits_dump,
             'imu_topic': '/platform/imu/data',
-            'control_period_s': CTRL_PERIOD_S,
+            'control_period_s': self.ctrl_period_s,
+            'level_loop_hz': self.level_loop_hz,
+            'level_gains_ref_hz': LEVEL_REF_HZ,
             'level_gains': {
                 'kp': LEVEL_KP, 'ki': LEVEL_KI,
                 'filter_alpha': LEVEL_FILTER_ALPHA,
@@ -2967,16 +3067,34 @@ class StewartControlNode(Node):
         tilt_r_corr = 0.0
         tilt_p_corr = 0.0
         nan6 = [float('nan')] * 6
+        # Pre-compute the rate-scaling factor between the gain-tuning
+        # reference rate (LEVEL_REF_HZ) and the loop's actual rate. The
+        # YAML's `rate_limit_deg_per_iter` and `filter_alpha` are
+        # interpreted as "calibrated at LEVEL_REF_HZ"; we map them to
+        # their per-iter equivalents at the current rate so the closed-
+        # loop frequency response stays the same regardless of dt.
+        ref_dt = 1.0 / LEVEL_REF_HZ
+        dt = self.ctrl_period_s
+        # rate_limit: ° per iteration → preserve the °/s slew limit.
+        rate_scale = dt / ref_dt
         while not self.level_stop.is_set():
             t0 = time.monotonic()
             # Snapshot gains for this tick (allows live reload).
             g = self.level_gains
             kp = g['kp']
             ki = g['ki']
-            alpha = g['filter_alpha']
+            alpha_ref = g['filter_alpha']
             deadband = g['deadband_deg']
-            rate_limit = g['rate_limit_deg_per_iter']
+            rate_limit_ref = g['rate_limit_deg_per_iter']
             max_corr = g['max_corr_deg']
+            # Scale per-iter values to this loop's dt. Slew is linear:
+            #   °/iter at dt = (°/iter at ref_dt) × (dt / ref_dt).
+            # IIR alpha keeps the same time constant tau:
+            #   tau = -ref_dt / log(1 - alpha_ref)
+            #   alpha_at_dt = 1 - exp(-dt / tau)  =  1 - (1 - alpha_ref) ** (dt/ref_dt)
+            rate_limit = rate_limit_ref * rate_scale
+            alpha_clip = min(max(alpha_ref, 1e-6), 0.999999)
+            alpha = 1.0 - (1.0 - alpha_clip) ** rate_scale
             if self._level_zero_integ_request.is_set():
                 integ_r = 0.0
                 integ_p = 0.0
@@ -2985,7 +3103,7 @@ class StewartControlNode(Node):
                 rpy = self.imu_rpy
                 last_rx = self.imu_last_rx
             if rpy is None or (t0 - last_rx) > 0.3:
-                time.sleep(CTRL_PERIOD_S)
+                time.sleep(dt)
                 continue
             # DYNAMIC reference: target IMU reading follows the commanded
             # pose (current_rpy) plus the tuning step-offset. When
@@ -3001,11 +3119,11 @@ class StewartControlNode(Node):
             err_p_f = alpha * err_p + (1 - alpha) * err_p_f
             clip_flags = 0
             if abs(err_r_f) > deadband:
-                integ_r += -err_r_f * ki * CTRL_PERIOD_S
+                integ_r += -err_r_f * ki * dt
             else:
                 clip_flags |= (1 << 4)   # deadband_r
             if abs(err_p_f) > deadband:
-                integ_p += -err_p_f * ki * CTRL_PERIOD_S
+                integ_p += -err_p_f * ki * dt
             else:
                 clip_flags |= (1 << 5)   # deadband_p
             if integ_r > max_corr or integ_r < -max_corr:
@@ -3125,7 +3243,7 @@ class StewartControlNode(Node):
             except Exception:
                 # Never let diag publication crash the control loop.
                 pass
-            sl = CTRL_PERIOD_S - (time.monotonic() - t0)
+            sl = dt - (time.monotonic() - t0)
             if sl > 0:
                 time.sleep(sl)
 
@@ -3191,6 +3309,58 @@ class StewartControlNode(Node):
         m.data = json.dumps(snap)
         self.pub_level_record_state.publish(m)
 
+    # ---- inner-loop config snapshot ----
+    # Read once per drive at bag start so the sidecar carries enough
+    # context to spot regressions without bisecting commits. List is
+    # hand-picked from odrive_endpoints_reference.md — paths + IDs +
+    # types verified against fw 0.6.11-1's flat_endpoints.json.
+    LR_SNAPSHOT_ENDPOINTS = [
+        # path                                              id    type
+        ('axis0.config.motor.wL_FF_enable',                 305, 'bool'),
+        ('axis0.controller.config.vel_integrator_gain',     382, 'float32'),
+        ('axis0.controller.config.vel_integrator_limit',    383, 'float32'),
+        ('axis0.controller.config.pos_gain',                380, 'float32'),
+        ('axis0.controller.config.vel_gain',                381, 'float32'),
+        ('axis0.controller.config.vel_limit',               384, 'float32'),
+        ('axis0.controller.config.vel_limit_tolerance',     385, 'float32'),
+        ('axis0.controller.config.control_mode',            378, 'uint8'),
+        ('axis0.controller.config.input_mode',              379, 'uint8'),
+        ('axis0.config.motor.current_soft_max',             315, 'float32'),
+        ('axis0.config.motor.current_hard_max',             316, 'float32'),
+        ('axis0.config.motor.torque_constant',              302, 'float32'),
+        ('axis0.config.watchdog_timeout',                   243, 'float32'),
+        ('axis0.config.enable_watchdog',                    244, 'bool'),
+        ('axis0.config.can.node_id',                        272, 'uint32'),
+        ('axis0.config.can.heartbeat_msg_rate_ms',          274, 'uint32'),
+        ('axis0.config.can.encoder_msg_rate_ms',            275, 'uint32'),
+        ('axis0.config.can.error_msg_rate_ms',              277, 'uint32'),
+        ('axis0.config.can.iq_msg_rate_ms',                 276, 'uint32'),
+    ]
+
+    def _lr_capture_inner_loop_config(self, timeout_per_read=0.4):
+        """Read every endpoint in LR_SNAPSHOT_ENDPOINTS from each of the
+        6 drives via SDO. Returns {node_id: {path: value}}; missing
+        reads (timeout / drive offline) come back as None.
+
+        Cost: ~19 endpoints × 6 drives ≈ 114 reads. With <1ms typical
+        SDO round-trip on socketcan + drive, total ≈ 200-600ms. Called
+        only at bag start; not in any tick path."""
+        if self.bus is None or self.listener is None:
+            return None
+        out = {}
+        for n in range(6):
+            per_drive = {}
+            for path, ep_id, kind in self.LR_SNAPSHOT_ENDPOINTS:
+                try:
+                    val = self.listener.read_sdo(
+                        self.bus_lock, n, ep_id, kind,
+                        timeout=timeout_per_read)
+                except Exception:
+                    val = None
+                per_drive[path] = val
+            out[n] = per_drive
+        return out
+
     # ---- single bag ----
     def _lr_save_notes(self, bag_dir, name, notes, extra_meta):
         """Sidecar notes.json next to the bag dir. Captures gains snapshot,
@@ -3246,6 +3416,10 @@ class StewartControlNode(Node):
             return False
 
     def _lr_start_bag(self, name, notes, extra_meta=None):
+        # Capture inner-loop config BEFORE spawning the bag so the
+        # sidecar always has it, even if bag spawn fails. Slow path
+        # (~200-600ms of SDO reads) but only at bag start.
+        inner_cfg = self._lr_capture_inner_loop_config()
         with self._bag_lock:
             if self._bag_proc is not None and self._bag_proc.poll() is None:
                 return False, "bag already recording", {}
@@ -3258,7 +3432,12 @@ class StewartControlNode(Node):
                 return False, f"spawn failed: {e}", {}
             self._bag_dir = bag_dir
             self._bag_t0 = time.monotonic()
-        self._lr_save_notes(bag_dir, name, notes, extra_meta)
+        meta_with_snapshot = dict(extra_meta or {})
+        if inner_cfg is not None:
+            meta_with_snapshot['inner_loop_config'] = inner_cfg
+        meta_with_snapshot['level_loop_hz'] = self.level_loop_hz
+        meta_with_snapshot['ctrl_period_s'] = self.ctrl_period_s
+        self._lr_save_notes(bag_dir, name, notes, meta_with_snapshot)
         return True, f"recording -> {bag_dir}", {'bag_dir': bag_dir}
 
     def _lr_stop_bag(self):
@@ -3845,8 +4024,26 @@ class StewartControlNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = StewartControlNode()
+    # Strip our own CLI flags (everything after `--ros-args` is rclpy's).
+    # `--level-loop-hz N` is the only stewart-side arg today.
+    import argparse
+    own_args = sys.argv[1:]
+    if '--ros-args' in own_args:
+        cut = own_args.index('--ros-args')
+        own_args, ros_tail = own_args[:cut], own_args[cut:]
+        rclpy_argv = [sys.argv[0]] + ros_tail
+    else:
+        rclpy_argv = sys.argv
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument('--level-loop-hz', type=float, default=None,
+                   help=f'level loop sample rate in Hz (default '
+                        f'{LEVEL_DEFAULT_HZ:.0f}). Outer-loop gains in '
+                        f'level_gains.yaml are interpreted physically '
+                        f'(cutoff Hz, slew °/s) and scaled internally to '
+                        f'this rate, so YAML tuned at any rate stays valid.')
+    parsed, _unknown = p.parse_known_args(own_args)
+    rclpy.init(args=rclpy_argv)
+    node = StewartControlNode(level_loop_hz=parsed.level_loop_hz)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
