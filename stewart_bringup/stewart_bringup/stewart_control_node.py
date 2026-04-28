@@ -3392,6 +3392,10 @@ class StewartControlNode(Node):
         # finally block runs and the manifest gets written — partial
         # sweeps are still analyzable.
         abort_reason = None
+        # Per-Z notes: did the settle gate trip cleanly, or did we
+        # record despite a timeout? Manifest captures this so the
+        # analyzer can flag affected Zs.
+        z_settle_status = []
 
         try:
             for idx, z in enumerate(zs):
@@ -3404,12 +3408,25 @@ class StewartControlNode(Node):
                     test_idx=idx + 1, test_total=len(zs))
                 self.current_xyz = [0.0, 0.0, float(z)]
                 self.current_rpy = [0.0, 0.0, 0.0]
-                if not self._lr_wait_z_reached(z, self._sweep_stop):
-                    if self._sweep_stop.is_set():
-                        abort_reason = 'user abort'
-                    else:
-                        abort_reason = f'Z={z}: settle timeout'
+                settled = self._lr_wait_z_reached(z, self._sweep_stop)
+                if self._sweep_stop.is_set():
+                    abort_reason = 'user abort'
                     break
+                if not settled:
+                    # Don't abort the whole sweep on settle timeout — the
+                    # data we collect at unsettled Zs is exactly what we
+                    # need to diagnose *why* the platform isn't settling.
+                    # Log it, tag the manifest, continue.
+                    z_settle_status.append({'z_mm': z, 'settled': False})
+                    self._lr_set_state(
+                        'sweep_running', phase='z_settle_timeout_continuing',
+                        z=z, test_idx=idx + 1, test_total=len(zs),
+                        warning=f'Z={z}: legs did not stabilize in '
+                                f'{self.LR_Z_REACHED_TIMEOUT_S}s, recording anyway')
+                    self.get_logger().warn(
+                        f'sweep: Z={z} settle timeout — recording anyway')
+                else:
+                    z_settle_status.append({'z_mm': z, 'settled': True})
                 # Phase: zero integrator, start bag, baseline
                 self._level_zero_integ_request.set()
                 # Per-Z bag goes inside the sweep dir, not in BAGS_DIR root.
@@ -3492,6 +3509,11 @@ class StewartControlNode(Node):
                     'gains': dict(self.level_gains),
                     'git_sha': self._lr_git_sha(),
                     'bags': bags,
+                    # Per-Z record of whether the settle gate fired
+                    # cleanly. Useful when interpreting RMS / step
+                    # response — Zs marked settled=False were
+                    # recorded under non-settled conditions.
+                    'z_settle_status': z_settle_status,
                 }
                 with open(os.path.join(sweep_dir, 'manifest.json'), 'w') as f:
                     json.dump(manifest, f, indent=2)
