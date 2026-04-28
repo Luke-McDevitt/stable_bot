@@ -1,0 +1,8 @@
+serial=0x3471355a3233
+hw=4.4
+fw=0.6.11
+fw_unreleased=0
+commit=0xb3c4cf45
+can_node=3
+captured_unix=1777385295.4220183
+captured_iso=2026-04-28T14:08:15Z
