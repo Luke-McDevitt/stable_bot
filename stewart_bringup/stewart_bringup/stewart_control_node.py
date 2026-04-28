@@ -3061,7 +3061,7 @@ class StewartControlNode(Node):
     LR_Z_REACHED_POS_TOL_TURNS = 0.10
     LR_Z_REACHED_STAB_TOL_TURNS = 0.10
     LR_Z_REACHED_VEL_WINDOW_S = 0.5
-    LR_Z_REACHED_TIMEOUT_S = 10.0
+    LR_Z_REACHED_TIMEOUT_S = 15.0
     LR_STEP_AMP_HARD_CAP_DEG = 2.0
 
     def _lr_git_sha(self):
@@ -3386,9 +3386,17 @@ class StewartControlNode(Node):
             return
         sweep_t0_unix = time.time()
         bags = []
+        # Track why the for-loop exited so the finally block can record
+        # it in the manifest + state. None means "completed cleanly".
+        # Using `break` instead of `return` for early exits ensures the
+        # finally block runs and the manifest gets written — partial
+        # sweeps are still analyzable.
+        abort_reason = None
+
         try:
             for idx, z in enumerate(zs):
                 if self._sweep_stop.is_set():
+                    abort_reason = 'user abort'
                     break
                 # Phase: command Z, wait for arrival
                 self._lr_set_state(
@@ -3398,11 +3406,10 @@ class StewartControlNode(Node):
                 self.current_rpy = [0.0, 0.0, 0.0]
                 if not self._lr_wait_z_reached(z, self._sweep_stop):
                     if self._sweep_stop.is_set():
-                        break
-                    self._lr_set_state(
-                        'aborted', reason=f'Z={z}: settle timeout',
-                        z=z, test_idx=idx + 1, test_total=len(zs))
-                    return
+                        abort_reason = 'user abort'
+                    else:
+                        abort_reason = f'Z={z}: settle timeout'
+                    break
                 # Phase: zero integrator, start bag, baseline
                 self._level_zero_integ_request.set()
                 # Per-Z bag goes inside the sweep dir, not in BAGS_DIR root.
@@ -3419,6 +3426,7 @@ class StewartControlNode(Node):
                     'step_hold_s': params['step_hold_s'],
                     'baseline_s': params['baseline_s'],
                 }
+                bag_spawn_failed = False
                 with self._bag_lock:
                     if self._bag_proc is not None and self._bag_proc.poll() is None:
                         self._lr_stop_proc(self._bag_proc)
@@ -3427,10 +3435,10 @@ class StewartControlNode(Node):
                         self._bag_dir = bag_dir
                         self._bag_t0 = time.monotonic()
                     except Exception as e:
-                        self._lr_set_state(
-                            'aborted', reason=f'bag spawn: {e}',
-                            z=z, test_idx=idx + 1, test_total=len(zs))
-                        return
+                        bag_spawn_failed = True
+                        abort_reason = f'bag spawn at Z={z}: {e}'
+                if bag_spawn_failed:
+                    break
                 self._lr_save_notes(bag_dir, bag_name,
                                     'auto-sweep child bag', meta)
                 # Baseline
@@ -3463,16 +3471,23 @@ class StewartControlNode(Node):
                     self._lr_stop_proc(proc)
                 bags.append({'z_mm': z, 'bag_dir': bag_dir})
                 if self._sweep_stop.is_set():
+                    abort_reason = 'user abort'
                     break
-            # Always write a manifest, even on abort (so partial sweeps
-            # are still analyzable).
+        except Exception as e:
+            abort_reason = f'sweep crashed: {e}'
+            self.get_logger().error(f"sweep crashed: {e}")
+        finally:
+            # Always write a manifest — even on abort or crash — so
+            # partial sweeps are analyzable. (Bug fix 2026-04-28: prior
+            # code returned early on settle-timeout and skipped this.)
             try:
                 manifest = {
                     'sweep_dir': sweep_dir,
                     'started_utc': datetime.datetime.utcfromtimestamp(
                         sweep_t0_unix).isoformat() + 'Z',
                     'ended_utc': datetime.datetime.utcnow().isoformat() + 'Z',
-                    'aborted': bool(self._sweep_stop.is_set()),
+                    'aborted': abort_reason is not None,
+                    'abort_reason': abort_reason,
                     'params': params,
                     'gains': dict(self.level_gains),
                     'git_sha': self._lr_git_sha(),
@@ -3482,18 +3497,15 @@ class StewartControlNode(Node):
                     json.dump(manifest, f, indent=2)
             except Exception as e:
                 self.get_logger().warn(f"manifest write failed: {e}")
-            if self._sweep_stop.is_set():
+            # Publish final state
+            if abort_reason is not None:
                 self._lr_set_state(
-                    'aborted', sweep_dir=sweep_dir,
+                    'aborted', sweep_dir=sweep_dir, reason=abort_reason,
                     completed_levels=len(bags), total_levels=len(zs))
             else:
                 self._lr_set_state(
                     'idle', last_sweep_dir=sweep_dir,
                     completed_levels=len(bags), total_levels=len(zs))
-        except Exception as e:
-            self._lr_set_state('aborted', error=str(e))
-            self.get_logger().error(f"sweep crashed: {e}")
-        finally:
             # Ensure step offsets are zeroed even on uncaught exit.
             self.level_step_offset_roll = 0.0
             self.level_step_offset_pitch = 0.0
