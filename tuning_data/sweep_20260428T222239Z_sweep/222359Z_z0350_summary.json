@@ -1,0 +1,300 @@
+{
+  "bag_path": "/home/sorak/stable_bot_bags/sweep_20260428T222239Z_sweep/222359Z_z0350",
+  "name": "222359Z_z0350",
+  "duration_s": 76.779305934906,
+  "n_diag_msgs": 14228,
+  "tick_period_actual_mean_ms": 0.6171679105263798,
+  "tick_period_actual_max_ms": 6.832379847764969,
+  "health": {
+    "yaw_first_deg": -39.120235443115234,
+    "yaw_last_deg": -39.580322265625,
+    "yaw_range_deg": 1.0263824462890625,
+    "yaw_drift_rate_deg_per_s": -0.005992328491479595,
+    "per_leg_state": [
+      {
+        "leg": 0,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 1,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 2,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 3,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 4,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 5,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      }
+    ],
+    "any_leg_dropped_out": false,
+    "per_leg_active_errors": [
+      {
+        "leg": 0,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 1,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 2,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 3,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 4,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 5,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      }
+    ],
+    "any_leg_active_error": false,
+    "per_leg_feeder_mode": [
+      {
+        "leg": 0,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 1,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 2,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 3,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 4,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 5,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      }
+    ],
+    "any_leg_not_in_pos": false
+  },
+  "inner_loop_config": {
+    "present": false
+  },
+  "baseline": {
+    "window_s": [
+      0.0,
+      28.094489097595215
+    ],
+    "samples": 5212,
+    "sample_rate_hz": 196.0871435250117,
+    "rms_roll_deg": 0.1608660181443667,
+    "rms_pitch_deg": 0.16833865766233538,
+    "p2p_roll_deg": 0.6805311441421509,
+    "p2p_pitch_deg": 0.7232704758644104,
+    "mean_roll_deg": -0.019338240458007225,
+    "mean_pitch_deg": 0.04040942510288907,
+    "std_roll_deg": 0.15969943096207956,
+    "std_pitch_deg": 0.16341659042585285,
+    "fft_peak_freq_hz": 0.08000291453488849,
+    "fft_peak_amp_deg": 0.12528020180298574,
+    "saturation_pct_any": 30.89025326170376,
+    "saturation_pct_by_flag": {
+      "rate_limit_r": 0.0,
+      "rate_limit_p": 0.0,
+      "max_corr_r": 0.0,
+      "max_corr_p": 0.0,
+      "deadband_r": 12.39447429009977,
+      "deadband_p": 18.49577897160399,
+      "integ_clamp_r": 0.0,
+      "integ_clamp_p": 0.0
+    }
+  },
+  "steps_per_trial": [
+    {
+      "t_edge": 28.599199771881104,
+      "amp_deg": 1.0,
+      "rise_time_s": 1.0217678546905518,
+      "overshoot_pct": 44.976746055322714,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.7343088210116238,
+      "peak_deg": 1.4497674605532271
+    },
+    {
+      "t_edge": 34.60863471031189,
+      "amp_deg": 1.0,
+      "rise_time_s": 1.1372706890106201,
+      "overshoot_pct": 29.753375579805486,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9269049848308382,
+      "peak_deg": 1.2975337557980549
+    },
+    {
+      "t_edge": 40.630916357040405,
+      "amp_deg": 1.0,
+      "rise_time_s": 1.1618709564208984,
+      "overshoot_pct": 33.42364001418314,
+      "settling_time_s": null,
+      "ss_offset_deg": -1.205805298501766,
+      "peak_deg": 1.3342364001418314
+    },
+    {
+      "t_edge": 46.65411853790283,
+      "amp_deg": 1.0,
+      "rise_time_s": 0.9266760349273682,
+      "overshoot_pct": 50.51998166682941,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9281702844871587,
+      "peak_deg": 1.505199816668294
+    },
+    {
+      "t_edge": 52.67841935157776,
+      "amp_deg": 1.0,
+      "rise_time_s": 0.7537436485290527,
+      "overshoot_pct": 23.98669514400156,
+      "settling_time_s": null,
+      "ss_offset_deg": -1.0041691202434349,
+      "peak_deg": 1.2398669514400156
+    },
+    {
+      "t_edge": 58.7095742225647,
+      "amp_deg": 1.0,
+      "rise_time_s": 0.827141523361206,
+      "overshoot_pct": 21.871518269181255,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9782148052641052,
+      "peak_deg": 1.2187151826918126
+    },
+    {
+      "t_edge": 64.73369932174683,
+      "amp_deg": 1.0,
+      "rise_time_s": 1.0035228729248047,
+      "overshoot_pct": 31.876997749811853,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9720026098632364,
+      "peak_deg": 1.3187699774981185
+    },
+    {
+      "t_edge": 70.76502466201782,
+      "amp_deg": 1.0,
+      "rise_time_s": 1.1858577728271484,
+      "overshoot_pct": 37.37539568430055,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.5335841654678403,
+      "peak_deg": 1.3737539568430055
+    }
+  ],
+  "steps_aggregated": {
+    "n_trials": 8,
+    "rise_time_s_mean": 1.0022314190864563,
+    "rise_time_s_std": 0.14829599793838524,
+    "rise_time_s_n": 8,
+    "overshoot_pct_mean": 34.2230437704295,
+    "overshoot_pct_std": 9.183092804581902,
+    "overshoot_pct_n": 8,
+    "settling_time_s_mean": null,
+    "settling_time_s_std": null,
+    "settling_time_s_n": 0,
+    "ss_offset_deg_mean": -0.9103950112087504,
+    "ss_offset_deg_std": 0.1864259710504134,
+    "ss_offset_deg_n": 8
+  },
+  "sidecar": {
+    "name": "z0350",
+    "notes": "auto-sweep child bag",
+    "gains": {
+      "kp": 1.0,
+      "ki": 0.3,
+      "deadband_deg": 0.02,
+      "rate_limit_deg_per_iter": 0.25,
+      "max_corr_deg": 5.0,
+      "filter_alpha": 0.3
+    },
+    "gains_file_path": "/home/sorak/ros2_ws/src/stewart_bringup/config/level_gains.yaml",
+    "git_sha": "72c3be6",
+    "started_utc": "2026-04-28T22:23:59.366328Z",
+    "topics": [
+      "/level_diag",
+      "/platform_rpy",
+      "/leg_encoders",
+      "/leg_currents",
+      "/control_cmd"
+    ],
+    "sweep_dir": "/home/sorak/stable_bot_bags/sweep_20260428T222239Z_sweep",
+    "sweep_test_idx": 2,
+    "sweep_test_total": 6,
+    "commanded_z_mm": 35.0,
+    "step_count": 8,
+    "step_amp_deg": 1.0,
+    "step_hold_s": 3.0,
+    "baseline_s": 30.0
+  }
+}
