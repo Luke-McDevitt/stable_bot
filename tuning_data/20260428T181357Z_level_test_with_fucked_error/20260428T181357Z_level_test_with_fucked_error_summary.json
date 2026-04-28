@@ -1,0 +1,61 @@
+{
+  "bag_path": "/home/sorak/stable_bot_bags/20260428T181357Z_level_test_with_fucked_error",
+  "name": "20260428T181357Z_level_test_with_fucked_error",
+  "duration_s": 19.351624965667725,
+  "n_diag_msgs": 948,
+  "tick_period_actual_mean_ms": 0.5526128527118906,
+  "tick_period_actual_max_ms": 4.888433963060379,
+  "baseline": {
+    "window_s": [
+      0.0,
+      19.331600189208984
+    ],
+    "samples": 947,
+    "sample_rate_hz": 49.66141750929456,
+    "rms_roll_deg": 5.6787396389883,
+    "rms_pitch_deg": 6.678897931054601,
+    "p2p_roll_deg": 5.190371632575989,
+    "p2p_pitch_deg": 5.401090621948242,
+    "mean_roll_deg": -5.666856931784085,
+    "mean_pitch_deg": 6.671651798920999,
+    "std_roll_deg": 0.3671735313276626,
+    "std_pitch_deg": 0.31103029980955554,
+    "fft_peak_freq_hz": 0.05244077878489394,
+    "fft_peak_amp_deg": 0.10127304802909821,
+    "saturation_pct_any": 96.30411826821542,
+    "saturation_pct_by_flag": {
+      "rate_limit_r": 0.7391763463569165,
+      "rate_limit_p": 1.1615628299894403,
+      "max_corr_r": 95.14255543822597,
+      "max_corr_p": 92.08025343189018,
+      "deadband_r": 0.0,
+      "deadband_p": 0.0,
+      "integ_clamp_r": 0.0,
+      "integ_clamp_p": 0.0
+    }
+  },
+  "steps_per_trial": [],
+  "steps_aggregated": null,
+  "sidecar": {
+    "name": "level test with fucked error",
+    "notes": "",
+    "gains": {
+      "kp": 1.0,
+      "ki": 0.3,
+      "deadband_deg": 0.02,
+      "rate_limit_deg_per_iter": 0.25,
+      "max_corr_deg": 5.0,
+      "filter_alpha": 0.3
+    },
+    "gains_file_path": "/home/sorak/ros2_ws/src/stewart_bringup/config/level_gains.yaml",
+    "git_sha": "d6cc761",
+    "started_utc": "2026-04-28T18:13:57.932640Z",
+    "topics": [
+      "/level_diag",
+      "/platform_rpy",
+      "/leg_encoders",
+      "/leg_currents",
+      "/control_cmd"
+    ]
+  }
+}
