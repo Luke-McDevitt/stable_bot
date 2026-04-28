@@ -1,0 +1,156 @@
+{
+  "bag_path": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep/161446Z_z0550",
+  "name": "161446Z_z0550",
+  "duration_s": 76.40967082977295,
+  "n_diag_msgs": 3758,
+  "tick_period_actual_mean_ms": 0.46604551325068666,
+  "tick_period_actual_max_ms": 4.771340172737837,
+  "baseline": {
+    "window_s": [
+      0.0,
+      27.72845220565796
+    ],
+    "samples": 1365,
+    "sample_rate_hz": 49.76128416094722,
+    "rms_roll_deg": 0.06744659587053176,
+    "rms_pitch_deg": 0.07009996355372881,
+    "p2p_roll_deg": 0.22451148182153702,
+    "p2p_pitch_deg": 0.3329920619726181,
+    "mean_roll_deg": -0.004907637909344728,
+    "mean_pitch_deg": 0.027621160337082902,
+    "std_roll_deg": 0.06726781091037222,
+    "std_pitch_deg": 0.06442884751310755,
+    "fft_peak_freq_hz": 0.20000516141859814,
+    "fft_peak_amp_deg": 0.03778148657963603,
+    "saturation_pct_any": 42.34432234432234,
+    "saturation_pct_by_flag": {
+      "rate_limit_r": 0.0,
+      "rate_limit_p": 0.0,
+      "max_corr_r": 0.0,
+      "max_corr_p": 0.0,
+      "deadband_r": 18.168498168498168,
+      "deadband_p": 24.98168498168498,
+      "integ_clamp_r": 0.0,
+      "integ_clamp_p": 0.0
+    }
+  },
+  "steps_per_trial": [
+    {
+      "t_edge": 28.240614414215088,
+      "amp_deg": 1.0,
+      "rise_time_s": 0.8942139148712158,
+      "overshoot_pct": 11.154810764959876,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.3724040403110641,
+      "peak_deg": 1.1115481076495988
+    },
+    {
+      "t_edge": 34.250800132751465,
+      "amp_deg": 1.0,
+      "rise_time_s": 2.2970728874206543,
+      "overshoot_pct": 4.77444982650328,
+      "settling_time_s": null,
+      "ss_offset_deg": -1.1294574707252334,
+      "peak_deg": 1.0477444982650328
+    },
+    {
+      "t_edge": 40.28993034362793,
+      "amp_deg": 1.0,
+      "rise_time_s": 2.8922929763793945,
+      "overshoot_pct": -6.150752768082047,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.7172554807381096,
+      "peak_deg": 0.9384924723191795
+    },
+    {
+      "t_edge": 46.30999684333801,
+      "amp_deg": 1.0,
+      "rise_time_s": 2.562260866165161,
+      "overshoot_pct": -0.99499476503353,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.970867582018278,
+      "peak_deg": 0.9900500523496647
+    },
+    {
+      "t_edge": 52.33108568191528,
+      "amp_deg": 1.0,
+      "rise_time_s": 2.8709030151367188,
+      "overshoot_pct": -7.946114445922481,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.7530100610375177,
+      "peak_deg": 0.9205388555407752
+    },
+    {
+      "t_edge": 58.351895809173584,
+      "amp_deg": 1.0,
+      "rise_time_s": null,
+      "overshoot_pct": -19.36480553478611,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9239876313537967,
+      "peak_deg": 0.8063519446521389
+    },
+    {
+      "t_edge": 64.39564180374146,
+      "amp_deg": 1.0,
+      "rise_time_s": null,
+      "overshoot_pct": -17.761479686394487,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9219524205793456,
+      "peak_deg": 0.8223852031360551
+    },
+    {
+      "t_edge": 70.408944606781,
+      "amp_deg": 1.0,
+      "rise_time_s": null,
+      "overshoot_pct": -13.902115503151435,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.8558238730748416,
+      "peak_deg": 0.8609788449684856
+    }
+  ],
+  "steps_aggregated": {
+    "n_trials": 8,
+    "rise_time_s_mean": 2.303348731994629,
+    "rise_time_s_std": 0.7377952289873072,
+    "rise_time_s_n": 5,
+    "overshoot_pct_mean": -6.273875263988367,
+    "overshoot_pct_std": 10.112061277384562,
+    "overshoot_pct_n": 8,
+    "settling_time_s_mean": null,
+    "settling_time_s_std": null,
+    "settling_time_s_n": 0,
+    "ss_offset_deg_mean": -0.8305948199797734,
+    "ss_offset_deg_std": 0.2108033018353623,
+    "ss_offset_deg_n": 8
+  },
+  "sidecar": {
+    "name": "z0550",
+    "notes": "auto-sweep child bag",
+    "gains": {
+      "kp": 1.0,
+      "ki": 0.3,
+      "deadband_deg": 0.02,
+      "rate_limit_deg_per_iter": 0.25,
+      "max_corr_deg": 5.0,
+      "filter_alpha": 0.3
+    },
+    "gains_file_path": "/home/sorak/ros2_ws/src/stewart_bringup/config/level_gains.yaml",
+    "git_sha": "fac92de",
+    "started_utc": "2026-04-28T16:14:46.264772Z",
+    "topics": [
+      "/level_diag",
+      "/platform_rpy",
+      "/leg_encoders",
+      "/leg_currents",
+      "/control_cmd"
+    ],
+    "sweep_dir": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep",
+    "sweep_test_idx": 7,
+    "sweep_test_total": 7,
+    "commanded_z_mm": 55.0,
+    "step_count": 8,
+    "step_amp_deg": 1.0,
+    "step_hold_s": 3.0,
+    "baseline_s": 30.0
+  }
+}

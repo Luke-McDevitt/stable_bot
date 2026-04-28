@@ -1,0 +1,255 @@
+{
+  "sweep_dir": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep",
+  "name": "sweep_20260428T160636Z_sweep",
+  "manifest": {
+    "sweep_dir": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep",
+    "started_utc": "2026-04-28T16:06:36.419713Z",
+    "ended_utc": "2026-04-28T16:16:04.799960Z",
+    "aborted": false,
+    "abort_reason": null,
+    "params": {
+      "z_values": [
+        25.0,
+        30.0,
+        35.0,
+        40.0,
+        45.0,
+        50.0,
+        55.0
+      ],
+      "step_count": 8,
+      "step_amp_deg": 1.0,
+      "step_hold_s": 3.0,
+      "baseline_s": 30.0,
+      "prefix": "sweep",
+      "estimated_total_s": 651.0
+    },
+    "gains": {
+      "kp": 1.0,
+      "ki": 0.3,
+      "deadband_deg": 0.02,
+      "rate_limit_deg_per_iter": 0.25,
+      "max_corr_deg": 5.0,
+      "filter_alpha": 0.3
+    },
+    "git_sha": "fac92de",
+    "bags": [
+      {
+        "z_mm": 25.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep/160637Z_z0250"
+      },
+      {
+        "z_mm": 30.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep/160756Z_z0300"
+      },
+      {
+        "z_mm": 35.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep/160930Z_z0350"
+      },
+      {
+        "z_mm": 40.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep/161049Z_z0400"
+      },
+      {
+        "z_mm": 45.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep/161208Z_z0450"
+      },
+      {
+        "z_mm": 50.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep/161327Z_z0500"
+      },
+      {
+        "z_mm": 55.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260428T160636Z_sweep/161446Z_z0550"
+      }
+    ],
+    "z_settle_status": [
+      {
+        "z_mm": 25.0,
+        "settled": true
+      },
+      {
+        "z_mm": 30.0,
+        "settled": true
+      },
+      {
+        "z_mm": 35.0,
+        "settled": false
+      },
+      {
+        "z_mm": 40.0,
+        "settled": true
+      },
+      {
+        "z_mm": 45.0,
+        "settled": true
+      },
+      {
+        "z_mm": 50.0,
+        "settled": true
+      },
+      {
+        "z_mm": 55.0,
+        "settled": true
+      }
+    ]
+  },
+  "children": [
+    {
+      "z_mm": 25.0,
+      "bag": "160637Z_z0250",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/160637Z_z0250_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/160637Z_z0250_timeseries.csv",
+      "n_samples": 3766,
+      "n_step_trials": 8
+    },
+    {
+      "z_mm": 30.0,
+      "bag": "160756Z_z0300",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/160756Z_z0300_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/160756Z_z0300_timeseries.csv",
+      "n_samples": 3773,
+      "n_step_trials": 8
+    },
+    {
+      "z_mm": 35.0,
+      "bag": "160930Z_z0350",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/160930Z_z0350_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/160930Z_z0350_timeseries.csv",
+      "n_samples": 3785,
+      "n_step_trials": 8
+    },
+    {
+      "z_mm": 40.0,
+      "bag": "161049Z_z0400",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/161049Z_z0400_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/161049Z_z0400_timeseries.csv",
+      "n_samples": 3740,
+      "n_step_trials": 8
+    },
+    {
+      "z_mm": 45.0,
+      "bag": "161208Z_z0450",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/161208Z_z0450_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/161208Z_z0450_timeseries.csv",
+      "n_samples": 3737,
+      "n_step_trials": 8
+    },
+    {
+      "z_mm": 50.0,
+      "bag": "161327Z_z0500",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/161327Z_z0500_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/161327Z_z0500_timeseries.csv",
+      "n_samples": 3782,
+      "n_step_trials": 8
+    },
+    {
+      "z_mm": 55.0,
+      "bag": "161446Z_z0550",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/161446Z_z0550_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260428T160636Z_sweep/161446Z_z0550_timeseries.csv",
+      "n_samples": 3758,
+      "n_step_trials": 8
+    }
+  ],
+  "per_z": [
+    {
+      "z_mm": 25.0,
+      "bag": "160637Z_z0250",
+      "baseline_rms_roll_deg": 0.45680334619472673,
+      "baseline_rms_pitch_deg": 0.2593269472418399,
+      "baseline_p2p_roll_deg": 1.3505456298589706,
+      "fft_peak_freq_hz": 0.11998174487345017,
+      "fft_peak_amp_deg": 0.08592791693714479,
+      "saturation_pct_any": 23.16096139839767,
+      "rise_time_s": 2.5843859910964966,
+      "overshoot_pct": -4.090780287188695,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.7425965009294379
+    },
+    {
+      "z_mm": 30.0,
+      "bag": "160756Z_z0300",
+      "baseline_rms_roll_deg": 0.13232082793275715,
+      "baseline_rms_pitch_deg": 0.1728238318399946,
+      "baseline_p2p_roll_deg": 0.5461058616638184,
+      "fft_peak_freq_hz": 0.16004076508326157,
+      "fft_peak_amp_deg": 0.08187186731659223,
+      "saturation_pct_any": 9.361393323657474,
+      "rise_time_s": 2.3111650943756104,
+      "overshoot_pct": -52.99391611954387,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.805199016883057
+    },
+    {
+      "z_mm": 35.0,
+      "bag": "160930Z_z0350",
+      "baseline_rms_roll_deg": 0.14501215334945522,
+      "baseline_rms_pitch_deg": 0.17440698383801637,
+      "baseline_p2p_roll_deg": 0.47152678668498993,
+      "fft_peak_freq_hz": 0.08001203183858902,
+      "fft_peak_amp_deg": 0.06077512721772463,
+      "saturation_pct_any": 16.630669546436287,
+      "rise_time_s": 0.6391011476516724,
+      "overshoot_pct": -40.78453580118703,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.8756744352565484
+    },
+    {
+      "z_mm": 40.0,
+      "bag": "161049Z_z0400",
+      "baseline_rms_roll_deg": 0.07419017130601205,
+      "baseline_rms_pitch_deg": 0.09086949295750231,
+      "baseline_p2p_roll_deg": 0.2696380540728569,
+      "fft_peak_freq_hz": 0.07999684460688311,
+      "fft_peak_amp_deg": 0.04375435661712055,
+      "saturation_pct_any": 42.26190476190476,
+      "rise_time_s": 1.9257589748927526,
+      "overshoot_pct": -4.207650484631255,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.8105212919611712
+    },
+    {
+      "z_mm": 45.0,
+      "bag": "161208Z_z0450",
+      "baseline_rms_roll_deg": 0.11736078554389498,
+      "baseline_rms_pitch_deg": 0.13061109676589297,
+      "baseline_p2p_roll_deg": 0.40888726711273193,
+      "fft_peak_freq_hz": 0.08001203183858902,
+      "fft_peak_amp_deg": 0.06141296496006859,
+      "saturation_pct_any": 11.698956780923995,
+      "rise_time_s": 1.4612250328063965,
+      "overshoot_pct": -17.122934186565026,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.8263725557337913
+    },
+    {
+      "z_mm": 50.0,
+      "bag": "161327Z_z0500",
+      "baseline_rms_roll_deg": 0.2091702158012267,
+      "baseline_rms_pitch_deg": 0.220161232740182,
+      "baseline_p2p_roll_deg": 0.7955832183361053,
+      "fft_peak_freq_hz": 0.11999170818407534,
+      "fft_peak_amp_deg": 0.25751787744187565,
+      "saturation_pct_any": 27.180966113914923,
+      "rise_time_s": 1.519364595413208,
+      "overshoot_pct": -9.528622648665177,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.7686991356963799
+    },
+    {
+      "z_mm": 55.0,
+      "bag": "161446Z_z0550",
+      "baseline_rms_roll_deg": 0.06744659587053176,
+      "baseline_rms_pitch_deg": 0.07009996355372881,
+      "baseline_p2p_roll_deg": 0.22451148182153702,
+      "fft_peak_freq_hz": 0.20000516141859814,
+      "fft_peak_amp_deg": 0.03778148657963603,
+      "saturation_pct_any": 42.34432234432234,
+      "rise_time_s": 2.303348731994629,
+      "overshoot_pct": -6.273875263988367,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.8305948199797734
+    }
+  ]
+}

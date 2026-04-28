@@ -1,0 +1,61 @@
+{
+  "bag_path": "/home/sorak/stable_bot_bags/20260428T160632Z_sweep_2ith_0_33_int_gain_",
+  "name": "20260428T160632Z_sweep_2ith_0_33_int_gain_",
+  "duration_s": 2.6210014820098877,
+  "n_diag_msgs": 130,
+  "tick_period_actual_mean_ms": 0.531393169120957,
+  "tick_period_actual_max_ms": 2.5040300097316504,
+  "baseline": {
+    "window_s": [
+      0.0,
+      2.5998482704162598
+    ],
+    "samples": 129,
+    "sample_rate_hz": 49.72323450262587,
+    "rms_roll_deg": 0.3124644922510875,
+    "rms_pitch_deg": 2.8359622913506284,
+    "p2p_roll_deg": 0.8786165211349726,
+    "p2p_pitch_deg": 2.5739709734916687,
+    "mean_roll_deg": 0.2175687132042277,
+    "mean_pitch_deg": -2.673755936844404,
+    "std_roll_deg": 0.22427196425854584,
+    "std_pitch_deg": 0.9453630562656908,
+    "fft_peak_freq_hz": 0.38545143025291373,
+    "fft_peak_amp_deg": 0.16442242866636414,
+    "saturation_pct_any": 68.21705426356588,
+    "saturation_pct_by_flag": {
+      "rate_limit_r": 0.0,
+      "rate_limit_p": 0.0,
+      "max_corr_r": 0.0,
+      "max_corr_p": 68.21705426356588,
+      "deadband_r": 0.0,
+      "deadband_p": 0.0,
+      "integ_clamp_r": 0.0,
+      "integ_clamp_p": 0.0
+    }
+  },
+  "steps_per_trial": [],
+  "steps_aggregated": null,
+  "sidecar": {
+    "name": "sweep 2ith 0.33 int gain:",
+    "notes": "",
+    "gains": {
+      "kp": 1.0,
+      "ki": 0.3,
+      "deadband_deg": 0.02,
+      "rate_limit_deg_per_iter": 0.25,
+      "max_corr_deg": 5.0,
+      "filter_alpha": 0.3
+    },
+    "gains_file_path": "/home/sorak/ros2_ws/src/stewart_bringup/config/level_gains.yaml",
+    "git_sha": "fac92de",
+    "started_utc": "2026-04-28T16:06:32.417831Z",
+    "topics": [
+      "/level_diag",
+      "/platform_rpy",
+      "/leg_encoders",
+      "/leg_currents",
+      "/control_cmd"
+    ]
+  }
+}
