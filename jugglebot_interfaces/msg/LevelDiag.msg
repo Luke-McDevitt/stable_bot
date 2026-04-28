@@ -9,6 +9,10 @@ float64 t_tick         # When this controller iteration started
 # Raw IMU reading this tick (degrees)
 float32 roll
 float32 pitch
+# Yaw is logged for sanity (AHRS yaw drifts; we don't act on it but if
+# it changes a lot during a run that's a clue something's vibrating
+# enough to corrupt the gyro-integration state).
+float32 yaw
 
 # Target the controller is trying to hold
 # = level_ref + current_rpy + step_offset
@@ -47,6 +51,23 @@ float64[6] leg_enc         # actual leg position from encoders (turns); NaN if s
 float64[6] leg_vel         # actual leg velocity from encoders (turns/s); NaN if stale
 float64[6] leg_iq          # measured Iq (Amps); NaN if stale
 float64[6] leg_iq_sp       # commanded Iq setpoint by ODrive controller (Amps); NaN if stale
+# Per-axis runtime state — 0 means no fresh heartbeat (stale or missing).
+# 1=IDLE, 8=CLOSED_LOOP. Anything other than 8 mid-run = silent disarm
+# (e.g. watchdog timed out, vel-violation, current-limit). The bag will
+# show exactly when the leg dropped out and which one.
+uint8[6] axis_state
+# Per-axis active_errors bitfield from Get_Error broadcast. Bit 24
+# (0x01000000) = WATCHDOG_TIMER_EXPIRED, bit 15 (0x00008000) =
+# VELOCITY_LIMIT_VIOLATION, etc. 0 = no active error. 0xFFFFFFFF used
+# as a sentinel for "no fresh error frame" so the analyzer can ignore
+# stale rows.
+uint32[6] active_errors
+# Feeder per-leg target mode that's actually being streamed at 50 Hz.
+# 0=idle (no Set_Input_*), 1=pos (Set_Input_Pos), 2=vel (Set_Input_Vel),
+# 255=unknown. If any leg is in 'vel' while the level loop is on, that
+# leg's pose corrections are silently dropped — the level loop only
+# updates pos_targets[]. Catches the "armed in wrong mode" case.
+uint8[6] feeder_mode
 
 # Loop jitter — period seconds of this tick. Should be ~0.020.
 float32 dt_actual

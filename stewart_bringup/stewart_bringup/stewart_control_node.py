@@ -325,6 +325,7 @@ class EncoderListener:
         self.vel_by_node = {}     # node -> (vel_turns_per_sec, rx)  — same CAN frame as pos
         self.err_by_node = {}     # node -> (active_errors, disarm_reason, rx)
         self.iq_by_node = {}      # node -> (iq_setpoint, iq_measured, rx)
+        self.state_by_node = {}   # node -> (axis_state_uint8, rx)  — from Heartbeat (cmd 0x001)
         self.stop_flag = threading.Event()
         self._rx = threading.Thread(target=self._rx_loop, daemon=True)
         self._tx = threading.Thread(target=self._tx_loop, daemon=True)
@@ -370,6 +371,14 @@ class EncoderListener:
                 iq_m  = struct.unpack('<f', bytes(msg.data[4:8]))[0]
                 with self.lock:
                     self.iq_by_node[node] = (iq_sp, iq_m, time.monotonic())
+            elif cmd == CMD_HEARTBEAT and len(msg.data) >= 5:
+                # ODrive 0.6.x heartbeat layout: [0:4]=axis_error (legacy,
+                # often 0), [4]=axis_state, [5]=procedure_result, etc. We
+                # only care about state for diagnostics — broadcast at
+                # 10 Hz natively, no RTR needed.
+                state = int(msg.data[4])
+                with self.lock:
+                    self.state_by_node[node] = (state, time.monotonic())
 
     def _tx_loop(self):
         last_err_rtr = 0.0
@@ -434,6 +443,19 @@ class EncoderListener:
                 v = self.iq_by_node.get(n)
                 if v is not None and (now - v[2]) < max_age_s:
                     out[n] = float(v[1])
+        return out
+
+    def get_states(self, max_age_s=2.0):
+        """Returns list of 6 axis_state uint8 values. 0 = no fresh
+        heartbeat (sentinel for "missing/stale" — real ODrive states
+        are 1, 3, 4, 6, 7, 8, 11; 0 is undefined and we co-opt it)."""
+        out = [0] * 6
+        with self.lock:
+            now = time.monotonic()
+            for n in range(6):
+                v = self.state_by_node.get(n)
+                if v is not None and (now - v[1]) < max_age_s:
+                    out[n] = int(v[0])
         return out
 
     def get_iq_setpoint(self, max_age_s=2.0):
@@ -3044,6 +3066,7 @@ class StewartControlNode(Node):
                 msg.t_tick = float(t0)
                 msg.roll = float(rpy[0])
                 msg.pitch = float(rpy[1])
+                msg.yaw = float(rpy[2]) if len(rpy) > 2 else float('nan')
                 msg.target_roll = float(target_r)
                 msg.target_pitch = float(target_p)
                 msg.err_r = float(err_r)
@@ -3066,11 +3089,33 @@ class StewartControlNode(Node):
                     msg.leg_iq = [float(v) for v in self.listener.get_iq(max_age_s=2.0)]
                     msg.leg_iq_sp = [float(v) for v in
                                      self.listener.get_iq_setpoint(max_age_s=2.0)]
+                    msg.axis_state = [int(s) for s in
+                                      self.listener.get_states(max_age_s=2.0)]
+                    err_pairs = self.listener.get_errors(max_age_s=3.0)
+                    # 0xFFFFFFFF = "no fresh error frame this tick"; the
+                    # analyzer treats this as missing rather than a real
+                    # all-bits-set error code.
+                    msg.active_errors = [
+                        int(p[0]) if p is not None else 0xFFFFFFFF
+                        for p in err_pairs
+                    ]
                 else:
                     msg.leg_enc = list(nan6)
                     msg.leg_vel = list(nan6)
                     msg.leg_iq = list(nan6)
                     msg.leg_iq_sp = list(nan6)
+                    msg.axis_state = [0] * 6
+                    msg.active_errors = [0xFFFFFFFF] * 6
+                # Feeder mode per leg ('idle'/'pos'/'vel' → 0/1/2; 255 if
+                # the feeder isn't running). Confirms _prepare_for_level
+                # actually put us in pos mode and that no leg has been
+                # silently switched mid-run.
+                if self.feeder is not None:
+                    _MMAP = {'idle': 0, 'pos': 1, 'vel': 2}
+                    msg.feeder_mode = [_MMAP.get(m, 255)
+                                       for m in self.feeder.get_modes()]
+                else:
+                    msg.feeder_mode = [255] * 6
                 msg.dt_actual = float(time.monotonic() - t0)
                 msg.target_xyzrpy = [
                     float(xyz[0]), float(xyz[1]), float(xyz[2]),

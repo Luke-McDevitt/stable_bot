@@ -83,6 +83,46 @@ CLIP_BITS = {
     'integ_clamp_p': 1 << 7,
 }
 
+# ODrive 0.6.x active_errors bits we care about for level diagnostics.
+# Source: ODrive_Pro.dbc + firmware error_codes.hpp. Not exhaustive —
+# add bits as we encounter them in the wild.
+ODRIVE_ERROR_BITS = {
+    0x00000001: 'INITIALIZING',
+    0x00000002: 'SYSTEM_LEVEL',
+    0x00000004: 'TIMING_ERROR',
+    0x00000008: 'MISSING_ESTIMATE',
+    0x00000010: 'BAD_CONFIG',
+    0x00000020: 'DRV_FAULT',
+    0x00000040: 'MISSING_INPUT',
+    0x00000100: 'DC_BUS_OVER_VOLTAGE',
+    0x00000200: 'DC_BUS_UNDER_VOLTAGE',
+    0x00000400: 'DC_BUS_OVER_CURRENT',
+    0x00000800: 'DC_BUS_OVER_REGEN_CURRENT',
+    0x00001000: 'CURRENT_LIMIT_VIOLATION',
+    0x00002000: 'MOTOR_OVER_TEMP',
+    0x00004000: 'INVERTER_OVER_TEMP',
+    0x00008000: 'VELOCITY_LIMIT_VIOLATION',
+    0x00010000: 'POSITION_LIMIT_VIOLATION',
+    0x01000000: 'WATCHDOG_TIMER_EXPIRED',
+    0x02000000: 'ESTOP_REQUESTED',
+    0x04000000: 'SPINOUT_DETECTED',
+    0x08000000: 'BRAKE_RESISTOR_DISARMED',
+    0x10000000: 'THERMISTOR_DISCONNECTED',
+    0x40000000: 'CALIBRATION_ERROR',
+}
+
+
+def _decode_error_bits(code):
+    if code == 0xFFFFFFFF or code == 0:
+        return []
+    out = []
+    for bit, name in ODRIVE_ERROR_BITS.items():
+        if code & bit:
+            out.append(name)
+    if not out:
+        out.append(f'unknown(0x{code:08x})')
+    return out
+
 
 def read_level_diag(bag_dir):
     """Iterate /level_diag in the bag and return [(t_s, msg), ...].
@@ -230,6 +270,110 @@ def step_metrics(samples, t_edge, amp, hold_s, ss_band_deg=0.1):
     }
 
 
+def _compute_health(samples):
+    """Per-leg state/error/feeder-mode rollup over the bag. The whole
+    point of these fields: surface silent disarms, watchdog hits, and
+    feeder-mode mismatches *as the headline* — not buried in a 50 Hz
+    timeseries CSV. If anything in this block is non-empty/non-zero,
+    leveling can't be expected to work no matter what gains we pick."""
+    if not samples:
+        return None
+    has_state = hasattr(samples[0][1], 'axis_state')
+    has_aerr = hasattr(samples[0][1], 'active_errors')
+    has_fmode = hasattr(samples[0][1], 'feeder_mode')
+    has_yaw = hasattr(samples[0][1], 'yaw')
+    if not (has_state or has_aerr or has_fmode or has_yaw):
+        return {'note': 'bag pre-dates health-diag fields; re-record to populate'}
+
+    out = {}
+
+    if has_yaw:
+        yaws = np.array([float(m.yaw) for _t, m in samples])
+        out['yaw_first_deg'] = float(yaws[0])
+        out['yaw_last_deg'] = float(yaws[-1])
+        out['yaw_range_deg'] = float(np.ptp(yaws))
+        out['yaw_drift_rate_deg_per_s'] = (
+            float((yaws[-1] - yaws[0]) /
+                  max(1e-3, samples[-1][0] - samples[0][0])))
+
+    if has_state:
+        # For each leg, count the fraction of ticks where state != 8
+        # (CLOSED_LOOP). Anything > 0 means the leg dropped out at
+        # least once — and the first_drop_t says when.
+        per_leg = []
+        for n in range(6):
+            states = np.array([int(m.axis_state[n]) for _t, m in samples])
+            n_closed = int((states == 8).sum())
+            n_idle = int((states == 1).sum())
+            n_stale = int((states == 0).sum())
+            n_other = len(states) - n_closed - n_idle - n_stale
+            # First sample where state was NOT closed-loop (after we'd
+            # seen at least one closed-loop sample, so we don't flag
+            # the pre-arm part of the bag).
+            first_drop = None
+            saw_closed = False
+            for i, s in enumerate(states):
+                if s == 8:
+                    saw_closed = True
+                elif saw_closed and s != 8:
+                    first_drop = float(samples[i][0] - samples[0][0])
+                    break
+            per_leg.append({
+                'leg': n,
+                'closed_loop_pct': float(n_closed / len(states) * 100),
+                'idle_count': n_idle,
+                'stale_count': n_stale,
+                'other_count': n_other,
+                'first_drop_t_s': first_drop,
+            })
+        out['per_leg_state'] = per_leg
+        any_drop = any(p['first_drop_t_s'] is not None for p in per_leg)
+        out['any_leg_dropped_out'] = bool(any_drop)
+
+    if has_aerr:
+        # Union of all error bits seen on each leg (excluding 0xFFFFFFFF
+        # = "no fresh frame this tick"). Decoded into human names.
+        per_leg = []
+        for n in range(6):
+            seen = 0
+            first_seen_t = None
+            for t, m in samples:
+                code = int(m.active_errors[n]) & 0xFFFFFFFF
+                if code == 0xFFFFFFFF or code == 0:
+                    continue
+                if first_seen_t is None:
+                    first_seen_t = float(t - samples[0][0])
+                seen |= code
+            per_leg.append({
+                'leg': n,
+                'seen_mask_hex': f'0x{seen:08x}',
+                'decoded': _decode_error_bits(seen),
+                'first_seen_t_s': first_seen_t,
+            })
+        out['per_leg_active_errors'] = per_leg
+        any_err = any(p['decoded'] for p in per_leg)
+        out['any_leg_active_error'] = bool(any_err)
+
+    if has_fmode:
+        # Mode names per leg over the bag — a leg that's anything other
+        # than 'pos' during a level run is silently ignoring corrections.
+        per_leg = []
+        _name = {0: 'idle', 1: 'pos', 2: 'vel', 255: 'unknown'}
+        for n in range(6):
+            modes = [int(m.feeder_mode[n]) for _t, m in samples]
+            unique = sorted(set(modes))
+            per_leg.append({
+                'leg': n,
+                'modes_seen': [_name.get(u, str(u)) for u in unique],
+                'pos_pct': float(modes.count(1) / len(modes) * 100),
+            })
+        out['per_leg_feeder_mode'] = per_leg
+        out['any_leg_not_in_pos'] = any(
+            p['pos_pct'] < 99.0 for p in per_leg)
+
+    return out
+
+
 def aggregate_steps(trials):
     if not trials:
         return None
@@ -267,8 +411,16 @@ def write_timeseries_csv(samples, out_path):
     # new columns just stay NaN.
     has_vel = hasattr(samples[0][1], 'leg_vel')
     has_iqsp = hasattr(samples[0][1], 'leg_iq_sp')
+    has_yaw = hasattr(samples[0][1], 'yaw')
+    has_state = hasattr(samples[0][1], 'axis_state')
+    has_aerr = hasattr(samples[0][1], 'active_errors')
+    has_fmode = hasattr(samples[0][1], 'feeder_mode')
     headers = [
         't_s', 'roll', 'pitch',
+    ]
+    if has_yaw:
+        headers.append('yaw')
+    headers += [
         'err_r', 'err_p', 'err_r_filt', 'err_p_filt',
         'integ_r', 'integ_p',
         'pi_out_r', 'pi_out_p',
@@ -286,6 +438,12 @@ def write_timeseries_csv(samples, out_path):
         if has_iqsp:
             headers.append(f'iq_sp_{n}')
         headers.append(f'iq_{n}')
+        if has_state:
+            headers.append(f'state_{n}')
+        if has_aerr:
+            headers.append(f'aerr_{n}')
+        if has_fmode:
+            headers.append(f'fmode_{n}')
     with open(out_path, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(headers)
@@ -293,6 +451,10 @@ def write_timeseries_csv(samples, out_path):
             row = [
                 f"{t - t0:.4f}",
                 f"{m.roll:.5f}", f"{m.pitch:.5f}",
+            ]
+            if has_yaw:
+                row.append(f"{m.yaw:.5f}")
+            row += [
                 f"{m.err_r:.5f}", f"{m.err_p:.5f}",
                 f"{m.err_r_filt:.5f}", f"{m.err_p_filt:.5f}",
                 f"{m.integ_r:.5f}", f"{m.integ_p:.5f}",
@@ -310,6 +472,13 @@ def write_timeseries_csv(samples, out_path):
                 if has_iqsp:
                     row.append(f"{m.leg_iq_sp[n]:.5f}")
                 row.append(f"{m.leg_iq[n]:.5f}")
+                if has_state:
+                    row.append(int(m.axis_state[n]))
+                if has_aerr:
+                    # Hex with 0x prefix so a glance at the CSV is readable
+                    row.append(f"0x{int(m.active_errors[n]) & 0xFFFFFFFF:08x}")
+                if has_fmode:
+                    row.append(int(m.feeder_mode[n]))
             w.writerow(row)
 
 
@@ -367,6 +536,7 @@ def analyze_bag(bag_dir, out_dir, name=None):
             np.mean([m.dt_actual for _t, m in samples]) * 1000),
         'tick_period_actual_max_ms': float(
             np.max([m.dt_actual for _t, m in samples]) * 1000),
+        'health': _compute_health(samples),
         'baseline': baseline,
         'steps_per_trial': trial_results,
         'steps_aggregated': aggregate_steps(pos_trials),
@@ -418,6 +588,7 @@ def analyze_sweep(sweep_dir, out_base):
                 s = json.load(f)
             base = s.get('baseline') or {}
             agg = s.get('steps_aggregated') or {}
+            health = s.get('health') or {}
             per_z.append({
                 'z_mm': entry.get('z_mm'),
                 'bag': bag_name,
@@ -431,6 +602,12 @@ def analyze_sweep(sweep_dir, out_base):
                 'overshoot_pct': agg.get('overshoot_pct_mean'),
                 'settling_time_s': agg.get('settling_time_s_mean'),
                 'ss_offset_deg': agg.get('ss_offset_deg_mean'),
+                # Health rollup (these jump out at the top of the sweep
+                # if any Z had a silent drop / error / mode mismatch).
+                'any_leg_dropped_out': health.get('any_leg_dropped_out'),
+                'any_leg_active_error': health.get('any_leg_active_error'),
+                'any_leg_not_in_pos': health.get('any_leg_not_in_pos'),
+                'yaw_range_deg': health.get('yaw_range_deg'),
             })
         except Exception:
             pass
