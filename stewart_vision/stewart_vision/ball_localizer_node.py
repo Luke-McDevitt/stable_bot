@@ -94,6 +94,18 @@ class BallLocalizerNode(Node):
         self.last_depth_pixel: Optional[PointStamped] = None
         self.last_pose: Optional[PoseStamped] = None
 
+        # Diagnostic counters — emitted every 5 s so we can tell why
+        # /ball_xy_depth (or /ball_xy_mono) is silent without ros2
+        # topic echo. Increments wherever a detection arrives, where
+        # we publish, and where the on-platform gate kicks in.
+        self._n_depth_in = 0
+        self._n_depth_out = 0
+        self._n_depth_gate_rejects = 0
+        self._n_v0_in = 0
+        self._n_v0_out = 0
+        self._n_v0_gate_rejects = 0
+        self.create_timer(5.0, self._log_localizer_health)
+
         self.create_subscription(
             PointStamped, '/oak/ball/v0/rgb_pixel', self._on_v0, 10)
         self.create_subscription(
@@ -175,10 +187,12 @@ class BallLocalizerNode(Node):
         V0 so the two outputs are directly comparable; on-platform
         gate inside _project_to_platform applies."""
         self.last_depth_pixel = msg
+        self._n_depth_in += 1
         cx = float(msg.point.x)
         cy = float(msg.point.y)
         result = self._project_to_platform(cx, cy)
         if result is None:
+            self._n_depth_gate_rejects += 1
             return
         x_m, y_m, z_m = result
         out = PointStamped()
@@ -188,6 +202,20 @@ class BallLocalizerNode(Node):
         out.point.y = y_m * 1000.0
         out.point.z = z_m * 1000.0
         self.pub_xy_depth.publish(out)
+        self._n_depth_out += 1
+
+    def _log_localizer_health(self):
+        """Periodic snapshot of accept/reject counts so we can tell
+        whether /ball_xy_depth silence is "pixel never arrived",
+        "projection rejected (gate / no pose / no intrinsics)", or
+        "publish succeeded but downstream not subscribed"."""
+        self.get_logger().info(
+            f"[health] v0: in={self._n_v0_in} out={self._n_v0_out} "
+            f"reject={self._n_v0_gate_rejects} | "
+            f"depth: in={self._n_depth_in} out={self._n_depth_out} "
+            f"reject={self._n_depth_gate_rejects} | "
+            f"K_rgb={'YES' if self.K_rgb is not None else 'NO'} "
+            f"pose={'YES' if self.last_pose is not None else 'NO'}")
 
     def _select_pixel(self):
         """Pick a single (cx, cy) according to the spec selection rule.
@@ -358,8 +386,10 @@ class BallLocalizerNode(Node):
         cx, cy, src = self._select_pixel()
         if cx is None:
             return
+        self._n_v0_in += 1
         result = self._project_to_platform(cx, cy)
         if result is None:
+            self._n_v0_gate_rejects += 1
             return
         x_m, y_m, z_m = result
 
@@ -370,6 +400,7 @@ class BallLocalizerNode(Node):
         out.point.y = y_m * 1000.0
         out.point.z = z_m * 1000.0   # near zero by construction
         self.pub_xy_mono.publish(out)
+        self._n_v0_out += 1
 
         # Diagnostic: which detector won.
         d = Float32MultiArray()

@@ -988,10 +988,14 @@ class StewartControlNode(Node):
         # Current pose state (held by feeder). Defaults to zero, but we
         # immediately try to restore the last-commanded pose so that the
         # GUI Z sliders read the operator's last setpoint on a fresh GUI
-        # load instead of always showing 0.
+        # load instead of always showing 0. Then write the file back —
+        # so the persistence file always exists for inspection on a
+        # fresh deploy, and `cat ~/.stewart_control_state.json`
+        # always shows the current commanded pose.
         self.current_xyz = [0.0, 0.0, 0.0]
         self.current_rpy = [0.0, 0.0, 0.0]
         self._load_persisted_pose()
+        self._save_persisted_pose()
 
         # Level-hold state
         self.level_enabled = False
