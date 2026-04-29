@@ -190,19 +190,14 @@ def _platform_image_mask(shape: Tuple[int, int],
 
 # --- Depth-blob detector (option 3) -----------------------------------------
 
-# Acceptable height-above-platform window for a foam ball. The visible
-# top hemisphere of a 40 mm-diameter ball ranges 0..40 mm above the
-# platform plane; we leave a few mm of slack on each side to absorb
-# stereo noise + plane-fit error.
-BALL_HEIGHT_MIN_MM = 5.0
+# Acceptable height-above-platform window for a ball. The visible top
+# hemisphere of a 40 mm ball ranges 0..40 mm above the platform plane;
+# the OAK's stereo + ArUco pose math has been measured agreeing within
+# ~20 mm, so a [3, 80] mm window captures the ball cap reliably while
+# rejecting platform pixels (which read 0±5 mm above plane in valid
+# stereo regions) and off-platform background (deeply negative).
+BALL_HEIGHT_MIN_MM = 3.0
 BALL_HEIGHT_MAX_MM = 80.0
-# Lowered from 30 → 10 px after observing detection rate drop from
-# ~90 % to ~17 % on the foam ball. Foam absorbs IR poorly, so the
-# OAK's stereo depth map is sparse on the ball and the connected-
-# component areas are smaller than the geometric ball-cap area would
-# predict. A 10-px minimum keeps the detector firing as long as the
-# blob is unambiguously above the plane; the morphological close
-# below stitches the sparse hits back together.
 DEPTH_BLOB_MIN_AREA_PX = 10
 
 
@@ -301,30 +296,28 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
 
     measured = depth_mm.astype(np.float32)
     # Treat missing depth (0) as "no observation" — fill with +inf so
-    # the height test fails for those pixels.
+    # the height test fails for those pixels. Stereo on the user's
+    # carbon-fiber + vinyl deck is sparse (probe data 2026-04-29
+    # showed ~18 % of the frame invalid, with most platform-interior
+    # pixels at 0); marking them +inf just means the height test
+    # cleanly excludes them instead of producing a misleading
+    # negative.
     invalid = measured <= 1.0
     measured_safe = measured.copy()
     measured_safe[invalid] = np.inf
-    raw_height = expected_depth_mm - measured_safe   # +ve = closer than plane
+    height = expected_depth_mm - measured_safe   # +ve = closer than plane
 
-    # Empirical plane offset: median height across valid platform
-    # pixels. The ArUco marker ring is mounted significantly above
-    # the actual platform deck — bag 20260429T224802Z showed every
-    # frame hitting a −100 mm clamp with std=0, which means the true
-    # offset is well past −100 mm and the clamp was breaking
-    # detection. Clip is now ±500 mm; large enough that any sane
-    # geometry passes through, small enough that a truly broken pose
-    # (e.g., quaternion went NaN) still produces something
-    # bounded. Detector remains robust to ball+small-object outliers
-    # because median is the aggregator.
-    valid_for_plane = (~invalid) & (eroded > 0) & np.isfinite(raw_height)
-    if int(np.sum(valid_for_plane)) >= 100:
-        plane_offset = float(np.median(raw_height[valid_for_plane]))
-        plane_offset = max(-500.0, min(500.0, plane_offset))
-    else:
-        plane_offset = 0.0
+    # Earlier versions ran a per-frame "median plane offset" self-cal
+    # to absorb assumed ArUco bias. Probe data showed pose.z and
+    # expected_depth_at_principal_point agree within ~20 mm, so the
+    # self-cal was over-correcting. Worse: with invalid stereo
+    # dominating the platform interior, the median was being driven
+    # by sparse stereo edge artifacts at ~1.5 m, dragging the offset
+    # to −500 and shifting the threshold away from the ball every
+    # frame. Use the ArUco plane directly. plane_offset stays in the
+    # diagnostic tuple for backwards-compat / overlay HUD.
+    plane_offset = 0.0
 
-    height = raw_height - plane_offset
     above = (height > h_min_mm) & (height < h_max_mm)
     above &= eroded > 0
     if not np.any(above):
