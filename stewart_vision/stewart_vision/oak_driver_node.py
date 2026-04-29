@@ -23,6 +23,7 @@ Spec: ../stewart_bringup/docs/closed_loop_ball_demos.md (§5, §8, §11.1).
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Optional
 
@@ -208,8 +209,30 @@ class OakDriverNode(Node):
         self.get_logger().info("Building OAK pipeline...")
         pipeline = _build_pipeline()
 
+        # USB speed cap. The Pi 5 caps total USB current at 600 mA
+        # by default (raise to 1.2 A with `usb_max_current_enable=1`
+        # in /boot/firmware/config.txt + reboot). Even with that
+        # raised, OAK-D Pro at USB SUPER on Pi 5 has been observed to
+        # crash mid-stream with a Myriad X firmware fault and no
+        # crash-dump (X_LINK_ERROR on the next tryGet). Luxonis'
+        # documented workaround is to force USB 2.0 — bandwidth is
+        # plenty for our pipeline (540p RGB MJPEG + 800p mono left),
+        # and current draw drops below the cap.
+        # Override with `OAK_USB_SPEED=super` once power is solved
+        # (powered hub or full Pi 5 5 V/5 A supply).
+        usb_speed_env = os.environ.get('OAK_USB_SPEED', 'high').lower()
+        usb_speed_map = {
+            'high': dai.UsbSpeed.HIGH,        # USB 2.0 high-speed (480 Mbps)
+            'super': dai.UsbSpeed.SUPER,      # USB 3.0 (5 Gbps)
+            'super_plus': dai.UsbSpeed.SUPER_PLUS,  # USB 3.1 gen 2 (10 Gbps)
+        }
+        max_usb = usb_speed_map.get(usb_speed_env, dai.UsbSpeed.HIGH)
+        self.get_logger().info(
+            f"OAK device cap: maxUsbSpeed={max_usb.name} "
+            f"(override via OAK_USB_SPEED=high|super|super_plus)")
+
         try:
-            self.device = dai.Device(pipeline)
+            self.device = dai.Device(pipeline, maxUsbSpeed=max_usb)
         except Exception as e:
             self.get_logger().fatal(f"Failed to open OAK device: {e}")
             raise SystemExit(2)
