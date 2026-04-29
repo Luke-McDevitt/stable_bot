@@ -30,14 +30,15 @@
       <!-- rosbridge connection -->
       <span id="conn-dot" class="w-3 h-3 rounded-full bg-red-500" title="rosbridge"></span>
       <span id="conn-label" class="text-sm text-slate-300">disconnected</span>
-      <!-- vision stack heartbeat / mode label / ball-type — hidden (closed-loop ball
-           demos rolled back 2026-04-26 pending motor recommutation). -->
-      <span id="vis-dot" class="w-3 h-3 rounded-full bg-slate-600" title="vision stack" style="display:none"></span>
-      <span id="vis-label" class="text-xs text-slate-400" style="display:none">vision idle</span>
+      <!-- vision stack heartbeat / mode label / ball-type. Brought back
+           up 2026-04-29 — Phase A bring-up of the closed-loop ball demos
+           is in progress; OAK factory cal is in place. -->
+      <span id="vis-dot" class="w-3 h-3 rounded-full bg-slate-600" title="vision stack"></span>
+      <span id="vis-label" class="text-xs text-slate-400">vision idle</span>
       <span id="mode-label"
             class="text-xs mono px-2 py-0.5 rounded bg-slate-700 text-slate-300"
-            title="active demo mode" style="display:none">LEVEL_HOLD</span>
-      <label class="text-xs text-slate-400 flex items-center gap-1" style="display:none">
+            title="active demo mode">LEVEL_HOLD</span>
+      <label class="text-xs text-slate-400 flex items-center gap-1">
         Ball:
         <select id="ball-type-select"
                 class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-0.5"
@@ -63,13 +64,43 @@
   <!-- LEFT COLUMN: vision debug + calibration + status + arming + live readouts -->
   <section class="lg:col-span-1 space-y-4">
 
-    <!-- Vision Debug (spec v8 §11.1): live OAK feed + telemetry strip — hidden -->
-    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700" style="display:none">
+    <!-- Vision Debug (spec v8 §11.1): live OAK feed + telemetry strip. -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700" open>
       <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">Vision Debug</summary>
       <div class="mt-2">
         <div id="vision-feed-wrap" class="bg-slate-900 rounded relative overflow-hidden" style="aspect-ratio: 16 / 9;">
           <img id="vision-feed-img" alt="(no feed)"
                class="w-full h-full object-contain block" style="display:none;">
+          <!-- Overlays. viewBox matches the OAK RGB ISP at 1/2 scale
+               (1080p source → 960x540 — see oak_driver_node._build_pipeline).
+               preserveAspectRatio defaults to xMidYMid meet, which mirrors
+               object-contain on the <img>, so overlays land on the
+               correct pixels regardless of the display size. -->
+          <svg id="vision-feed-overlay"
+               class="absolute inset-0 w-full h-full pointer-events-none"
+               viewBox="0 0 960 540">
+            <!-- V0 ball detection circle (spec §8). Hidden until
+                 /oak/ball/v0/rgb_pixel publishes recent (<500ms) data
+                 AND the operator enables the overlay checkbox. -->
+            <circle id="vis-overlay-ball"
+                    cx="0" cy="0" r="0"
+                    fill="none" stroke="#fb923c" stroke-width="2"
+                    visibility="hidden"/>
+            <circle id="vis-overlay-ball-center"
+                    cx="0" cy="0" r="2"
+                    fill="#fb923c"
+                    visibility="hidden"/>
+            <!-- Drawn-route overlay (spec §11.2.3). Scaffold only —
+                 needs Stage C extrinsics + per-sample platform→camera
+                 projection before this can render anything real. The
+                 polyline + checkbox are wired so that lighting up the
+                 projection is a one-function-edit follow-up. -->
+            <polyline id="vis-overlay-route"
+                      points=""
+                      fill="none" stroke="#a78bfa" stroke-width="2"
+                      stroke-dasharray="4 3"
+                      visibility="hidden"/>
+          </svg>
           <div id="vision-feed-empty"
                class="absolute inset-0 flex items-center justify-center text-xs text-slate-500">
             no /oak/rgb/image_compressed
@@ -80,6 +111,14 @@
         <div class="grid grid-cols-2 gap-1 text-xs mt-2 text-slate-400">
           <label class="flex items-center gap-2"><input id="vis-show-stereo" type="checkbox"> stereo pair</label>
           <label class="flex items-center gap-2"><input id="vis-show-disparity" type="checkbox"> disparity</label>
+          <label class="flex items-center gap-2"
+                 title="Draw a circle around the V0 (HSV-threshold) ball detection from /oak/ball/v0/rgb_pixel.">
+            <input id="vis-show-ball-circle" type="checkbox"> ball circle
+          </label>
+          <label class="flex items-center gap-2 text-slate-600 cursor-not-allowed"
+                 title="Project the Demo-3 drawn route onto the camera image. Needs Stage C extrinsics + ArUco pose so platform-frame samples can be transformed to image pixels — scaffolded; not wired yet.">
+            <input id="vis-show-route" type="checkbox" disabled> drawn route <span class="text-slate-700">(scaffold)</span>
+          </label>
         </div>
         <!-- Telemetry strip (color-coded comparison KPIs, spec §11.1) -->
         <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-3 mono">
@@ -98,8 +137,8 @@
       </div>
     </details>
 
-    <!-- Calibration (Stage C only, spec v7 §6 + §11.1) — hidden -->
-    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700" style="display:none">
+    <!-- Calibration (Stage C only, spec v7 §6 + §11.1). -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700">
       <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">Calibration (Stage C)</summary>
       <p class="text-xs text-slate-500 mt-2 mb-2">
         Camera-to-world via the ArUco ring. Re-run after every camera arm move.
@@ -1444,6 +1483,13 @@ function setupROSInterface() {
   topic.markers_n.subscribe(m => {
     if ($('vis-aruco-n')) $('vis-aruco-n').innerText = m.data;
   });
+
+  // V0 ball detection (HSV-threshold on the OAK RGB stream).
+  // PointStamped: x=cx, y=cy, z=radius_px in 960x540 pixel space.
+  topic.ball_v0 = new ROSLIB.Topic({
+    ros, name: '/oak/ball/v0/rgb_pixel',
+    messageType: 'geometry_msgs/msg/PointStamped' });
+  topic.ball_v0.subscribe(onBallV0Pixel);
 
   // Bag recorder status
   topic.bag_status = new ROSLIB.Topic({
@@ -3134,6 +3180,13 @@ let _fpsCount = 0;
 let _fpsT0 = performance.now();
 let _fpsLastFrameMs = 0;
 
+// V0 ball detection state for the camera-feed overlay.
+// .cx/.cy/.r in 960x540 pixel space (RGB ISP from oak_driver_node).
+let _v0Latest = null;
+let _v0LastMs = 0;
+const V0_STALE_MS = 500;         // hide circle after 500ms of no detections
+const V0_OVERLAY_TICK_MS = 200;  // re-evaluate staleness at 5 Hz
+
 function initVisionGUI() {
   // --- Marker squares on the SVG ring (8 at 50 mm side, ring r = 120) ---
   drawArucoMarks();
@@ -3185,6 +3238,16 @@ function initVisionGUI() {
 
   // --- Periodic vision-stack heartbeat tick ---
   setInterval(visionHeartbeat, 1000);
+
+  // --- Camera-feed overlay toggles + stale tick ---
+  const ballCb = $('vis-show-ball-circle');
+  if (ballCb) ballCb.addEventListener('change', renderV0Overlay);
+  setInterval(renderV0Overlay, V0_OVERLAY_TICK_MS);
+
+  // Drawn-route overlay is intentionally disabled until the platform→
+  // camera projection is wired (see renderRouteOverlay block comment).
+  const routeCb = $('vis-show-route');
+  if (routeCb) routeCb.addEventListener('change', renderRouteOverlay);
 
   // --- Highlight active demo ---
   setActiveDemo(0);
@@ -3258,6 +3321,61 @@ function visionHeartbeat() {
     lbl.className = 'text-xs text-slate-500';
     lbl.innerText = 'vision idle';
   }
+}
+
+// V0 ball-detection circle overlay (camera feed). Subscribed to
+// /oak/ball/v0/rgb_pixel — see oak_driver_node.detect_ball_v0.
+function onBallV0Pixel(m) {
+  _v0Latest = {
+    cx: m.point.x,
+    cy: m.point.y,
+    r:  m.point.z,           // radius in pixels (piggy-backed in z)
+  };
+  _v0LastMs = performance.now();
+  renderV0Overlay();
+}
+
+function renderV0Overlay() {
+  const cb = $('vis-show-ball-circle');
+  const ring = $('vis-overlay-ball');
+  const dot  = $('vis-overlay-ball-center');
+  if (!cb || !ring || !dot) return;
+  const fresh = _v0Latest &&
+                (performance.now() - _v0LastMs) < V0_STALE_MS;
+  if (!cb.checked || !fresh) {
+    ring.setAttribute('visibility', 'hidden');
+    dot.setAttribute('visibility',  'hidden');
+    return;
+  }
+  ring.setAttribute('cx', _v0Latest.cx);
+  ring.setAttribute('cy', _v0Latest.cy);
+  ring.setAttribute('r',  Math.max(_v0Latest.r, 4));
+  ring.setAttribute('visibility', 'visible');
+  dot.setAttribute('cx', _v0Latest.cx);
+  dot.setAttribute('cy', _v0Latest.cy);
+  dot.setAttribute('visibility', 'visible');
+}
+
+// Drawn-route overlay (camera feed). SCAFFOLD ONLY.
+// Lights up when:
+//   1. Stage C extrinsics are loaded (T_cam_world available), AND
+//   2. /platform_pose is publishing live (T_world_platform), AND
+//   3. /ball_path/active polyline (platform-frame mm) is non-empty, AND
+//   4. the operator enables the "drawn route" checkbox.
+// Implementation outline:
+//   - subscribe to /ball_path/active (nav_msgs/Path, frame_id "platform")
+//   - on each /platform_pose update (or re-render tick), compose
+//       T_cam_platform = T_cam_world @ T_world_platform
+//   - for each (px, py) sample, compute pixel = K_rgb @ T_cam_platform @ [px, py, 0, 1]
+//   - update the polyline `points` attribute
+// The K_rgb / extrinsics live in oak_intrinsics.yaml + oak_extrinsics.yaml
+// and would need to be served to the GUI (via a one-shot ROS topic or
+// gui_server.py endpoint). The checkbox stays disabled until that wiring
+// lands so we don't promise a feature that isn't real.
+function renderRouteOverlay() {
+  // Intentionally a no-op for now. See block comment above.
+  const poly = $('vis-overlay-route');
+  if (poly) poly.setAttribute('visibility', 'hidden');
 }
 
 function onCalStatus(s) {
