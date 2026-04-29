@@ -3458,6 +3458,22 @@ class StewartControlNode(Node):
         return out
 
     # ---- single bag ----
+    @staticmethod
+    def _scrub_non_finite(obj):
+        """Replace NaN / +Inf / -Inf with None recursively. JSON spec
+        rejects non-finite floats; some SDO reads (e.g.
+        vel_integrator_limit defaults to +inf) trigger this naturally,
+        and the GUI's /bags handler chokes on the resulting sidecar.
+        Sanitize on write so neither side has to deal with it."""
+        if isinstance(obj, float):
+            return obj if math.isfinite(obj) else None
+        if isinstance(obj, dict):
+            return {k: StewartControlNode._scrub_non_finite(v)
+                    for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [StewartControlNode._scrub_non_finite(v) for v in obj]
+        return obj
+
     def _lr_save_notes(self, bag_dir, name, notes, extra_meta):
         """Sidecar notes.json next to the bag dir. Captures gains snapshot,
         free-text notes, git SHA — the per-trial 'why' that the bag itself
@@ -3473,8 +3489,9 @@ class StewartControlNode(Node):
                 'topics': list(self.LR_BAG_TOPICS),
                 **(extra_meta or {}),
             }
+            payload = self._scrub_non_finite(payload)
             with open(os.path.join(bag_dir + '_notes.json'), 'w') as f:
-                json.dump(payload, f, indent=2)
+                json.dump(payload, f, indent=2, allow_nan=False)
         except Exception as e:
             self.get_logger().warn(f"sidecar notes write failed: {e}")
 

@@ -24,6 +24,7 @@ Usage:
 import argparse
 import http.server
 import json
+import math
 import os
 import signal
 import socketserver
@@ -31,6 +32,21 @@ import subprocess
 import sys
 import threading
 import time
+
+
+def _finite_scrub(obj):
+    """Recursively replace NaN/+Inf/-Inf floats with None so the result
+    serializes as strict RFC 8259 JSON. Walks dicts, lists, tuples;
+    leaves other types alone. Used at every JSON-write boundary
+    because some SDO reads legitimately return non-finite values
+    (e.g. vel_integrator_limit defaults to +inf for "no limit")."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _finite_scrub(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_finite_scrub(v) for v in obj]
+    return obj
 
 def _find_stewart_bringup_dir():
     for cand in ('~/ros2_ws/src/stewart_bringup',
@@ -292,7 +308,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=self.web_dir, **kwargs)
 
     def _send_json(self, obj, status=200):
-        data = json.dumps(obj).encode('utf-8')
+        # NaN / +Inf / -Inf are valid Python floats but invalid JSON
+        # per RFC 8259, and JS's JSON.parse throws on them. The
+        # `inner_loop_config` SDO snapshot can legitimately read e.g.
+        # vel_integrator_limit = +inf, so we sanitize at the wire.
+        data = json.dumps(_finite_scrub(obj), allow_nan=False).encode('utf-8')
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Access-Control-Allow-Origin', '*')
