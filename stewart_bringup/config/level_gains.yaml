@@ -1,8 +1,8 @@
-deadband_deg: 0.05
-filter_alpha: 0.3
+deadband_deg: 0.02
+filter_alpha: 0.4
 integ_decay_outer_deg: 0.35
-integ_decay_per_tick_at_50hz: 0.97
-ki: 0.4
-kp: 0.8
+integ_decay_per_tick_at_50hz: 0.99
+ki: 0.5
+kp: 0.5
 max_corr_deg: 5.0
 rate_limit_deg_per_iter: 0.25
