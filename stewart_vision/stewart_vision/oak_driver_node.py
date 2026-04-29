@@ -103,7 +103,7 @@ def detect_ball_v0(rgb_bgr: np.ndarray) -> Optional[tuple]:
 
 # --- DepthAI pipeline builder ------------------------------------------------
 
-def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30,
+def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 15,
                     enable_depth: bool = False):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
@@ -347,11 +347,17 @@ class OakDriverNode(Node):
             self.q_spatial = None
             self.q_slc_cfg = None
 
-        # Tightness of the depth ROI around the V0 pixel. 8 px on each
-        # side at 540p RGB is roughly 1.5° of FOV — covers the ball
-        # well at typical platform distances without spilling onto the
-        # platform background and pulling depth toward the plate.
-        self._slc_roi_half_norm = 8.0 / RGB_W
+        # Half-width of the depth ROI around the V0 pixel, in
+        # normalized RGB coordinates. 24 px (48 px wide ROI) covers
+        # most of the foam ball at typical 600-800 mm range, which
+        # gives the SLC enough valid-depth pixels to average over —
+        # an 8-px ROI sat *inside* the ball where the foam surface
+        # is smoothest, hitting too many zero-depth pixels and
+        # leaving /ball_xy_oak at <1 Hz. SLC's depthThresholds (set
+        # below per ROI) drop both invalid depth (= 0) and out-of-
+        # range pixels, so a slightly wider ROI doesn't drag the
+        # measurement toward the platform plane behind the ball.
+        self._slc_roi_half_norm = 24.0 / RGB_W
 
         # Drive everything from a single timer; DepthAI queues are
         # already producer-buffered, so we just drain them.
