@@ -465,12 +465,37 @@ def _list_vision_bags():
             st = os.stat(full)
         except OSError:
             continue
-        out.append({
+        png = os.path.join(full, 'digest.png')
+        js  = os.path.join(full, 'digest.summary.json')
+        entry = {
             'name': name,
             'path': full,
             'mtime': st.st_mtime,
             'size_bytes': _iva_dir_size(full),
-        })
+            'has_png': os.path.isfile(png),
+            'has_summary': os.path.isfile(js),
+        }
+        if entry['has_summary']:
+            try:
+                with open(js) as f:
+                    s = json.load(f)
+                v0 = s.get('v0', {})
+                dp = s.get('depth_blob', {})
+                po = (dp.get('plane_offset_mm') or {})
+                md = ((s.get('platform_frame_mm') or {}).get(
+                    'detector_disagreement_mm') or {})
+                entry['summary'] = {
+                    'duration_s': s.get('duration_s'),
+                    'v0_n': v0.get('detections_n'),
+                    'depth_n': dp.get('detections_n'),
+                    'depth_rate_hz': dp.get('detection_rate_hz_mean'),
+                    'plane_offset_mean_mm': po.get('mean'),
+                    'plane_offset_max_abs_mm': po.get('max_abs'),
+                    'v0_vs_depth_p95_mm': md.get('p95'),
+                }
+            except Exception:
+                pass
+        out.append(entry)
     out.sort(key=lambda e: e['mtime'], reverse=True)
     return out
 
@@ -562,20 +587,61 @@ def _vision_status():
 
 
 def _push_vision_bag_to_git(name):
-    """git add + commit + push of a vision-debug bag, mirroring the
-    IVA push flow but with a different commit message body."""
+    """Commit + push the DIGEST artifacts only — digest.png and
+    digest.summary.json. The raw .mcap (typically tens of MB once
+    RGB and the depth-blob debug overlay are flowing) stays on the
+    Pi. Calls _digest_vision_bag first if no digest exists yet so
+    the user can hit one button instead of two."""
     bag_dir = _resolve_vision_bag_path(name)
     if bag_dir is None:
         return False, f'no such vision bag: {name}'
     repo_dir = os.path.dirname(_iva_bags_root())
     if not os.path.isdir(os.path.join(repo_dir, '.git')):
         return False, f'{repo_dir} is not a git repo'
-    rel_bag = os.path.relpath(bag_dir, repo_dir)
-    msg = (f'Vision-debug bag {name}\n\n'
-           f'Captured by gui_server vision-debug recorder. Topics:\n'
-           + ''.join(f'  - {t}\n' for t in VISION_DEBUG_TOPICS))
 
     out_lines = []
+
+    # Auto-digest if missing.
+    png = os.path.join(bag_dir, 'digest.png')
+    js  = os.path.join(bag_dir, 'digest.summary.json')
+    if not (os.path.isfile(png) and os.path.isfile(js)):
+        out_lines.append('(running digest first)')
+        ok, msg = _digest_vision_bag(name)
+        out_lines.append(msg or '')
+        if not ok:
+            return False, '\n'.join(out_lines)
+
+    rel_png = os.path.relpath(png, repo_dir)
+    rel_js  = os.path.relpath(js,  repo_dir)
+
+    # Headline stats for the commit message body.
+    headline = ''
+    try:
+        with open(js) as f:
+            s = json.load(f)
+        v0 = s.get('v0', {})
+        dp = s.get('depth_blob', {})
+        po = (dp.get('plane_offset_mm') or {})
+        md = ((s.get('platform_frame_mm') or {}).get(
+            'detector_disagreement_mm') or {})
+        headline = (
+            f"\nduration={s.get('duration_s', 0):.1f}s "
+            f"V0={v0.get('detections_n', 0)} "
+            f"depth={dp.get('detections_n', 0)}\n"
+            f"depth-rate mean={dp.get('detection_rate_hz_mean', 0):.1f}Hz "
+            f"max-silence={dp.get('largest_silence_s', 0):.1f}s\n"
+            f"plane_offset mean={po.get('mean', 0):+.1f}mm "
+            f"max|·|={po.get('max_abs', 0):.1f}mm\n"
+            f"V0↔depth p95={md.get('p95', 0):.1f}mm")
+    except Exception:
+        pass
+
+    msg = (f'Vision-debug digest {name}\n'
+           + headline + '\n\n'
+           + 'Digest only (digest.png + digest.summary.json). Raw '
+             'rosbag2 mcap stays on the Pi — \n'
+             'too large to commit per-bag (RGB + depth-blob overlay '
+             'is tens of MB).\n')
 
     def _run(cmd):
         try:
@@ -594,12 +660,12 @@ def _push_vision_bag_to_git(name):
             out_lines.append(f"FAILED: {' '.join(cmd)}: {e}")
             return False
 
-    if not _run(['git', 'add', rel_bag]):
+    if not _run(['git', 'add', '-f', rel_png, rel_js]):
         return False, '\n'.join(out_lines)
     diff = subprocess.run(['git', 'diff', '--cached', '--quiet'],
                           cwd=repo_dir)
     if diff.returncode == 0:
-        out_lines.append('(nothing to commit — bag already in HEAD)')
+        out_lines.append('(nothing to commit — digest already in HEAD)')
         if _run(['git', 'push']):
             out_lines.append('✓ pushed')
             return True, '\n'.join(out_lines)
@@ -608,7 +674,7 @@ def _push_vision_bag_to_git(name):
         return False, '\n'.join(out_lines)
     if not _run(['git', 'push']):
         return False, '\n'.join(out_lines)
-    out_lines.append('✓ pushed to origin')
+    out_lines.append('✓ pushed to origin (digest only)')
     return True, '\n'.join(out_lines)
 
 
@@ -623,6 +689,42 @@ def _delete_vision_bag(name):
     except Exception as e:
         return False, f'rmtree failed: {e}'
     return True, f'deleted {bag_dir}'
+
+
+def _digest_vision_bag(name):
+    """Run digest_vision_bag.py against the named bag. Writes
+    digest.png + digest.summary.json into the bag directory."""
+    full = _resolve_vision_bag_path(name)
+    if full is None:
+        return False, "bad name"
+    analyzer = os.path.join(_BRINGUP_DIR, 'scripts/digest_vision_bag.py')
+    if not os.path.isfile(analyzer):
+        return False, f"analyzer not found at {analyzer}"
+    cmd = (
+        'source /opt/ros/kilted/setup.bash && '
+        'source ~/ros2_ws/install/local_setup.bash && '
+        f'python3 {analyzer!r} {full!r}'
+    )
+    try:
+        r = subprocess.run(['bash', '-c', cmd],
+                           capture_output=True, text=True, timeout=180)
+        ok = (r.returncode == 0)
+        out = (r.stdout or '').strip()
+        err = (r.stderr or '').strip()
+        return ok, (out + ('\n' + err if err else ''))[-4000:]
+    except subprocess.TimeoutExpired:
+        return False, "digest timed out after 180 s"
+    except Exception as e:
+        return False, f"digest failed: {e}"
+
+
+def _vision_bag_png_path(name):
+    """Path to digest.png inside a named vision-debug bag, or None."""
+    full = _resolve_vision_bag_path(name)
+    if full is None:
+        return None
+    p = os.path.join(full, 'digest.png')
+    return p if os.path.isfile(p) else None
 
 
 def _rosbridge_already_running():
@@ -919,6 +1021,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({'vision_dir': _iva_bags_root(),
                              'entries': _list_vision_bags()})
             return
+        if self.path.startswith('/vision/bags/png'):
+            from urllib.parse import urlsplit, parse_qs
+            q = parse_qs(urlsplit(self.path).query)
+            name = (q.get('name') or [''])[0]
+            png = _vision_bag_png_path(name)
+            if not png:
+                self._send_json(
+                    {'error': 'png not found — run digest first'}, 404)
+                return
+            try:
+                with open(png, 'rb') as f:
+                    data = f.read()
+            except OSError as e:
+                self._send_json({'error': str(e)}, 500)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path.startswith('/iva/bags/png'):
             # /iva/bags/png?name=<urlencoded bag name>
             from urllib.parse import urlsplit, parse_qs
@@ -1068,6 +1192,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ok, msg = _delete_vision_bag(name)
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 400)
+            return
+        if self.path == '/vision/bags/digest':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _digest_vision_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 500)
             return
         if self.path == '/vision/bags/push':
             length = int(self.headers.get('Content-Length', 0) or 0)

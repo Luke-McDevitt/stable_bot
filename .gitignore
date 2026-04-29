@@ -17,3 +17,11 @@ Thumbs.db
 # the GUI) on their own hardware; the rendered files don't belong in git.
 stewart_vision/config/oak_intrinsics.yaml
 stewart_vision/config/oak_extrinsics.yaml
+
+# Vision-debug bags: only the digest artifacts (digest.png +
+# digest.summary.json) are committed. The raw rosbag2 mcap is tens
+# of MB once RGB and the depth-blob debug overlay are flowing —
+# too large to ship per-bag. gui_server's push button forces the
+# digest files in with `git add -f`.
+tuning_data/*_vision_debug/*.mcap
+tuning_data/*_vision_debug/metadata.yaml

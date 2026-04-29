@@ -4412,6 +4412,42 @@ function _vbagFmtAge(mtime) {
   return Math.floor(ageS / 86400) + 'd ago';
 }
 
+function _vbagRenderBag(e) {
+  const stats = e.summary ? `
+    <div class="text-xs text-slate-400 mt-1">
+      ${(e.summary.duration_s || 0).toFixed(1)}s,
+      V0=${e.summary.v0_n ?? '—'},
+      depth=${e.summary.depth_n ?? '—'}
+      ${e.summary.depth_rate_hz != null ? `(${e.summary.depth_rate_hz.toFixed(1)}Hz)` : ''}
+      | plane_off
+      ${e.summary.plane_offset_mean_mm != null
+        ? `${e.summary.plane_offset_mean_mm.toFixed(1)} mean, ${e.summary.plane_offset_max_abs_mm.toFixed(1)} max|·|`
+        : '—'} mm
+      | V0↔depth p95=${e.summary.v0_vs_depth_p95_mm != null
+        ? e.summary.v0_vs_depth_p95_mm.toFixed(1) + ' mm' : '—'}
+    </div>` : '';
+  const pngLink = e.has_png
+    ? `<a class="text-cyan-400 underline" target="_blank"
+          href="/vision/bags/png?name=${encodeURIComponent(e.name)}">PNG</a>`
+    : '<span class="text-slate-600">no PNG</span>';
+  return `
+    <div class="border-b border-slate-700 pb-2 mb-1">
+      <div class="flex items-center gap-2">
+        <span class="flex-1 truncate text-slate-300" title="${e.name}">${e.name}</span>
+        <span class="text-slate-500">${_vbagFmtAge(e.mtime)}</span>
+        <span class="text-slate-500">${_vbagFmtBytes(e.size_bytes || 0)}</span>
+        ${pngLink}
+        <button class="bg-emerald-700 hover:bg-emerald-600 px-2 rounded text-xs"
+                onclick="vbagDigestBag('${e.name}')">digest</button>
+        <button class="bg-blue-700 hover:bg-blue-600 px-2 rounded text-xs"
+                onclick="vbagPushBag('${e.name}')">push</button>
+        <button class="bg-red-800 hover:bg-red-700 px-2 rounded text-xs"
+                onclick="vbagDeleteBag('${e.name}')">del</button>
+      </div>
+      ${stats}
+    </div>`;
+}
+
 function vbagFetchBags() {
   const out = document.getElementById('vbag-bags-list');
   if (!out) return;
@@ -4421,19 +4457,22 @@ function vbagFetchBags() {
       out.innerHTML = '<div class="text-slate-500">no vision-debug bags yet</div>';
       return;
     }
-    out.innerHTML = entries.map(e => `
-      <div class="flex items-center gap-2 border-b border-slate-700 pb-1">
-        <span class="flex-1 truncate text-slate-300" title="${e.name}">${e.name}</span>
-        <span class="text-slate-500">${_vbagFmtAge(e.mtime)}</span>
-        <span class="text-slate-500">${_vbagFmtBytes(e.size_bytes || 0)}</span>
-        <button class="bg-blue-700 hover:bg-blue-600 px-2 rounded text-xs"
-                onclick="vbagPushBag('${e.name}')">push</button>
-        <button class="bg-red-800 hover:bg-red-700 px-2 rounded text-xs"
-                onclick="vbagDeleteBag('${e.name}')">del</button>
-      </div>`).join('');
+    out.innerHTML = entries.map(_vbagRenderBag).join('');
   }).catch(e => {
     out.innerText = `failed to fetch /vision/bags: ${e}`;
   });
+}
+
+function vbagDigestBag(name) {
+  vbagSetStatus(`running digest on ${name}…`, null);
+  fetch('/vision/bags/digest', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    vbagSetStatus((j.ok ? '✓ digest ' : '✗ digest ') + (j.message || ''),
+                  !!j.ok);
+    if (j.ok) vbagFetchBags();   // refresh so PNG link lights up
+  }).catch(e => vbagSetStatus('digest failed: ' + e, false));
 }
 
 function vbagSetStatus(text, ok) {
