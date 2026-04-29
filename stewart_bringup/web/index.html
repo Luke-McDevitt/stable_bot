@@ -1491,6 +1491,19 @@ function setupROSInterface() {
     messageType: 'geometry_msgs/msg/PointStamped' });
   topic.ball_v0.subscribe(onBallV0Pixel);
 
+  // OAK capture-to-Pi-receipt latency (ms). Computed in oak_driver_node
+  // from dai.Clock.now() vs ImgFrame.getTimestamp() — both Pi-side, no
+  // host-clock-skew dependency. Transport over rosbridge to the laptop
+  // adds extra on top but that part isn't part of the closed-loop
+  // budget per spec §13.
+  topic.oak_latency = new ROSLIB.Topic({
+    ros, name: '/oak/latency_ms',
+    messageType: 'std_msgs/msg/Float32' });
+  topic.oak_latency.subscribe(m => {
+    const el = document.getElementById('vis-latency');
+    if (el) el.innerText = Number(m.data).toFixed(0);
+  });
+
   // Bag recorder status
   topic.bag_status = new ROSLIB.Topic({
     ros, name: '/bag_recorder/status', messageType: 'std_msgs/msg/String' });
@@ -3169,7 +3182,6 @@ function initBallConfig() {
 // Ball state + ref
 const ballTrail = [];           // [[x,y], ...] in SVG coords (mm, y-flipped)
 const TRAIL_MAX = 120;
-let lastBallStampNs = 0;
 let lastFrameTime = 0;
 
 // Active demo: 0 = LEVEL_HOLD, 1 = orbit, 2 = goto, 3 = path
@@ -3422,17 +3434,10 @@ function onBallState(m) {
   // KF NIS: rough proxy from velocity magnitude variance — left blank
   // until a real /ball_state schema is in place.
 
-  // Latency: if header.stamp is non-zero, compute now - stamp.
-  if (m.header && m.header.stamp) {
-    const stampNs = m.header.stamp.sec * 1e9 + (m.header.stamp.nanosec || 0);
-    if (lastBallStampNs && stampNs > lastBallStampNs) {
-      const lat = (Date.now() * 1e6 - stampNs) / 1e6;
-      if (lat > 0 && lat < 5000) {
-        $('vis-latency').innerText = lat.toFixed(0);
-      }
-    }
-    lastBallStampNs = stampNs;
-  }
+  // Latency display is driven by /oak/latency_ms (Pi-side computation,
+  // no clock-skew dependency). The previous Date.now() vs Pi-stamp
+  // math gave huge bogus numbers when the laptop and Pi clocks
+  // weren't NTP-sync'd, which is the common case on a phone hotspot.
 
   renderPredPath();
 }

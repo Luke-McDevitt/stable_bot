@@ -35,7 +35,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import PointStamped
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32, Float32MultiArray
 
 # DepthAI is hardware-side; allow the module to import on machines
 # without the OAK plugged in (the node will refuse to spin without it).
@@ -188,6 +188,11 @@ class OakDriverNode(Node):
             PointStamped, '/oak/ball/v0/rgb_pixel', 10)
         self.pub_v0_diag = self.create_publisher(
             Float32MultiArray, '/oak/ball/v0/diagnostic', 10)
+        # OAK-capture-to-Pi latency, computed Pi-side from the device
+        # timestamp metadata so it doesn't depend on cross-host clock
+        # sync. Published every RGB frame.
+        self.pub_latency = self.create_publisher(
+            Float32, '/oak/latency_ms', 10)
 
         self.get_logger().info("Building OAK pipeline...")
         pipeline = _build_pipeline()
@@ -256,6 +261,20 @@ class OakDriverNode(Node):
         if rgb_jpeg is not None:
             self._publish_compressed(
                 self.pub_rgb, rgb_jpeg.getData().tobytes(), 'jpeg')
+            # OAK-capture-to-Pi-receipt latency. Both timestamps come
+            # from dai's steady_clock so they share the same epoch with
+            # no host-clock-skew dependency. This is the only honest
+            # latency the Pi can compute by itself; transport over
+            # rosbridge to the laptop adds more on top, but that piece
+            # is not part of the closed-loop control budget (spec §13).
+            try:
+                capture_ts = rgb_jpeg.getTimestamp().total_seconds()
+                now_ts = dai.Clock.now().total_seconds()
+                lat_msg = Float32()
+                lat_msg.data = float((now_ts - capture_ts) * 1000.0)
+                self.pub_latency.publish(lat_msg)
+            except Exception:
+                pass
 
         # RGB raw → V0 detector → /oak/ball/v0/rgb_pixel
         rgb_raw = self.q_rgb_raw.tryGet()
