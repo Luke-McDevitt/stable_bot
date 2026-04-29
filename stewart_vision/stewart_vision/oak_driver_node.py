@@ -341,7 +341,70 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
     bbox_area = max(bbox_w * bbox_h, 1.0)
     fill = area / bbox_area
     confidence = float(np.clip(fill / (np.pi / 4.0), 0.0, 1.0))
-    return float(cx), float(cy), float(area), confidence, plane_offset
+    return (float(cx), float(cy), float(area), confidence,
+            plane_offset, bin_img, eroded)
+
+
+def render_depth_debug_overlay(rgb_bgr: np.ndarray,
+                               platform_mask: Optional[np.ndarray],
+                               eroded_mask: Optional[np.ndarray],
+                               above_mask: Optional[np.ndarray],
+                               blob: Optional[tuple],
+                               plane_offset_mm: float,
+                               n_above: int = 0) -> np.ndarray:
+    """Annotate the RGB frame with everything the depth-blob detector
+    saw. Returns a BGR uint8 frame the caller can JPEG-encode and
+    publish. This is the canonical artifact for "why didn't depth-blob
+    detect the ball" debugging.
+
+    Layers (bottom to top):
+      - RGB
+      - Above-plane pixels tinted lime green (where the threshold
+        actually fired)
+      - Eroded platform mask outline (yellow, thick)
+      - Full platform mask outline (cyan, thin)
+      - Detected blob: red minEnclosingCircle + centroid dot
+      - Text strip: plane_offset_mm, area_px, valid-pixel count
+    """
+    if cv2 is None:
+        return rgb_bgr
+    out = rgb_bgr.copy()
+    # Above-plane tint first so outlines paint on top.
+    if above_mask is not None:
+        # `above_mask` from cv2.connectedComponents lives at 0/255 already
+        m = above_mask > 0
+        if np.any(m):
+            tint = out.copy()
+            tint[m] = (0, 255, 0)            # lime green in BGR
+            out = cv2.addWeighted(out, 0.6, tint, 0.4, 0)
+    # Outlines
+    if platform_mask is not None:
+        cnts, _ = cv2.findContours(
+            platform_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(out, cnts, -1, (255, 200, 0), 1)   # cyan
+    if eroded_mask is not None:
+        cnts, _ = cv2.findContours(
+            eroded_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(out, cnts, -1, (0, 255, 255), 2)   # yellow
+    # Detected blob
+    if blob is not None:
+        cx, cy, area_px = blob[0], blob[1], blob[2]
+        r_px = int(np.sqrt(max(area_px, 1.0) / np.pi))
+        cv2.circle(out, (int(cx), int(cy)), max(r_px, 6),
+                   (0, 0, 255), 2)
+        cv2.circle(out, (int(cx), int(cy)), 3, (0, 0, 255), -1)
+    # HUD strip
+    txt = f"plane_off={plane_offset_mm:+.1f}mm  above_px={n_above}"
+    if blob is not None:
+        txt += f"  blob_area={int(blob[2])}"
+    else:
+        txt += "  NO BLOB"
+    cv2.rectangle(out, (4, 4), (4 + 11 * len(txt) + 8, 30),
+                  (0, 0, 0), -1)
+    cv2.putText(out, txt, (10, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1,
+                cv2.LINE_AA)
+    return out
 
 
 def _load_rgb_intrinsics(yaml_path: str) -> Tuple[Optional[np.ndarray],
@@ -544,6 +607,16 @@ class OakDriverNode(Node):
             PointStamped, '/oak/ball/depth/rgb_pixel', 10)
         self.pub_depth_diag = self.create_publisher(
             Float32MultiArray, '/oak/ball/depth/diagnostic', 10)
+        # Annotated RGB frame: platform mask outlines + above-plane
+        # pixels tinted + detected blob + HUD. Watch this in
+        # foxglove or rosbag2 to see why depth-blob is or isn't
+        # detecting the ball. Toggle with OAK_DEPTH_DEBUG=0|1
+        # (default on; cost is one JPEG encode per depth frame
+        # ≈ 6 ms on Pi 5).
+        self.pub_depth_dbg = self.create_publisher(
+            CompressedImage, '/oak/depth_blob/debug_image', sq)
+        self.depth_debug_enabled = (
+            os.environ.get('OAK_DEPTH_DEBUG', '1') == '1')
 
         # Depth subsystem (stereo + SLC + IR projector) is opt-in. The
         # full pipeline pulls extra USB current (the IR projector alone
@@ -658,6 +731,9 @@ class OakDriverNode(Node):
         self._mask_pose_stamp: Optional[float] = None
         self._platform_mask: Optional[np.ndarray] = None
         self._expected_depth: Optional[np.ndarray] = None
+        # Latest RGB raw frame, cached for the depth-debug overlay.
+        # _tick already gets RGB raw for V0; we just stash it.
+        self._last_rgb_bgr: Optional[np.ndarray] = None
         # Diagnostic counters — published every 5 s so we can tell at
         # a glance where the V0 / depth-blob pipeline is dying when
         # it does. All increment in their respective handlers.
@@ -799,6 +875,7 @@ class OakDriverNode(Node):
         rgb_raw = self.q_rgb_raw.tryGet()
         if rgb_raw is not None:
             frame = rgb_raw.getCvFrame()  # BGR uint8
+            self._last_rgb_bgr = frame
             v0_mask = self._platform_mask if self.mask_v0_to_platform else None
             det = detect_ball_v0(frame, restrict_mask=v0_mask)
             if det is not None:
@@ -872,8 +949,14 @@ class OakDriverNode(Node):
                     det = detect_ball_depth_blob(
                         depth_frame, self._platform_mask,
                         self._expected_depth)
+                    above_mask = None
+                    eroded_mask = None
+                    plane_offset_mm = 0.0
+                    blob_for_dbg = None
                     if det is not None:
-                        cx, cy, area_px, conf, plane_offset_mm = det
+                        (cx, cy, area_px, conf, plane_offset_mm,
+                         above_mask, eroded_mask) = det
+                        blob_for_dbg = (cx, cy, area_px)
                         p = PointStamped()
                         p.header.stamp = self.get_clock().now().to_msg()
                         p.header.frame_id = 'oak_rgb'
@@ -897,6 +980,26 @@ class OakDriverNode(Node):
                                   float(area_px), float(conf),
                                   float(plane_offset_mm)]
                         self.pub_depth_diag.publish(d)
+
+                    # Debug overlay — render even on detection failure
+                    # so we can see which platform pixels were eligible
+                    # and where the spurious blobs are landing.
+                    if (self.depth_debug_enabled
+                            and self._last_rgb_bgr is not None):
+                        n_above = (int(np.sum(above_mask > 0))
+                                   if above_mask is not None else 0)
+                        dbg = render_depth_debug_overlay(
+                            self._last_rgb_bgr,
+                            self._platform_mask, eroded_mask,
+                            above_mask, blob_for_dbg,
+                            plane_offset_mm, n_above=n_above)
+                        ok, buf = cv2.imencode(
+                            '.jpg', dbg,
+                            [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                        if ok:
+                            self._publish_compressed(
+                                self.pub_depth_dbg, buf.tobytes(),
+                                'jpeg')
 
         # Raw mono left — Stage C ArUco solve consumes this.
         # estimatePoseBoard takes (K, dist) and handles distortion

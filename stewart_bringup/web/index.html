@@ -167,6 +167,25 @@
           <span class="text-yellow-400">yellow</span>&nbsp;&lt;&nbsp;15 mm,
           <span class="text-red-400">red</span>&nbsp;≥&nbsp;15 mm.
         </p>
+        <!-- Vision-debug bag recorder. Captures everything the
+             depth-blob detector sees (RGB, /oak/depth_blob/debug_image
+             overlay, V0/depth pixel topics + diagnostics, /platform_pose,
+             /ball_xy_*) so we can replay misdetections offline in
+             foxglove. Mirrors the IVA bag panel. -->
+        <hr class="border-slate-700 my-3"/>
+        <div class="flex items-center gap-2">
+          <button id="vbag-start-btn"
+                  class="bg-rose-600 hover:bg-rose-500 rounded px-3 py-1 text-xs">
+            ● Record vision debug bag
+          </button>
+          <button id="vbag-stop-btn"
+                  class="bg-slate-600 hover:bg-slate-500 rounded px-3 py-1 text-xs hidden">
+            ■ Stop
+          </button>
+          <span id="vbag-status" class="text-xs text-slate-400 mono"></span>
+        </div>
+        <div id="vbag-bags-list"
+             class="text-xs text-slate-400 mono mt-2 space-y-1"></div>
       </div>
     </details>
 
@@ -1688,11 +1707,36 @@ function setupROSInterface() {
   });
 
   // --- vision-stack subscriptions (spec v8 §11.1, §12) ---
-  // Live RGB feed
+  // Live RGB feed.
+  //
+  // throttle_rate (ms) and queue_length=1 cap the rosbridge-side
+  // forward rate. Without these, rosbridge enqueues every 200 KB
+  // JPEG into the WebSocket send buffer at the publisher's 15 fps;
+  // when the laptop's WiFi transport or JPEG decode can't keep up,
+  // the queue grows unbounded and the displayed feed lags more and
+  // more (observed: several seconds of accumulated delay over a few
+  // minutes on 2026-04-29). 100 ms = 10 fps display; queue_length=1
+  // means rosbridge drops anything older than the latest frame on
+  // each WS-write opportunity.
   topic.rgb_feed = new ROSLIB.Topic({
     ros, name: '/oak/rgb/image_compressed',
-    messageType: 'sensor_msgs/msg/CompressedImage' });
+    messageType: 'sensor_msgs/msg/CompressedImage',
+    throttle_rate: 100,
+    queue_length: 1,
+  });
   topic.rgb_feed.subscribe(onRgbFrame);
+
+  // Annotated depth-blob debug image (toggled via OAK_DEPTH_DEBUG).
+  // Same throttle as rgb_feed for the same reason.
+  topic.depth_dbg = new ROSLIB.Topic({
+    ros, name: '/oak/depth_blob/debug_image',
+    messageType: 'sensor_msgs/msg/CompressedImage',
+    throttle_rate: 100,
+    queue_length: 1,
+  });
+  // No subscribe yet — surfaces in the bag for offline replay; can
+  // be wired into the camera-feed <img> later if we want to flip
+  // the GUI between RGB and the depth-debug overlay live.
 
   // Calibration status (5 Hz)
   topic.cal_status = new ROSLIB.Topic({
@@ -3587,6 +3631,15 @@ function initVisionGUI() {
   if (detSel) detSel.addEventListener('change', renderBallOverlays);
   setInterval(renderBallOverlays, V0_OVERLAY_TICK_MS);
 
+  // --- Vision-debug bag recorder ---
+  const vbStart = $('vbag-start-btn');
+  const vbStop  = $('vbag-stop-btn');
+  if (vbStart) vbStart.addEventListener('click', vbagStart);
+  if (vbStop)  vbStop.addEventListener('click',  vbagStop);
+  // Initial state probe + bag list
+  vbagPollStatus();
+  vbagFetchBags();
+
   // Drawn-route overlay is intentionally disabled until the platform→
   // camera projection is wired (see renderRouteOverlay block comment).
   const routeCb = $('vis-show-route');
@@ -4340,6 +4393,133 @@ function ivaPushBag(name) {
   }).catch(e => {
     _ivaSetBagsOut('✗ push failed: ' + e, false);
   });
+}
+
+// --- Vision-debug bag recorder (server-side, mirrors IVA) -----------------
+
+function _vbagFmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+function _vbagFmtAge(mtime) {
+  const ageS = Math.max(0, (Date.now() / 1000) - mtime);
+  if (ageS < 60) return Math.floor(ageS) + 's ago';
+  if (ageS < 3600) return Math.floor(ageS / 60) + 'm ago';
+  if (ageS < 86400) return Math.floor(ageS / 3600) + 'h ago';
+  return Math.floor(ageS / 86400) + 'd ago';
+}
+
+function vbagFetchBags() {
+  const out = document.getElementById('vbag-bags-list');
+  if (!out) return;
+  fetch('/vision/bags').then(r => r.json()).then(j => {
+    const entries = (j.entries || []);
+    if (!entries.length) {
+      out.innerHTML = '<div class="text-slate-500">no vision-debug bags yet</div>';
+      return;
+    }
+    out.innerHTML = entries.map(e => `
+      <div class="flex items-center gap-2 border-b border-slate-700 pb-1">
+        <span class="flex-1 truncate text-slate-300" title="${e.name}">${e.name}</span>
+        <span class="text-slate-500">${_vbagFmtAge(e.mtime)}</span>
+        <span class="text-slate-500">${_vbagFmtBytes(e.size_bytes || 0)}</span>
+        <button class="bg-blue-700 hover:bg-blue-600 px-2 rounded text-xs"
+                onclick="vbagPushBag('${e.name}')">push</button>
+        <button class="bg-red-800 hover:bg-red-700 px-2 rounded text-xs"
+                onclick="vbagDeleteBag('${e.name}')">del</button>
+      </div>`).join('');
+  }).catch(e => {
+    out.innerText = `failed to fetch /vision/bags: ${e}`;
+  });
+}
+
+function vbagSetStatus(text, ok) {
+  const el = document.getElementById('vbag-status');
+  if (!el) return;
+  el.innerText = text;
+  el.className = 'text-xs mono ' +
+    (ok === true ? 'text-emerald-400' :
+     ok === false ? 'text-red-400' : 'text-slate-400');
+}
+
+let _vbagPollTimer = null;
+function _vbagStartPolling() {
+  if (_vbagPollTimer) return;
+  _vbagPollTimer = setInterval(vbagPollStatus, 1000);
+}
+function _vbagStopPolling() {
+  if (_vbagPollTimer) clearInterval(_vbagPollTimer);
+  _vbagPollTimer = null;
+}
+
+function vbagPollStatus() {
+  fetch('/vision/status').then(r => r.json()).then(j => {
+    const startBtn = document.getElementById('vbag-start-btn');
+    const stopBtn  = document.getElementById('vbag-stop-btn');
+    if (j.recording) {
+      if (startBtn) startBtn.classList.add('hidden');
+      if (stopBtn)  stopBtn.classList.remove('hidden');
+      const t = (j.elapsed_s || 0).toFixed(0);
+      vbagSetStatus(`● recording ${t}s → ${j.path || '?'}`, null);
+    } else {
+      if (startBtn) startBtn.classList.remove('hidden');
+      if (stopBtn)  stopBtn.classList.add('hidden');
+      _vbagStopPolling();
+      vbagSetStatus('', null);
+    }
+  }).catch(() => {});
+}
+
+async function vbagStart() {
+  vbagSetStatus('starting…', null);
+  try {
+    const r = await fetch('/vision/start', { method: 'POST' });
+    const j = await r.json();
+    vbagSetStatus(j.message || (j.ok ? 'recording' : 'failed'),
+                  j.ok ? null : false);
+    _vbagStartPolling();
+    vbagPollStatus();
+  } catch (e) {
+    vbagSetStatus('start failed: ' + e, false);
+  }
+}
+
+async function vbagStop() {
+  vbagSetStatus('stopping…', null);
+  try {
+    const r = await fetch('/vision/stop', { method: 'POST' });
+    const j = await r.json();
+    vbagSetStatus(j.message || (j.ok ? 'stopped' : 'failed'),
+                  j.ok ? true : false);
+    setTimeout(vbagFetchBags, 800);   // let mcap finalize
+  } catch (e) {
+    vbagSetStatus('stop failed: ' + e, false);
+  }
+}
+
+function vbagDeleteBag(name) {
+  if (!confirm(`Delete vision-debug bag "${name}"?`)) return;
+  fetch('/vision/bags/delete', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    vbagSetStatus(j.message || (j.ok ? 'deleted' : 'failed'), !!j.ok);
+    vbagFetchBags();
+  }).catch(e => vbagSetStatus('delete failed: ' + e, false));
+}
+
+function vbagPushBag(name) {
+  vbagSetStatus(`pushing ${name}…`, null);
+  fetch('/vision/bags/push', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    vbagSetStatus((j.ok ? '✓ ' : '✗ ') + (j.message || ''),
+                  !!j.ok);
+  }).catch(e => vbagSetStatus('push failed: ' + e, false));
 }
 
 // Auto-abort on /odrive_errors. The error topic is already

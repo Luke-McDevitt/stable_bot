@@ -76,6 +76,40 @@ _iva_proc = None
 _iva_path = None
 _iva_started_at = None
 
+# Vision-debug bag recorder. Same pattern as IVA, different topic
+# allowlist + a different folder name. Used to capture everything
+# the depth-blob detector sees so we can replay why a misdetection
+# happened in foxglove or rosbag2.
+_vision_lock = threading.Lock()
+_vision_proc = None
+_vision_path = None
+_vision_started_at = None
+VISION_DEBUG_TOPICS = [
+    # Camera streams
+    '/oak/rgb/image_compressed',
+    '/oak/depth_blob/debug_image',
+    '/oak/latency_ms',
+    # Detector outputs
+    '/oak/ball/v0/rgb_pixel',
+    '/oak/ball/v0/diagnostic',
+    '/oak/ball/depth/rgb_pixel',
+    '/oak/ball/depth/diagnostic',
+    '/oak/ball/spatial',
+    # Localizer outputs (truth-like, in platform frame mm)
+    '/ball_xy_mono',
+    '/ball_xy_depth',
+    '/ball_xy_oak',
+    # Pose ground truth + ArUco diagnostic
+    '/platform_pose',
+    '/platform_pose/markers_visible',
+    '/platform_rpy',
+    '/platform/imu/data',
+    # What the operator was doing during the recording
+    '/control_cmd',
+    '/control_result',
+    '/status',
+]
+
 # Where IVA bags live on disk. Resolved to the in-repo tuning_data/
 # so a single git commit ships the dataset.
 def _iva_bags_root():
@@ -404,6 +438,193 @@ def _iva_status():
         }
 
 
+# ---- Vision-debug bag recorder (mirrors IVA, different topic set) ---------
+
+def _vision_default_dir():
+    return _iva_bags_root()
+
+
+def _list_vision_bags():
+    """Enumerate vision-debug bags. Same shape as _list_iva_bags so
+    the GUI can render them with shared helpers."""
+    root = _iva_bags_root()
+    out = []
+    if not os.path.isdir(root):
+        return out
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return out
+    for name in entries:
+        if 'vision_debug' not in name:
+            continue
+        full = os.path.join(root, name)
+        if not os.path.isdir(full):
+            continue
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        out.append({
+            'name': name,
+            'path': full,
+            'mtime': st.st_mtime,
+            'size_bytes': _iva_dir_size(full),
+        })
+    out.sort(key=lambda e: e['mtime'], reverse=True)
+    return out
+
+
+def _resolve_vision_bag_path(name):
+    """Map a bag name (basename only, no slashes) to its absolute
+    directory under the vision-debug root."""
+    if '/' in name or '\\' in name or name.startswith('.'):
+        return None
+    full = os.path.realpath(os.path.join(_iva_bags_root(), name))
+    root = os.path.realpath(_iva_bags_root())
+    if not full.startswith(root + os.sep):
+        return None
+    if not os.path.isdir(full):
+        return None
+    return full
+
+
+def _vision_start():
+    """Spawn `ros2 bag record` for the vision-debug topic set."""
+    global _vision_proc, _vision_path, _vision_started_at
+    with _vision_lock:
+        if _vision_proc is not None and _vision_proc.poll() is None:
+            return False, 'already recording', _vision_path
+        ts = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+        out_dir = os.path.join(_vision_default_dir(),
+                               f'{ts}_vision_debug')
+        os.makedirs(os.path.dirname(out_dir), exist_ok=True)
+        cmd = ('source /opt/ros/kilted/setup.bash && '
+               'source /home/sorak/ros2_ws/install/local_setup.bash && '
+               f'exec ros2 bag record -s mcap -o {out_dir} '
+               + ' '.join(VISION_DEBUG_TOPICS))
+        try:
+            _vision_proc = subprocess.Popen(
+                ['/bin/bash', '-c', cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid)
+            _vision_path = out_dir
+            _vision_started_at = time.time()
+            return True, f'recording → {out_dir}', out_dir
+        except Exception as e:
+            _vision_proc = None
+            _vision_path = None
+            _vision_started_at = None
+            return False, f'failed to spawn: {e}', None
+
+
+def _vision_stop():
+    """SIGINT the recorder so rosbag2 flushes cleanly."""
+    global _vision_proc, _vision_path, _vision_started_at
+    with _vision_lock:
+        if _vision_proc is None:
+            return False, 'not recording', _vision_path
+        if _vision_proc.poll() is not None:
+            path = _vision_path
+            _vision_proc = None
+            _vision_path = None
+            _vision_started_at = None
+            return True, f'recorder already exited; bag at {path}', path
+        try:
+            os.killpg(os.getpgid(_vision_proc.pid), signal.SIGINT)
+        except Exception as e:
+            return False, f'SIGINT failed: {e}', _vision_path
+        try:
+            _vision_proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(_vision_proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        path = _vision_path
+        _vision_proc = None
+        _vision_path = None
+        _vision_started_at = None
+        return True, f'saved → {path}', path
+
+
+def _vision_status():
+    with _vision_lock:
+        running = (_vision_proc is not None
+                   and _vision_proc.poll() is None)
+        elapsed = (time.time() - _vision_started_at) \
+            if (_vision_started_at and running) else None
+        return {
+            'recording': running,
+            'path': _vision_path,
+            'elapsed_s': elapsed,
+        }
+
+
+def _push_vision_bag_to_git(name):
+    """git add + commit + push of a vision-debug bag, mirroring the
+    IVA push flow but with a different commit message body."""
+    bag_dir = _resolve_vision_bag_path(name)
+    if bag_dir is None:
+        return False, f'no such vision bag: {name}'
+    repo_dir = os.path.dirname(_iva_bags_root())
+    if not os.path.isdir(os.path.join(repo_dir, '.git')):
+        return False, f'{repo_dir} is not a git repo'
+    rel_bag = os.path.relpath(bag_dir, repo_dir)
+    msg = (f'Vision-debug bag {name}\n\n'
+           f'Captured by gui_server vision-debug recorder. Topics:\n'
+           + ''.join(f'  - {t}\n' for t in VISION_DEBUG_TOPICS))
+
+    out_lines = []
+
+    def _run(cmd):
+        try:
+            r = subprocess.run(cmd, cwd=repo_dir,
+                               capture_output=True, text=True,
+                               timeout=120)
+            line = ' '.join(cmd)
+            if r.returncode != 0:
+                out_lines.append(f"FAILED: {line}\n{r.stderr}")
+            else:
+                out_lines.append(f"OK: {line}")
+                if r.stdout.strip():
+                    out_lines.append(r.stdout.strip())
+            return r.returncode == 0
+        except Exception as e:
+            out_lines.append(f"FAILED: {' '.join(cmd)}: {e}")
+            return False
+
+    if not _run(['git', 'add', rel_bag]):
+        return False, '\n'.join(out_lines)
+    diff = subprocess.run(['git', 'diff', '--cached', '--quiet'],
+                          cwd=repo_dir)
+    if diff.returncode == 0:
+        out_lines.append('(nothing to commit — bag already in HEAD)')
+        if _run(['git', 'push']):
+            out_lines.append('✓ pushed')
+            return True, '\n'.join(out_lines)
+        return False, '\n'.join(out_lines)
+    if not _run(['git', 'commit', '-m', msg]):
+        return False, '\n'.join(out_lines)
+    if not _run(['git', 'push']):
+        return False, '\n'.join(out_lines)
+    out_lines.append('✓ pushed to origin')
+    return True, '\n'.join(out_lines)
+
+
+def _delete_vision_bag(name):
+    """Remove a vision-debug bag directory. Mirrors _delete_iva_bag."""
+    bag_dir = _resolve_vision_bag_path(name)
+    if bag_dir is None:
+        return False, f'no such vision bag: {name}'
+    try:
+        import shutil
+        shutil.rmtree(bag_dir)
+    except Exception as e:
+        return False, f'rmtree failed: {e}'
+    return True, f'deleted {bag_dir}'
+
+
 def _rosbridge_already_running():
     """True if anything is listening on TCP 9090 (rosbridge default port).
     Catches stacks started outside this gui_server (notably systemd on Pi)."""
@@ -691,6 +912,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({'iva_dir': _iva_bags_root(),
                              'entries': _list_iva_bags()})
             return
+        if self.path == '/vision/status':
+            self._send_json(_vision_status())
+            return
+        if self.path == '/vision/bags':
+            self._send_json({'vision_dir': _iva_bags_root(),
+                             'entries': _list_vision_bags()})
+            return
         if self.path.startswith('/iva/bags/png'):
             # /iva/bags/png?name=<urlencoded bag name>
             from urllib.parse import urlsplit, parse_qs
@@ -813,6 +1041,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
                 return
             ok, msg = _git_push_iva_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 500)
+            return
+        # ----- Vision-debug bag recorder endpoints -----
+        if self.path == '/vision/start':
+            ok, msg, path = _vision_start()
+            self._send_json(
+                {'ok': ok, 'message': msg, 'path': path},
+                status=200 if ok else 409)
+            return
+        if self.path == '/vision/stop':
+            ok, msg, path = _vision_stop()
+            self._send_json(
+                {'ok': ok, 'message': msg, 'path': path},
+                status=200 if ok else 409)
+            return
+        if self.path == '/vision/bags/delete':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _delete_vision_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 400)
+            return
+        if self.path == '/vision/bags/push':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _push_vision_bag_to_git(name)
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 500)
             return
