@@ -817,6 +817,38 @@ class OakDriverNode(Node):
             f"mask={mask_state} intrinsics={intrinsics_state} "
             f"depth_queue={'YES' if depth_q else 'NO'} "
             f"mask_v0={self.mask_v0_to_platform}")
+        # Sanity-probe the depth math: at the principal point, what's
+        # the ArUco-derived expected depth vs. what stereo measured?
+        # On a flat platform with markers coplanar with the deck,
+        # these should agree within a few mm. A 100+ mm gap means
+        # there's a units or sign bug, not a geometry feature.
+        if (self._last_pose is not None
+                and self._expected_depth is not None
+                and self._last_rgb_bgr is not None
+                and self.q_depth is not None):
+            try:
+                p = self._last_pose.pose
+                pose_z_mm = float(p.position.z) * 1000.0
+                cy_idx = self._expected_depth.shape[0] // 2
+                cx_idx = self._expected_depth.shape[1] // 2
+                exp_center = float(self._expected_depth[cy_idx, cx_idx])
+                # Last measured depth — pulled fresh on a tryGet
+                msg = self.q_depth.tryGet()
+                if msg is not None:
+                    df = msg.getFrame()
+                    h, w = df.shape[:2]
+                    sub = df[h // 2 - 5:h // 2 + 5,
+                             w // 2 - 5:w // 2 + 5]
+                    valid = sub[sub > 0]
+                    meas = float(np.median(valid)) if valid.size else 0.0
+                    self.get_logger().info(
+                        f"[probe] pose.z={pose_z_mm:.0f}mm "
+                        f"exp_center={exp_center:.0f}mm "
+                        f"meas_center={meas:.0f}mm "
+                        f"depth_shape={df.shape} "
+                        f"mask_shape={self._platform_mask.shape}")
+            except Exception as e:
+                self.get_logger().info(f"[probe] failed: {e}")
 
     def _refresh_mask_if_stale(self):
         """Project the platform disk into image pixels and refresh the
