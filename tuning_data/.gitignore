@@ -1,6 +1,6 @@
 # tuning_data/ holds digests of level-PI tuning bags — small JSON
-# summaries + downsampled CSV timeseries written by
-# stewart_bringup/scripts/analyze_level_bag.py.
+# summaries + (optionally downsampled) CSV timeseries + diagnostic
+# PNG plots written by stewart_bringup/scripts/analyze_level_bag.py.
 #
 # Block everything by default, then re-allow only the file types we
 # expect. This makes it impossible to accidentally commit a raw
@@ -11,3 +11,4 @@
 !README.md
 !*.json
 !*.csv
+!*.png
