@@ -1415,6 +1415,14 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
                  min="-15" max="15" step="0.5" value="0"
                  class="flex-1">
         </label>
+        <label class="flex items-center gap-2"
+               title="Pure heave above the homing-rest pose. 0 = exactly at rest, 80 = top of working envelope. Same Z is used for manual Apply tilt AND every cell of the automated sweep.">
+          Z&nbsp;&nbsp;&nbsp;<span class="mono w-10 text-right">
+            <span id="iva-z-val">50</span> mm</span>
+          <input id="iva-z-slider" type="range"
+                 min="0" max="80" step="1" value="50"
+                 class="flex-1">
+        </label>
         <div class="flex gap-1">
           <button id="iva-apply"
                   class="flex-1 bg-blue-600 hover:bg-blue-500 rounded py-1 text-xs">
@@ -3468,6 +3476,12 @@ function initVisionGUI() {
       $('iva-pitch-val').innerText = parseFloat(ivaPitch.value).toFixed(1);
     });
   }
+  const ivaZSlider = $('iva-z-slider');
+  if (ivaZSlider) {
+    ivaZSlider.addEventListener('input', () => {
+      $('iva-z-val').innerText = parseFloat(ivaZSlider.value).toFixed(0);
+    });
+  }
   const ivaApply  = $('iva-apply');
   const ivaZero   = $('iva-zero');
   const ivaZeroRef = $('iva-zero-ref');
@@ -3687,15 +3701,26 @@ function ivaCaptureLevelRef() {
   _ivaSetRecStatus('level reference captured', true);
 }
 
+// Read the IVA panel's Z slider. Returns the height in mm above the
+// homing-rest pose. set_pose uses this for x=0,y=0 pure-heave ZHEIGHT.
+function _ivaZ() {
+  const el = document.getElementById('iva-z-slider');
+  if (!el) return 50;
+  const v = parseFloat(el.value);
+  return isFinite(v) ? v : 50;
+}
+
 function ivaApplyTilt() {
   const r = parseFloat(document.getElementById('iva-roll-slider').value);
   const p = parseFloat(document.getElementById('iva-pitch-slider').value);
+  const z = _ivaZ();
   publishCmd({
     cmd: 'set_pose',
-    x: 0, y: 0, z: 50,   // hold neutral height while sweeping tilt
+    x: 0, y: 0, z: z,
     roll: r, pitch: p, yaw: 0,
   });
-  _ivaSetRecStatus(`commanded roll=${r.toFixed(1)}° pitch=${p.toFixed(1)}°`, true);
+  _ivaSetRecStatus(
+    `commanded roll=${r.toFixed(1)}° pitch=${p.toFixed(1)}° z=${z.toFixed(0)} mm`, true);
 }
 
 function ivaZeroTilt() {
@@ -3703,12 +3728,13 @@ function ivaZeroTilt() {
   document.getElementById('iva-pitch-slider').value = 0;
   document.getElementById('iva-roll-val').innerText = '0';
   document.getElementById('iva-pitch-val').innerText = '0';
+  const z = _ivaZ();
   publishCmd({
     cmd: 'set_pose',
-    x: 0, y: 0, z: 50,
+    x: 0, y: 0, z: z,
     roll: 0, pitch: 0, yaw: 0,
   });
-  _ivaSetRecStatus('commanded roll=0 pitch=0', true);
+  _ivaSetRecStatus(`commanded roll=0 pitch=0 z=${z.toFixed(0)} mm`, true);
 }
 
 async function ivaRecStart() {
@@ -3893,6 +3919,11 @@ async function ivaSweepRun() {
     + `dwell ${dwellS.toFixed(1)} s, eta ${Math.round(grid.length*dwellS)} s`,
     null);
 
+  // Capture Z once at sweep start and reuse for every cell + recovery
+  // — the operator should be able to slide Z mid-sweep without
+  // discontinuously commanding a new height every cell.
+  const sweepZ = _ivaZ();
+
   // Run cells sequentially.
   for (let i = 0; i < grid.length; i++) {
     if (_ivaSweep.abort) break;
@@ -3900,19 +3931,19 @@ async function ivaSweepRun() {
     const p = grid[i];
     publishCmd({
       cmd: 'set_pose',
-      x: 0, y: 0, z: 50,
+      x: 0, y: 0, z: sweepZ,
       roll: p.roll, pitch: p.pitch, yaw: 0,
     });
     _ivaSetSweepStatus(
       `cell ${i+1}/${grid.length}: roll=${p.roll.toFixed(1)}° `
-      + `pitch=${p.pitch.toFixed(1)}°`, null);
+      + `pitch=${p.pitch.toFixed(1)}° z=${sweepZ.toFixed(0)} mm`, null);
     await new Promise(res => setTimeout(res, _ivaSweep.dwellMs));
   }
 
-  // Recovery: command back to neutral.
+  // Recovery: command back to neutral at the same Z used for the sweep.
   publishCmd({
     cmd: 'set_pose',
-    x: 0, y: 0, z: 50, roll: 0, pitch: 0, yaw: 0,
+    x: 0, y: 0, z: sweepZ, roll: 0, pitch: 0, yaw: 0,
   });
 
   // Auto-record stop (only if WE started it).
