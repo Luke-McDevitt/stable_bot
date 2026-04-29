@@ -1511,7 +1511,14 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
                    class="mono w-14 bg-slate-900 border border-slate-700 rounded px-1">
             s/cell
           </label>
-          <label class="flex items-center gap-1"
+          <label title="Z-height above the homing-rest pose to hold during the sweep. Same set_pose Z used for every cell + recovery to neutral.">
+            Z:&nbsp;
+            <input id="iva-sweep-z" type="number"
+                   min="0" max="80" step="1" value="50"
+                   class="mono w-14 bg-slate-900 border border-slate-700 rounded px-1">
+            mm
+          </label>
+          <label class="flex items-center gap-1 col-span-2"
                  title="Auto-start the bag recorder before the sweep and stop it after the last cell.">
             <input id="iva-sweep-auto-rec" type="checkbox" checked> auto-record
           </label>
@@ -1550,6 +1557,7 @@ let srv = {};       // name -> ROSLIB.Service
 let topic = {};     // name -> ROSLIB.Topic
 let velCapInitialized = false;  // seeded from /status or /get_speed_cap
 let lastStatusMs = 0;           // last /status reception (ms epoch, 0 = never)
+let lastStatus = null;          // last parsed /status JSON (or null)
 const lastRxMs = { status: 0, encoders: 0, rpy: 0, currents: 0 };
 
 const $ = (id) => document.getElementById(id);
@@ -1880,6 +1888,8 @@ function setupROSInterface() {
     lastRxMs.status = Date.now();
     try {
       const s = JSON.parse(m.data);
+      lastStatus = s;     // stash parsed JSON for non-rendering consumers
+                          // (e.g. _ivaIsArmed in the sweep preflight)
       $('status-box').innerText = Object.entries(s).map(([k,v])=>
         `${k.padEnd(28)} ${JSON.stringify(v)}`).join('\n');
       updateLevelButtons(!!s.level_enabled);
@@ -3832,21 +3842,16 @@ function _ivaBuildGrid(n, amp) {
 }
 
 function _ivaIsArmed() {
-  // Pull the most recent /status JSON from the Status panel —
-  // we already render it there, so it's a few hundred ms old at
-  // worst. /status carries armed flags per leg.
-  try {
-    const txt = document.getElementById('status-box')?.innerText || '';
-    // Status is rendered as "key   value" pairs. Look for any
-    // *_armed line that's true, OR for the level_enabled flag,
-    // OR for the per-leg armed array.
-    const m = txt.match(/leg_armed\s+(\[.*?\])/);
-    if (m) {
-      const arr = JSON.parse(m[1]);
-      if (Array.isArray(arr) && arr.some(Boolean)) return true;
-    }
-    if (/armed\s+true/i.test(txt)) return true;
-  } catch (e) {}
+  // Read the latest parsed /status JSON. stewart_control_node
+  // includes a top-level boolean `armed` in the payload, true iff
+  // any leg is in CLOSED_LOOP_CONTROL (any(self.leg_armed)). The
+  // previous DOM-text-parsing approach was misfiring.
+  const s = lastStatus;
+  if (!s) return false;
+  if (s.armed === true) return true;
+  // Defensive: if firmware ever changes to per-leg array, accept
+  // either name as "any leg armed".
+  if (Array.isArray(s.leg_armed) && s.leg_armed.some(Boolean)) return true;
   return false;
 }
 
@@ -3865,9 +3870,16 @@ async function ivaSweepRun() {
 
   // Preflight: armed?
   if (!_ivaIsArmed()) {
-    _ivaSetSweepStatus(
-      'refusing to sweep — platform not armed. '
-      + 'Use the Arming panel first.', false);
+    if (lastStatus === null) {
+      _ivaSetSweepStatus(
+        'refusing to sweep — no /status received yet. '
+        + 'Connect to rosbridge first; if connected, wait 1 s and retry.',
+        false);
+    } else {
+      _ivaSetSweepStatus(
+        'refusing to sweep — platform not armed (status.armed is false). '
+        + 'Use the Arming panel first.', false);
+    }
     return;
   }
 
@@ -3916,13 +3928,19 @@ async function ivaSweepRun() {
   document.getElementById('iva-sweep-run').disabled = true;
   document.getElementById('iva-sweep-cancel').disabled = false;
   _ivaSetSweepStatus(`starting sweep — ${grid.length} cells, `
-    + `dwell ${dwellS.toFixed(1)} s, eta ${Math.round(grid.length*dwellS)} s`,
+    + `dwell ${dwellS.toFixed(1)} s, z=${sweepZ.toFixed(0)} mm, `
+    + `eta ${Math.round(grid.length*dwellS)} s`,
     null);
 
   // Capture Z once at sweep start and reuse for every cell + recovery
-  // — the operator should be able to slide Z mid-sweep without
-  // discontinuously commanding a new height every cell.
-  const sweepZ = _ivaZ();
+  // — the operator should be able to change Z between sweeps without
+  // discontinuously commanding a new height mid-run.
+  // Pulled from the SWEEP section's Z input (independent from the
+  // tilt-sliders Z, which controls manual Apply tilt).
+  const sweepZEl = document.getElementById('iva-sweep-z');
+  const sweepZ = sweepZEl
+    ? parseFloat(sweepZEl.value)
+    : (_ivaZ() /* fallback to tilt-section Z */);
 
   // Run cells sequentially.
   for (let i = 0; i < grid.length; i++) {
