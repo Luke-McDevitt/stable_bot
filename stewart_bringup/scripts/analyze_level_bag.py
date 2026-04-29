@@ -43,6 +43,22 @@ try:
 except ImportError:
     _HAVE_MPL = False
 
+import math
+
+
+def _finite_scrub(obj):
+    """Replace NaN / +Inf / -Inf with None so the resulting JSON is
+    strict RFC 8259. Walks dicts, lists, tuples; passes other types
+    through. Matches the helper in gui_server.py and the node's
+    _scrub_non_finite — keep them in lockstep if the format changes."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _finite_scrub(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_finite_scrub(v) for v in obj]
+    return obj
+
 try:
     import rclpy.serialization
     import rosbag2_py
@@ -809,8 +825,9 @@ def analyze_bag(bag_dir, out_dir, name=None, downsample_hz=None):
 
     summary_path = out_dir / f"{name}_summary.json"
     with open(summary_path, 'w') as f:
-        json.dump(summary, f, indent=2, default=lambda o:
-            float(o) if hasattr(o, 'item') else None)
+        json.dump(_finite_scrub(summary), f, indent=2,
+                  allow_nan=False, default=lambda o:
+                      float(o) if hasattr(o, 'item') else None)
 
     csv_path = out_dir / f"{name}_timeseries.csv"
     write_timeseries_csv(downsample(samples, target_hz=downsample_hz), csv_path)
@@ -977,7 +994,8 @@ def analyze_sweep(sweep_dir, out_base, downsample_hz=None):
     }
     summary_path = out_dir / f"{sweep_dir.name}_sweep_summary.json"
     with open(summary_path, 'w') as f:
-        json.dump(sweep_summary, f, indent=2)
+        json.dump(_finite_scrub(sweep_summary), f, indent=2,
+                  allow_nan=False)
 
     overview_plot = _make_sweep_overview_plot(
         per_z, out_dir / f"{sweep_dir.name}_overview.png")
