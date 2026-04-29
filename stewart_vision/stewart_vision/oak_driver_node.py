@@ -298,12 +298,19 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
     raw_height = expected_depth_mm - measured_safe   # +ve = closer than plane
 
     # Empirical plane offset: median height across valid platform
-    # pixels. Clipped to ±100 mm to absorb sensible ArUco bias but
-    # reject "the pose just collapsed" pathologies.
+    # pixels. The ArUco marker ring is mounted significantly above
+    # the actual platform deck — bag 20260429T224802Z showed every
+    # frame hitting a −100 mm clamp with std=0, which means the true
+    # offset is well past −100 mm and the clamp was breaking
+    # detection. Clip is now ±500 mm; large enough that any sane
+    # geometry passes through, small enough that a truly broken pose
+    # (e.g., quaternion went NaN) still produces something
+    # bounded. Detector remains robust to ball+small-object outliers
+    # because median is the aggregator.
     valid_for_plane = (~invalid) & (eroded > 0) & np.isfinite(raw_height)
     if int(np.sum(valid_for_plane)) >= 100:
         plane_offset = float(np.median(raw_height[valid_for_plane]))
-        plane_offset = max(-100.0, min(100.0, plane_offset))
+        plane_offset = max(-500.0, min(500.0, plane_offset))
     else:
         plane_offset = 0.0
 
