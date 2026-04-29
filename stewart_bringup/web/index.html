@@ -963,17 +963,30 @@
         <span class="text-slate-400">δ values (turns, comma-separated)</span>
         <input id="sysid-deltas" type="text" value="0.025, 0.05, 0.10"
                class="bg-slate-700 rounded px-1 py-0.5 mono"></label>
-      <div class="grid grid-cols-2 gap-2 mb-2 text-xs">
+      <div class="grid grid-cols-3 gap-2 mb-2 text-xs">
         <label class="flex flex-col">
           <span class="text-slate-400">Settle (s)</span>
           <input id="sysid-settle" type="number" step="0.1" value="1.5"
                  class="bg-slate-700 rounded px-1 py-0.5 mono"></label>
         <label class="flex flex-col">
-          <span class="text-slate-400">Samples / step</span>
+          <span class="text-slate-400">Samples/step</span>
           <input id="sysid-samples" type="number" step="1" value="5"
+                 class="bg-slate-700 rounded px-1 py-0.5 mono"></label>
+        <label class="flex flex-col"
+               title="Each rep does +δ→return→-δ→return; rpy values are averaged across reps. Cuts noise by ~√reps.">
+          <span class="text-slate-400">Reps/step</span>
+          <input id="sysid-reps" type="number" step="1" min="1" max="20"
+                 value="1"
                  class="bg-slate-700 rounded px-1 py-0.5 mono"></label>
       </div>
       <div id="sysid-eta" class="text-xs text-slate-400 mono mb-2">ETA: —</div>
+      <!-- Visible progress bar that fills as % goes up. Width is set
+           in JS from s.percent in renderLevelRecordState. -->
+      <div class="w-full bg-slate-900 border border-slate-700 rounded h-2 mb-2 overflow-hidden">
+        <div id="sysid-progress-bar"
+             class="h-full bg-cyan-500 transition-all"
+             style="width: 0%"></div>
+      </div>
       <div class="grid grid-cols-2 gap-2 mb-2">
         <button id="sysid-start"
                 class="bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">
@@ -1705,9 +1718,16 @@ function renderLevelRecordState(s) {
       parts.push(`leg ${s.leg} δ=${s.delta}`);
     if (s.delta_idx && s.delta_total)
       parts.push(`δ ${s.delta_idx}/${s.delta_total}`);
+    if (s.rep_idx && s.rep_total && s.rep_total > 1)
+      parts.push(`rep ${s.rep_idx}/${s.rep_total}`);
     if (s.legs_done !== undefined && s.legs_total !== undefined)
       parts.push(`(${s.legs_done}/${s.legs_total})`);
     const top = parts.join(' · ');
+    // Fill the visible progress bar.
+    const bar = $('sysid-progress-bar');
+    if (bar && s.percent !== undefined) {
+      bar.style.width = Math.max(0, Math.min(100, s.percent)).toFixed(1) + '%';
+    }
     // Countdown line — separate so the time stays put even when the
     // top line changes per-perturb. Format mm:ss.
     function fmtMmSs(sec) {
@@ -1735,6 +1755,8 @@ function renderLevelRecordState(s) {
       sp.innerText = `done — ${s.sysid_dir || ''}`;
       sp.className = 'text-xs mono text-emerald-400 min-h-4';
     }
+    const bar = $('sysid-progress-bar');
+    if (bar) { bar.style.width = '100%'; bar.className = 'h-full bg-emerald-500 transition-all'; }
     const sr = $('sysid-result');
     if (sr) sr.innerText = `Wrote: ${s.sysid_dir}/jacobian.json` +
       (s.z_count ? `\n${s.z_count} Z × ${s.d_count} δ collected.` : '');
@@ -1946,26 +1968,30 @@ function sysidComputeEta() {
   const zMax = parseFloat($('sysid-z-max').value);
   const zStep = parseFloat($('sysid-z-step').value);
   const settle = parseFloat($('sysid-settle').value);
+  const reps = parseInt($('sysid-reps').value);
   const deltas = sysidParseDeltas($('sysid-deltas').value);
-  if (![zMin, zMax, zStep, settle].every(isFinite) || deltas.length === 0) {
+  if (![zMin, zMax, zStep, settle, reps].every(isFinite) ||
+      deltas.length === 0 || reps < 1) {
     $('sysid-eta').innerText = 'ETA: (fill all fields)';
     return null;
   }
   const zCount = Math.max(1, Math.floor((zMax - zMin) / zStep) + 1);
-  // Per leg per delta: 4 settles (+ small overhead).
-  const perLeg = 4 * settle + 0.2;
+  // Per leg per delta: reps × (4 settles + small overhead)
+  const perLeg = (4 * settle + 0.2) * reps;
   const perZ = 6 * deltas.length * perLeg + 2.0;
   const total = zCount * perZ;
   const m = Math.floor(total / 60);
   const s = Math.round(total - m * 60);
   $('sysid-eta').innerText =
     `ETA: ~${m}m ${s.toString().padStart(2, '0')}s  ` +
-    `(${zCount} Z × ${deltas.length} δ × 6 legs)`;
-  return { zCount, deltas, settle };
+    `(${zCount} Z × ${deltas.length} δ × 6 legs × ${reps} rep` +
+    (reps > 1 ? 's' : '') + ')';
+  return { zCount, deltas, settle, reps };
 }
 function wireSysIdPanel() {
   const ids = ['sysid-z-min', 'sysid-z-max', 'sysid-z-step',
-               'sysid-deltas', 'sysid-settle', 'sysid-samples'];
+               'sysid-deltas', 'sysid-settle', 'sysid-samples',
+               'sysid-reps'];
   for (const id of ids) {
     const el = $(id);
     if (el) el.addEventListener('input', sysidComputeEta);
@@ -1984,19 +2010,29 @@ function wireSysIdPanel() {
     const deltas = sysidParseDeltas($('sysid-deltas').value);
     const settle = parseFloat($('sysid-settle').value);
     const samples = parseInt($('sysid-samples').value);
-    if (!isFinite(settle) || !isFinite(samples) || deltas.length === 0) {
-      $('sysid-result').innerText = 'bad settle/samples/deltas';
+    const reps = parseInt($('sysid-reps').value);
+    if (!isFinite(settle) || !isFinite(samples) || deltas.length === 0 ||
+        !isFinite(reps) || reps < 1) {
+      $('sysid-result').innerText = 'bad settle/samples/reps/deltas';
       return;
     }
+    const totalSec = z_mm_list.length * deltas.length * 6 * reps *
+                     (4 * settle + 0.2);
+    const totalMin = (totalSec / 60).toFixed(1);
     if (!confirm(
-        `System-ID will perturb each leg ±δ at ${z_mm_list.length} Z heights.\n` +
-        `Make sure the LEVEL LOOP IS OFF and drives are armed in pos mode.\n\n` +
-        `Continue?`)) return;
-    $('sysid-result').innerText = 'starting…';
+        `System-ID parameters:\n` +
+        `  • ${z_mm_list.length} Z heights × ${deltas.length} δ × ` +
+            `6 legs × ${reps} rep(s)\n` +
+        `  • settle ${settle}s, ${samples} samples/step\n` +
+        `  • estimated runtime: ~${totalMin} minutes\n\n` +
+        `MAKE SURE: level loop is OFF and drives are armed in pos mode.\n` +
+        `\nContinue?`)) return;
+    $('sysid-result').innerText = `starting… ETA ~${totalMin} min`;
     publishCmd({
       cmd: 'sysid_start',
       z_mm_list, delta_turns_list: deltas,
       settle_s: settle, samples_per_step: samples,
+      reps_per_step: reps,
     });
   });
   $('sysid-abort').addEventListener('click', () => {

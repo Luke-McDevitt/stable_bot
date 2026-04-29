@@ -3900,6 +3900,10 @@ class StewartControlNode(Node):
         'delta_turns_list': [0.025, 0.050, 0.100],
         'settle_s':         1.5,
         'samples_per_step': 5,
+        # Multiple +δ/-δ cycles per (Z, leg, δ) — final rpy_pos and
+        # rpy_neg are averaged across reps. Cuts measurement noise by
+        # ~√reps. reps=1 keeps the original single-shot behavior.
+        'reps_per_step':    1,
     }
 
     def _do_sysid_start(self, params):
@@ -3931,6 +3935,13 @@ class StewartControlNode(Node):
         if any(d > 0.3 for d in d_list):
             return False, ("delta > 0.3 turns is dangerous (may exceed leg "
                            "soft limits). Reduce.")
+        try:
+            reps = int(params.get('reps_per_step',
+                                  self.SYSID_DEFAULTS['reps_per_step']))
+        except (TypeError, ValueError):
+            return False, "reps_per_step must be a positive integer"
+        if reps < 1 or reps > 20:
+            return False, "reps_per_step must be in [1, 20]"
         run_params = dict(self.SYSID_DEFAULTS)
         run_params.update({
             'z_mm_list': z_list,
@@ -3939,6 +3950,7 @@ class StewartControlNode(Node):
                                                  self.SYSID_DEFAULTS['settle_s'])),
             'samples_per_step': int(params.get('samples_per_step',
                                                self.SYSID_DEFAULTS['samples_per_step'])),
+            'reps_per_step':    reps,
         })
         # Spawn worker thread. State exported via _sweep_state so the
         # existing /level_record_state heartbeat shows progress with
@@ -3978,14 +3990,14 @@ class StewartControlNode(Node):
         d_list = params['delta_turns_list']
         settle_s = params['settle_s']
         n_samples = params['samples_per_step']
+        n_reps = params['reps_per_step']
 
         # Total perturbation count for ETA / progress %.
-        # Each (Z, δ, leg) does +δ, return, -δ, return = 4 settle
+        # Each (Z, δ, leg, rep) does +δ, return, -δ, return = 4 settle
         # waits + 2 IMU averages. Plus moving_to_z + capture rest at
-        # each Z (~1.5 s). The leg counter advances at the start of
-        # each (Z, δ, leg) triplet.
+        # each Z (~1.5 s).
         total_legs_to_perturb = len(z_list) * len(d_list) * 6
-        per_perturb_s = 4 * settle_s + 0.2  # ~settle + small overhead
+        per_perturb_s = (4 * settle_s + 0.2) * n_reps
         total_s_estimate = (
             len(z_list) * (per_perturb_s * 6 * len(d_list) + 4.0))
         t_start_mono = time.monotonic()
@@ -4022,6 +4034,11 @@ class StewartControlNode(Node):
             self._lr_set_state('aborted', error=f"sysid prep: {msg}")
             return
         self.get_logger().info(f"system-id: {msg}")
+        self.get_logger().info(
+            f"system-id: starting — {len(z_list)} Z heights × "
+            f"{len(d_list)} δ values × 6 legs × {n_reps} rep(s) = "
+            f"{total_legs_to_perturb} (Z, δ, leg) × {n_reps} reps. "
+            f"Estimated runtime ~{total_s_estimate/60:.1f} min.")
 
         # Master record: per-Z dicts of {delta: {'leg_n': {rpy_pos, rpy_neg, rpy_zero, encoder_zero}}}
         master = {
@@ -4041,7 +4058,15 @@ class StewartControlNode(Node):
                 break
 
             self._lr_set_state('sysid_running', phase='moving_to_z',
-                               z=z, z_idx=z_idx + 1, z_total=len(z_list))
+                               z=z, z_idx=z_idx + 1, z_total=len(z_list),
+                               legs_done=self._sysid_progress['legs_done'],
+                               legs_total=total_legs_to_perturb,
+                               percent=round(
+                                   self._sysid_progress['legs_done']
+                                   / max(1, total_legs_to_perturb) * 100, 1))
+            self.get_logger().info(
+                f"sysid: moving to Z={z:.1f} mm "
+                f"(Z {z_idx+1}/{len(z_list)})")
             ok, _ = self._do_set_pose(0.0, 0.0, float(z), 0.0, 0.0, 0.0,
                                       allow_large=True)
             if not ok:
@@ -4119,46 +4144,95 @@ class StewartControlNode(Node):
                         remaining_s = (total_legs_to_perturb - legs_done) * s_per_leg
                     else:
                         remaining_s = max(0.0, total_s_estimate - elapsed)
-                    self._lr_set_state(
-                        'sysid_running', phase='perturbing',
-                        z=z, z_idx=z_idx + 1, z_total=len(z_list),
-                        leg=leg, delta=d, delta_idx=d_list.index(d) + 1,
-                        delta_total=len(d_list),
-                        legs_done=legs_done,
-                        legs_total=total_legs_to_perturb,
-                        elapsed_s=round(elapsed, 1),
-                        remaining_s=round(remaining_s, 1),
-                        percent=round(pct, 1))
+                    # Reps loop: each rep does +δ, return, -δ, return.
+                    # Final rpy_pos / rpy_neg are averaged across reps so
+                    # noise cuts ~√reps. reps=1 keeps the original
+                    # single-shot timing for short scoping runs.
+                    rpy_pos_reps = []
+                    rpy_neg_reps = []
+                    aborted = False
+                    for rep in range(n_reps):
+                        elapsed = time.monotonic() - t_start_mono
+                        legs_done_now = self._sysid_progress['legs_done']
+                        # Smooth percent: count partial credit for the
+                        # rep currently in progress, so the bar doesn't
+                        # freeze when reps>1.
+                        partial = (rep + 0.0) / max(1, n_reps)
+                        legs_eff = legs_done_now + partial
+                        pct = (legs_eff / max(1, total_legs_to_perturb)) * 100
+                        if legs_eff >= 2:
+                            s_per_leg = elapsed / legs_eff
+                            remaining_s = (total_legs_to_perturb - legs_eff) * s_per_leg
+                        else:
+                            remaining_s = max(0.0, total_s_estimate - elapsed)
+                        self._lr_set_state(
+                            'sysid_running', phase='perturbing',
+                            z=z, z_idx=z_idx + 1, z_total=len(z_list),
+                            leg=leg, delta=d,
+                            delta_idx=d_list.index(d) + 1,
+                            delta_total=len(d_list),
+                            rep_idx=rep + 1, rep_total=n_reps,
+                            legs_done=legs_done_now,
+                            legs_total=total_legs_to_perturb,
+                            elapsed_s=round(elapsed, 1),
+                            remaining_s=round(remaining_s, 1),
+                            percent=round(pct, 1))
+                        self.get_logger().info(
+                            f"sysid Z={z:.1f} δ={d:.3f} leg={leg} "
+                            f"rep {rep+1}/{n_reps} → {pct:.1f}%  "
+                            f"({legs_eff:.1f}/{total_legs_to_perturb} "
+                            f"perturbs, ~{remaining_s/60:.1f} min left)")
 
-                    # +δ
-                    self.feeder.set_pos_target_one(
-                        leg, float(rest_enc[leg]) + d)
-                    if not self._sysid_wait(leg, settle_s, self._sweep_stop):
+                        # +δ
+                        self.feeder.set_pos_target_one(
+                            leg, float(rest_enc[leg]) + d)
+                        if not self._sysid_wait(leg, settle_s, self._sweep_stop):
+                            aborted = True; break
+                        rpy_pos_reps.append(self._sysid_avg_imu(n_samples))
+
+                        # Return to rest
+                        self.feeder.set_pos_target_one(leg, float(rest_enc[leg]))
+                        if not self._sysid_wait(leg, settle_s, self._sweep_stop):
+                            aborted = True; break
+
+                        # -δ
+                        self.feeder.set_pos_target_one(
+                            leg, float(rest_enc[leg]) - d)
+                        if not self._sysid_wait(leg, settle_s, self._sweep_stop):
+                            aborted = True; break
+                        rpy_neg_reps.append(self._sysid_avg_imu(n_samples))
+
+                        # Return to rest
+                        self.feeder.set_pos_target_one(leg, float(rest_enc[leg]))
+                        if not self._sysid_wait(leg, settle_s, self._sweep_stop):
+                            aborted = True; break
+                    if aborted:
                         break
-                    rpy_pos = self._sysid_avg_imu(n_samples)
 
-                    # Return to rest
-                    self.feeder.set_pos_target_one(leg, float(rest_enc[leg]))
-                    if not self._sysid_wait(leg, settle_s, self._sweep_stop):
-                        break
-
-                    # -δ
-                    self.feeder.set_pos_target_one(
-                        leg, float(rest_enc[leg]) - d)
-                    if not self._sysid_wait(leg, settle_s, self._sweep_stop):
-                        break
-                    rpy_neg = self._sysid_avg_imu(n_samples)
-
-                    # Return to rest
-                    self.feeder.set_pos_target_one(leg, float(rest_enc[leg]))
-                    if not self._sysid_wait(leg, settle_s, self._sweep_stop):
-                        break
-
+                    # Average rpy across reps. Per-axis mean of each
+                    # of the 3 components, dropping any rep whose IMU
+                    # avg returned None.
+                    def avg_axis(reps_list, axis):
+                        vals = [r[axis] for r in reps_list
+                                if r and r[axis] is not None]
+                        return float(sum(vals) / len(vals)) if vals else None
+                    rpy_pos = [avg_axis(rpy_pos_reps, i) for i in range(3)]
+                    rpy_neg = [avg_axis(rpy_neg_reps, i) for i in range(3)]
                     per_d[str(leg)] = {
                         'rpy_pos': rpy_pos,
                         'rpy_neg': rpy_neg,
+                        'rpy_pos_reps': rpy_pos_reps,   # raw for offline review
+                        'rpy_neg_reps': rpy_neg_reps,
+                        'reps_completed': len(rpy_pos_reps),
                     }
                     self._sysid_progress['legs_done'] += 1
+                    # Per-leg checkpoint log so the terminal feels alive.
+                    self.get_logger().info(
+                        f"sysid Z={z:.1f} δ={d:.3f} leg={leg} done: "
+                        f"rpy+ = ({rpy_pos[0]:+.3f},{rpy_pos[1]:+.3f},"
+                        f"{rpy_pos[2]:+.3f}) "
+                        f"rpy- = ({rpy_neg[0]:+.3f},{rpy_neg[1]:+.3f},"
+                        f"{rpy_neg[2]:+.3f})")
                 per_z_data['measurements'][f"{d:.4f}"] = per_d
 
             master['per_z'][f"{z:.1f}"] = per_z_data
