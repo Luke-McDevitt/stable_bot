@@ -44,11 +44,19 @@ except ImportError:
 
 def _find_bags_in_dir(p):
     """Return list of (label, summary_path, csv_path) for every bag
-    digest under p. Single bag → one record; sweep dir → one record
-    per per-Z child."""
+    digest under p.
+
+    Three input shapes supported:
+      1. Single bag dir (contains <p.name>_summary.json inside).
+      2. Sweep dir (contains <stem>_summary.json files for each child).
+      3. Sweep CHILD specified as a virtual prefix path (the path
+         doesn't exist as a dir, but <p.parent>/<p.name>_summary.json
+         does). This lets you pass `sweep_2026.../142005Z_z0300` to
+         pick a single child out of a sweep without globbing.
+    """
     p = Path(p)
     out = []
-    # Single bag: <name>_summary.json next to the dir name == <name>
+    # Case 1: p is a bag dir (contains its own *_summary.json inside).
     direct = p / f"{p.name}_summary.json"
     if direct.exists():
         out.append((
@@ -56,17 +64,27 @@ def _find_bags_in_dir(p):
             direct,
             p / f"{p.name}_timeseries.csv"))
         return out
-    # Sweep: any *_z*_summary.json files inside.
-    for child in sorted(p.iterdir() if p.is_dir() else []):
-        if not child.is_file():
-            continue
-        n = child.name
-        if n.endswith('_summary.json') and not n.endswith('sweep_summary.json'):
-            stem = n[:-len('_summary.json')]
-            out.append((
-                f"{p.name}/{stem}",
-                child,
-                p / f"{stem}_timeseries.csv"))
+    # Case 2: p is a virtual sweep-child prefix. p doesn't have to
+    # exist as a directory; we look for the summary as a sibling.
+    sibling = p.parent / f"{p.name}_summary.json"
+    if sibling.exists():
+        out.append((
+            f"{p.parent.name}/{p.name}",
+            sibling,
+            p.parent / f"{p.name}_timeseries.csv"))
+        return out
+    # Case 3: p is a sweep dir — pick up every child summary inside.
+    if p.is_dir():
+        for child in sorted(p.iterdir()):
+            if not child.is_file():
+                continue
+            n = child.name
+            if n.endswith('_summary.json') and not n.endswith('sweep_summary.json'):
+                stem = n[:-len('_summary.json')]
+                out.append((
+                    f"{p.name}/{stem}",
+                    child,
+                    p / f"{stem}_timeseries.csv"))
     return out
 
 
@@ -393,16 +411,16 @@ def main():
                         'compare_<UTC>.png next to the first dir.')
     args = p.parse_args()
 
-    # Walk dirs → bag list.
+    # Walk dirs → bag list. We don't pre-check existence because
+    # _find_bags_in_dir handles "virtual" paths — e.g. a sweep child
+    # given as <sweep_dir>/<child_prefix> where the path doesn't exist
+    # as a directory but the sibling files do.
     pairs = []
     for d in args.dirs:
         dp = Path(d).expanduser().resolve()
-        if not dp.exists():
-            print(f"WARN: {dp} not found", file=sys.stderr)
-            continue
         found = _find_bags_in_dir(dp)
         if not found:
-            print(f"WARN: {dp} contained no bag digests", file=sys.stderr)
+            print(f"WARN: {d} not found / no bag digests", file=sys.stderr)
             continue
         pairs.extend(found)
     if not pairs:
@@ -433,12 +451,16 @@ def main():
         render_markdown(records, Path(args.out_md))
         print(f"\nwrote markdown: {args.out_md}")
 
-    # Overlay plot.
+    # Overlay plot. Pick a default that's guaranteed to exist as a
+    # writable dir — the first input might be a virtual prefix path.
     if args.out_plot is None:
-        first_dir = Path(args.dirs[0]).expanduser().resolve()
-        # If pointing at a single bag dir, drop the plot next to it.
-        # If pointing at a sweep, drop in the sweep dir.
-        out_plot = first_dir / f"compare_{len(records)}bags.png"
+        first = Path(args.dirs[0]).expanduser().resolve()
+        if first.is_dir():
+            out_plot = first / f"compare_{len(records)}bags.png"
+        elif first.parent.is_dir():
+            out_plot = first.parent / f"compare_{len(records)}bags.png"
+        else:
+            out_plot = Path.cwd() / f"compare_{len(records)}bags.png"
     else:
         out_plot = Path(args.out_plot).expanduser().resolve()
     plotted = render_overlay_plot(records, out_plot)
