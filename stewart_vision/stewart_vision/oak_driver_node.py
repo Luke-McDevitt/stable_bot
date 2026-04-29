@@ -103,19 +103,33 @@ def detect_ball_v0(rgb_bgr: np.ndarray) -> Optional[tuple]:
 
 # --- DepthAI pipeline builder ------------------------------------------------
 
-def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30):
+def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30,
+                    enable_depth: bool = False):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
-    Phase-B pipeline (depth-based detection):
+    Two configurations, selected by `enable_depth`:
+
+    enable_depth=False (default — Phase A, lean):
       RGB:       1080p ISP scaled to 540p, MJPEG-encoded + raw for V0
-      Mono left: 800p, RAW (not rectified) — for ArUco pose recovery
-      Mono right: 800p (StereoDepth input only — no XLinkOut yet)
-      StereoDepth: depth aligned to RGB via setDepthAlign(CAM_A);
-                   LR-check + subpixel + disparity output all OFF
-                   (memory budget + we don't need them yet).
-      SpatialLocationCalculator: takes a runtime ROI in normalized
-                   RGB coordinates and emits the average 3-D point
-                   in RGB-camera frame at that ROI (metres).
+      Mono left: 800p, RAW — ArUco pose recovery
+      No mono right, no StereoDepth, no SLC, no IR projector.
+      Lowest memory + USB current draw. /ball_xy_mono works (ray-
+      plane projection from V0); /ball_xy_oak does not publish.
+
+    enable_depth=True (full — depth-based detection):
+      Adds mono right, StereoDepth (with LR-check + depth-align to
+      RGB), and SpatialLocationCalculator. The IR dot projector
+      should be enabled (OAK_IR_PROJECTOR_MA env var) to texture
+      featureless surfaces for stereo matching. Heavier on USB
+      current — observed to brown out the Pi 5 without a powered
+      hub on 2026-04-29. Opt in once power is sized for it.
+
+    StereoDepth in depth-mode:
+      LR-check + depth-align(CAM_A) — depth aligned to RGB so V0
+      pixel coordinates map 1:1 to depth pixels for the SLC ROI.
+      LR-check is REQUIRED whenever depth is aligned to a non-input
+      socket; the OAK firmware halts the pipeline otherwise (error
+      code 180).
 
     Why raw mono left for ArUco:
       cv2.aruco.estimatePoseBoard takes (K, dist) and handles
@@ -149,55 +163,6 @@ def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30):
     mono_l.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
     mono_l.setFps(mono_fps)
 
-    # Mono right — needed only as StereoDepth's right input. No XLinkOut.
-    mono_r = pipeline.create(dai.node.MonoCamera)
-    mono_r.setBoardSocket(dai.CameraBoardSocket.CAM_C)
-    mono_r.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
-    mono_r.setFps(mono_fps)
-
-    # StereoDepth — depth output aligned to RGB. Conservative settings
-    # to keep Myriad X working memory in budget. NOTE: LR-check MUST
-    # be ON when setDepthAlign points at a non-input socket (CAM_A here);
-    # the OAK firmware rejects the config otherwise (error code 180:
-    # "Disparity/depth CENTER alignment requires left-right check mode
-    # enabled"). Subpixel and disparity-output stay off — those were the
-    # actual memory hogs in the earlier mid-stream crash.
-    stereo = pipeline.create(dai.node.StereoDepth)
-    stereo.setDefaultProfilePreset(
-        dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
-    stereo.setLeftRightCheck(True)
-    stereo.setExtendedDisparity(False)
-    stereo.setSubpixel(False)
-    stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
-    mono_l.out.link(stereo.left)
-    mono_r.out.link(stereo.right)
-
-    # SpatialLocationCalculator — takes a config (with ROIs) and emits
-    # the 3-D point per ROI sampled from depth. Driven dynamically
-    # from the host: when V0 detects a ball, _tick pushes a config
-    # with a small ROI centered on (cx, cy).
-    slc = pipeline.create(dai.node.SpatialLocationCalculator)
-    # Don't block on missing config — let depth flow even when no
-    # detection has been pushed yet (avoids head-of-line blocking).
-    slc.inputConfig.setWaitForMessage(False)
-    slc.inputDepth.setBlocking(False)
-
-    # Initial config so the SLC has something to emit before the host
-    # sends the first runtime ROI. Centered ROI, depth thresholds wide.
-    init_roi = dai.SpatialLocationCalculatorConfigData()
-    init_roi.depthThresholds.lowerThreshold = 100    # mm
-    init_roi.depthThresholds.upperThreshold = 5000   # mm
-    init_roi.roi = dai.Rect(
-        dai.Point2f(0.45, 0.45), dai.Point2f(0.55, 0.55))
-    slc.initialConfig.addROI(init_roi)
-
-    stereo.depth.link(slc.inputDepth)
-
-    # Runtime config input (host → SLC) for V0-driven ROI updates.
-    slc_cfg_in = pipeline.create(dai.node.XLinkIn)
-    slc_cfg_in.setStreamName('slc_config')
-    slc_cfg_in.out.link(slc.inputConfig)
-
     # JPEG encoder for RGB stream
     enc_rgb = pipeline.create(dai.node.VideoEncoder)
     enc_rgb.setDefaultProfilePreset(
@@ -211,10 +176,50 @@ def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30):
         src.link(out.input)
         return out
 
-    add_out('rgb_jpeg',  enc_rgb.bitstream)
-    add_out('rgb_raw',   cam_rgb.video)            # uncompressed for V0
-    add_out('left',      mono_l.out)               # raw mono left for ArUco
-    add_out('spatial',   slc.out)                  # 3-D point in RGB frame
+    add_out('rgb_jpeg', enc_rgb.bitstream)
+    add_out('rgb_raw',  cam_rgb.video)             # uncompressed for V0
+    add_out('left',     mono_l.out)                # raw mono left for ArUco
+
+    if not enable_depth:
+        return pipeline
+
+    # ---- Depth subsystem (opt-in via OAK_ENABLE_DEPTH=1) ----
+
+    # Mono right — needed as StereoDepth's right input.
+    mono_r = pipeline.create(dai.node.MonoCamera)
+    mono_r.setBoardSocket(dai.CameraBoardSocket.CAM_C)
+    mono_r.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
+    mono_r.setFps(mono_fps)
+
+    stereo = pipeline.create(dai.node.StereoDepth)
+    stereo.setDefaultProfilePreset(
+        dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+    stereo.setLeftRightCheck(True)        # required when depth-align
+                                          # targets a non-input socket
+    stereo.setExtendedDisparity(False)
+    stereo.setSubpixel(False)
+    stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
+    mono_l.out.link(stereo.left)
+    mono_r.out.link(stereo.right)
+
+    slc = pipeline.create(dai.node.SpatialLocationCalculator)
+    slc.inputConfig.setWaitForMessage(False)
+    slc.inputDepth.setBlocking(False)
+
+    init_roi = dai.SpatialLocationCalculatorConfigData()
+    init_roi.depthThresholds.lowerThreshold = 100    # mm
+    init_roi.depthThresholds.upperThreshold = 5000   # mm
+    init_roi.roi = dai.Rect(
+        dai.Point2f(0.45, 0.45), dai.Point2f(0.55, 0.55))
+    slc.initialConfig.addROI(init_roi)
+
+    stereo.depth.link(slc.inputDepth)
+
+    slc_cfg_in = pipeline.create(dai.node.XLinkIn)
+    slc_cfg_in.setStreamName('slc_config')
+    slc_cfg_in.out.link(slc.inputConfig)
+
+    add_out('spatial', slc.out)            # 3-D point in RGB frame
 
     return pipeline
 
@@ -261,8 +266,18 @@ class OakDriverNode(Node):
         self.pub_spatial = self.create_publisher(
             PointStamped, '/oak/ball/spatial', 10)
 
+        # Depth subsystem (stereo + SLC + IR projector) is opt-in. The
+        # full pipeline pulls extra USB current (the IR projector alone
+        # is hundreds of mA) and was observed to brown out the Pi 5 on
+        # 2026-04-29 even with usb_max_current_enable=1. Set this to
+        # '1' once a powered USB hub or 5 A PSU is in place.
+        self.enable_depth = os.environ.get('OAK_ENABLE_DEPTH', '0') == '1'
+        self.get_logger().info(
+            f"Depth subsystem: {'ENABLED' if self.enable_depth else 'DISABLED'} "
+            f"(set OAK_ENABLE_DEPTH=1 to enable)")
+
         self.get_logger().info("Building OAK pipeline...")
-        pipeline = _build_pipeline()
+        pipeline = _build_pipeline(enable_depth=self.enable_depth)
 
         # USB speed cap. The Pi 5 caps total USB current at 600 mA
         # by default (raise to 1.2 A with `usb_max_current_enable=1`
@@ -297,20 +312,21 @@ class OakDriverNode(Node):
             f"USB speed: {self.device.getUsbSpeed()} | "
             f"cameras: {[s.name for s in self.device.getConnectedCameras()]}")
 
-        # Enable the IR dot projector to add texture for stereo
-        # matching on featureless surfaces (the platform top is
-        # mostly smooth black, which gives StereoDepth nothing to
-        # match without projected texture). 800 mA is moderate;
-        # the OAK-D Pro accepts up to 1200 mA. 0 = OFF.
-        # Override via OAK_IR_PROJECTOR_MA env var.
-        ir_proj_ma = float(os.environ.get('OAK_IR_PROJECTOR_MA', '800'))
-        try:
-            self.device.setIrLaserDotProjectorBrightness(ir_proj_ma)
-            self.get_logger().info(
-                f"IR dot projector: {ir_proj_ma:.0f} mA")
-        except Exception as e:
-            self.get_logger().warn(
-                f"IR projector control unavailable: {e}")
+        # IR dot projector — only meaningful when stereo is in the
+        # pipeline (it adds texture for stereo matching on featureless
+        # surfaces). Default 0 = off; opt-in via OAK_IR_PROJECTOR_MA.
+        # Range is 0..1200 mA. 400 mA is a reasonable starting point
+        # once the depth subsystem is enabled.
+        if self.enable_depth:
+            ir_proj_ma = float(os.environ.get('OAK_IR_PROJECTOR_MA', '0'))
+            try:
+                self.device.setIrLaserDotProjectorBrightness(ir_proj_ma)
+                self.get_logger().info(
+                    f"IR dot projector: {ir_proj_ma:.0f} mA "
+                    f"(override via OAK_IR_PROJECTOR_MA, range 0..1200)")
+            except Exception as e:
+                self.get_logger().warn(
+                    f"IR projector control unavailable: {e}")
 
         # Cap queues at 1 (latest-only, non-blocking). With size > 1,
         # any tick the host is late picking up backlogs frames, and
@@ -322,13 +338,14 @@ class OakDriverNode(Node):
         self.q_rgb_jpeg = self.device.getOutputQueue('rgb_jpeg', 1, False)
         self.q_rgb_raw  = self.device.getOutputQueue('rgb_raw',  1, False)
         self.q_left     = self.device.getOutputQueue('left',     1, False)
-        # SpatialLocationCalculator output. Latest-only — we only
-        # need the freshest 3-D point per V0 detection.
-        self.q_spatial  = self.device.getOutputQueue('spatial',  1, False)
-        # Runtime SLC config in (host → device). Used by _tick to push
-        # a small ROI around each V0 detection so the SLC samples
-        # depth at the ball pixel.
-        self.q_slc_cfg  = self.device.getInputQueue('slc_config')
+        # Spatial output / SLC config queues — only present when depth
+        # is enabled. _tick guards on these being non-None.
+        if self.enable_depth:
+            self.q_spatial = self.device.getOutputQueue('spatial', 1, False)
+            self.q_slc_cfg = self.device.getInputQueue('slc_config')
+        else:
+            self.q_spatial = None
+            self.q_slc_cfg = None
 
         # Tightness of the depth ROI around the V0 pixel. 8 px on each
         # side at 540p RGB is roughly 1.5° of FOV — covers the ball
@@ -397,45 +414,44 @@ class OakDriverNode(Node):
 
                 # Push a fresh ROI to the SpatialLocationCalculator so
                 # depth is sampled exactly where the ball was seen.
-                # ROI in NORMALIZED depth-image coords ([0, 1]).
-                # Depth is aligned to RGB (setDepthAlign(CAM_A)), so
-                # we can use RGB pixel coords directly.
-                cx_n = float(np.clip(cx / RGB_W, 0.0, 1.0))
-                cy_n = float(np.clip(cy / RGB_H, 0.0, 1.0))
-                hr = self._slc_roi_half_norm
-                tl = dai.Point2f(
-                    max(0.0, cx_n - hr), max(0.0, cy_n - hr))
-                br = dai.Point2f(
-                    min(1.0, cx_n + hr), min(1.0, cy_n + hr))
-                roi_cfg = dai.SpatialLocationCalculatorConfigData()
-                roi_cfg.depthThresholds.lowerThreshold = 100   # mm
-                roi_cfg.depthThresholds.upperThreshold = 5000  # mm
-                roi_cfg.roi = dai.Rect(tl, br)
-                cfg = dai.SpatialLocationCalculatorConfig()
-                cfg.addROI(roi_cfg)
-                try:
-                    self.q_slc_cfg.send(cfg)
-                except Exception:
-                    pass
+                # Skip when depth subsystem is disabled.
+                if self.q_slc_cfg is not None:
+                    cx_n = float(np.clip(cx / RGB_W, 0.0, 1.0))
+                    cy_n = float(np.clip(cy / RGB_H, 0.0, 1.0))
+                    hr = self._slc_roi_half_norm
+                    tl = dai.Point2f(
+                        max(0.0, cx_n - hr), max(0.0, cy_n - hr))
+                    br = dai.Point2f(
+                        min(1.0, cx_n + hr), min(1.0, cy_n + hr))
+                    roi_cfg = dai.SpatialLocationCalculatorConfigData()
+                    roi_cfg.depthThresholds.lowerThreshold = 100   # mm
+                    roi_cfg.depthThresholds.upperThreshold = 5000  # mm
+                    roi_cfg.roi = dai.Rect(tl, br)
+                    cfg = dai.SpatialLocationCalculatorConfig()
+                    cfg.addROI(roi_cfg)
+                    try:
+                        self.q_slc_cfg.send(cfg)
+                    except Exception:
+                        pass
 
         # Spatial output → /oak/ball/spatial. Coordinates in metres
         # in the RGB-camera frame (because depth was aligned to CAM_A).
-        spatial = self.q_spatial.tryGet()
-        if spatial is not None:
-            data = spatial.getSpatialLocations()
-            if data:
-                d0 = data[0]
-                # depthAverage is in mm; spatialCoordinates {x,y,z} also mm.
-                P_mm = d0.spatialCoordinates
-                if abs(P_mm.z) > 1.0:   # ignore zero-depth (no valid disparity)
-                    sp = PointStamped()
-                    sp.header.stamp = self.get_clock().now().to_msg()
-                    sp.header.frame_id = 'oak_rgb'
-                    # ball_localizer expects metres on /oak/ball/spatial.
-                    sp.point.x = float(P_mm.x) * 1e-3
-                    sp.point.y = float(P_mm.y) * 1e-3
-                    sp.point.z = float(P_mm.z) * 1e-3
-                    self.pub_spatial.publish(sp)
+        # Only present when the depth subsystem is enabled.
+        if self.q_spatial is not None:
+            spatial = self.q_spatial.tryGet()
+            if spatial is not None:
+                data = spatial.getSpatialLocations()
+                if data:
+                    d0 = data[0]
+                    P_mm = d0.spatialCoordinates
+                    if abs(P_mm.z) > 1.0:
+                        sp = PointStamped()
+                        sp.header.stamp = self.get_clock().now().to_msg()
+                        sp.header.frame_id = 'oak_rgb'
+                        sp.point.x = float(P_mm.x) * 1e-3
+                        sp.point.y = float(P_mm.y) * 1e-3
+                        sp.point.z = float(P_mm.z) * 1e-3
+                        self.pub_spatial.publish(sp)
 
         # Raw mono left — Stage C ArUco solve consumes this.
         # estimatePoseBoard takes (K, dist) and handles distortion
