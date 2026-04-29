@@ -3983,20 +3983,34 @@ async function ivaSweepRun() {
 
   document.getElementById('iva-sweep-run').disabled = true;
   document.getElementById('iva-sweep-cancel').disabled = false;
-  _ivaSetSweepStatus(`starting sweep — ${grid.length} cells, `
-    + `dwell ${dwellS.toFixed(1)} s, z=${sweepZ.toFixed(0)} mm, `
-    + `eta ${Math.round(grid.length*dwellS)} s`,
-    null);
 
-  // Capture Z once at sweep start and reuse for every cell + recovery
-  // — the operator should be able to change Z between sweeps without
-  // discontinuously commanding a new height mid-run.
+  // Capture Z FIRST, before any status template that mentions it —
+  // referencing sweepZ in template-literal interpolation before its
+  // declaration is a temporal-dead-zone ReferenceError that silently
+  // rejects the async ivaSweepRun promise, leaving the sweep stuck
+  // in "starting…" / "idle". (Bug observed 2026-04-29 with
+  // 20260429T193412Z bag — recorder ran for 6.5 min while the
+  // for-loop never iterated.)
   // Pulled from the SWEEP section's Z input (independent from the
   // tilt-sliders Z, which controls manual Apply tilt).
   const sweepZEl = document.getElementById('iva-sweep-z');
   const sweepZ = sweepZEl
     ? parseFloat(sweepZEl.value)
     : (_ivaZ() /* fallback to tilt-section Z */);
+
+  _ivaSetSweepStatus(`starting sweep — ${grid.length} cells, `
+    + `dwell ${dwellS.toFixed(1)} s, z=${sweepZ.toFixed(0)} mm, `
+    + `eta ${Math.round(grid.length*dwellS)} s`,
+    null);
+
+  // Wrap the rest of the sweep body in try/finally so any unhandled
+  // error (most relevant: a future ReferenceError or rosbridge hiccup
+  // mid-loop) surfaces in the status box instead of silently
+  // rejecting the async promise — and the recorder gets stopped +
+  // buttons reset regardless. The 20260429T193412Z bag-but-no-motion
+  // bug was undetectable from the GUI without this safety net.
+  let sweepError = null;
+  try {
 
   // Force motors into POSITION + PASSTHROUGH + wL_FF (velocity
   // feedforward) before commanding any tilts. Same multi-stage prep
@@ -4034,32 +4048,42 @@ async function ivaSweepRun() {
     cmd: 'set_pose',
     x: 0, y: 0, z: sweepZ, roll: 0, pitch: 0, yaw: 0,
   });
-
-  // Auto-record stop (only if WE started it).
-  if (_ivaSweep.startedRec) {
-    try {
-      const r = await fetch('/iva/stop', { method: 'POST' });
-      const j = await r.json();
-      _ivaSetRecStatus(j.message || 'saved', !!j.ok);
+  } catch (err) {
+    sweepError = err;
+    console.error('IVA sweep aborted on JS error:', err);
+  } finally {
+    // Auto-record stop (only if WE started it).
+    if (_ivaSweep.startedRec) {
+      try {
+        const r = await fetch('/iva/stop', { method: 'POST' });
+        const j = await r.json();
+        _ivaSetRecStatus(j.message || 'saved', !!j.ok);
+      } catch (e) {
+        _ivaSetRecStatus('auto-record stop failed: ' + e, false);
+      }
       document.getElementById('iva-rec-start').disabled = false;
       document.getElementById('iva-rec-stop').disabled = true;
-    } catch (e) {
-      _ivaSetRecStatus('auto-record stop failed: ' + e, false);
     }
-  }
 
-  const aborted = _ivaSweep.abort;
-  _ivaSweep.running = false;
-  document.getElementById('iva-sweep-run').disabled = false;
-  document.getElementById('iva-sweep-cancel').disabled = true;
-  _ivaSetSweepStatus(aborted
-    ? `aborted at cell ${_ivaSweep.step + 1}/${grid.length} — `
-      + `commanded back to neutral`
-    : `done — ${grid.length} cells, ~${Math.round(grid.length*_ivaSweep.dwellMs/1000)} s`,
-    !aborted);
-  // Refresh the recorded-sweeps list so the just-finished bag shows up.
-  // Small delay so the recorder has a moment to flush + close.
-  setTimeout(ivaFetchBags, 1500);
+    const aborted = _ivaSweep.abort;
+    _ivaSweep.running = false;
+    document.getElementById('iva-sweep-run').disabled = false;
+    document.getElementById('iva-sweep-cancel').disabled = true;
+    if (sweepError) {
+      _ivaSetSweepStatus(
+        `sweep aborted on JS error: ${sweepError.message || sweepError}. `
+        + `See browser console for details.`, false);
+    } else {
+      _ivaSetSweepStatus(aborted
+        ? `aborted at cell ${_ivaSweep.step + 1}/${grid.length} — `
+          + `commanded back to neutral`
+        : `done — ${grid.length} cells, ~${Math.round(grid.length*_ivaSweep.dwellMs/1000)} s`,
+        !aborted);
+    }
+    // Refresh the recorded-sweeps list so the just-finished bag shows up.
+    // Small delay so the recorder has a moment to flush + close.
+    setTimeout(ivaFetchBags, 1500);
+  }
 }
 
 function ivaSweepCancel() {
