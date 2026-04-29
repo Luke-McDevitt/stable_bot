@@ -82,6 +82,11 @@ GLOBAL_LIMITS_PATH = os.path.join(_BRINGUP_DIR, 'config/global_limits.yaml')
 LEVEL_CAL_PATH = os.path.join(_BRINGUP_DIR, 'config/platform_level.yaml')
 LEVEL_GAINS_PATH = os.path.join(_BRINGUP_DIR, 'config/level_gains.yaml')
 BAGS_DIR = os.path.expanduser('~/stable_bot_bags')
+# Last-commanded pose persisted across restarts so the GUI Z sliders read
+# the operator's last setpoint instead of 0 on a fresh GUI load. Holds the
+# command, not the physical pose — survives a service restart, not a
+# power-cycle that mechanically moves the platform.
+POSE_STATE_FILE = os.path.expanduser('~/.stewart_control_state.json')
 STALL_HOME_SCRIPT = os.path.expanduser(
     '~/Getting the robot working/Spin Motor Over CAN Test/stall_home.py')
 ROUTINES_DIR = os.path.join(_BRINGUP_DIR, 'config/routines')
@@ -980,9 +985,13 @@ class StewartControlNode(Node):
         # arm-time default in _arm_leg_internal.
         self.leg_current_a = 6.0
 
-        # Current pose state (held by feeder)
+        # Current pose state (held by feeder). Defaults to zero, but we
+        # immediately try to restore the last-commanded pose so that the
+        # GUI Z sliders read the operator's last setpoint on a fresh GUI
+        # load instead of always showing 0.
         self.current_xyz = [0.0, 0.0, 0.0]
         self.current_rpy = [0.0, 0.0, 0.0]
+        self._load_persisted_pose()
 
         # Level-hold state
         self.level_enabled = False
@@ -2263,6 +2272,7 @@ class StewartControlNode(Node):
                     self.feeder.set_pos_targets(targets)
                     self.current_xyz = [0.0, 0.0, 0.0]
                     self.current_rpy = [0.0, 0.0, 0.0]
+                    self._save_persisted_pose()
                     ok, reply_msg = True, "rest pose (level disabled)"
             elif cmd == 'set_speed_cap':
                 v = max(0.1, min(float(d.get('value', 1.0)), self.hard_max_vel))
@@ -2513,6 +2523,46 @@ class StewartControlNode(Node):
             return True, "empirical IK enabled: " + msg
         return True, "empirical IK reloaded: " + msg
 
+    def _load_persisted_pose(self):
+        """Restore current_xyz/current_rpy from the last-commanded pose file
+        if present. Best-effort — any IO/parse failure leaves the defaults
+        in place and is logged at info level."""
+        try:
+            with open(POSE_STATE_FILE, 'r') as f:
+                data = json.load(f)
+            xyz = data.get('current_xyz')
+            rpy = data.get('current_rpy')
+            if (isinstance(xyz, list) and len(xyz) == 3
+                    and isinstance(rpy, list) and len(rpy) == 3):
+                self.current_xyz = [float(v) for v in xyz]
+                self.current_rpy = [float(v) for v in rpy]
+                self.get_logger().info(
+                    f"restored last-commanded pose from {POSE_STATE_FILE}: "
+                    f"xyz={self.current_xyz} rpy={self.current_rpy}")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            self.get_logger().info(
+                f"could not load {POSE_STATE_FILE} ({e}); "
+                f"using default pose")
+
+    def _save_persisted_pose(self):
+        """Write the current commanded xyz/rpy to disk so a subsequent GUI
+        start can read it back. Atomic via tmp+rename. Best-effort — any
+        failure is swallowed (saving fail-mode is just sliders showing
+        stale values)."""
+        try:
+            tmp = POSE_STATE_FILE + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump({
+                    'current_xyz': list(self.current_xyz),
+                    'current_rpy': list(self.current_rpy),
+                    'saved_at': datetime.datetime.utcnow().isoformat() + 'Z',
+                }, f)
+            os.replace(tmp, POSE_STATE_FILE)
+        except Exception:
+            pass
+
     def _do_set_pose(self, x, y, z, r, p, yw, allow_large=False):
         if not self.armed:
             return False, "not armed"
@@ -2520,6 +2570,7 @@ class StewartControlNode(Node):
             return False, "no leg_limits.yaml"
         self.current_xyz = [x, y, z]
         self.current_rpy = [r, p, yw]
+        self._save_persisted_pose()
         if self.level_enabled:
             return True, "pose set (level loop will track)"
         targets, any_clamped = _compute_motor_targets(
@@ -3512,6 +3563,7 @@ class StewartControlNode(Node):
         self.feeder.set_pos_targets(targets)
         self.current_xyz = [0.0, 0.0, 0.0]
         self.current_rpy = [0.0, 0.0, 0.0]
+        self._save_persisted_pose()
         res.success = True
         res.message = "sent rest pose"
         return res
@@ -3568,6 +3620,7 @@ class StewartControlNode(Node):
         # only update the commanded xyz and let the level loop add tilt.
         self.current_xyz = list(xyz)
         self.current_rpy = list(rpy)
+        self._save_persisted_pose()
         if self.level_enabled:
             # level thread will pick up new xyz on next iter
             res.success = True
@@ -5013,6 +5066,7 @@ class StewartControlNode(Node):
                     test_idx=idx + 1, test_total=len(zs))
                 self.current_xyz = [0.0, 0.0, float(z)]
                 self.current_rpy = [0.0, 0.0, 0.0]
+                self._save_persisted_pose()
                 settled = self._lr_wait_z_reached(z, self._sweep_stop)
                 if self._sweep_stop.is_set():
                     abort_reason = 'user abort'
