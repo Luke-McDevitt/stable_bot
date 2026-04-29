@@ -121,6 +121,16 @@ def detect_ball_v0(rgb_bgr: np.ndarray,
 # rasterization or pose noise. Matches the on-platform gate in
 # ball_localizer_node._project_to_platform.
 PLATFORM_MASK_RADIUS_M = 0.220
+# The depth-blob detector needs a TIGHTER mask than V0 because the
+# ArUco marker ring is mounted on a frame that physically protrudes
+# above the deck (the markers sit at ring_radius_mm=120 with size 50
+# so they cover r∈[~95, ~145] mm, and the mounting hardware is 5 to
+# tens of mm above the deck). Inside the 220-mm V0 mask, the
+# marker-ring frame dominates the connected components — bag
+# 20260429T230819Z showed depth-blob locked at 150 mm from V0 ball
+# with std=0.9 mm, on a 10000-pixel blob. V0 doesn't care because
+# the markers aren't orange. Keep depth-blob inside the marker ring.
+PLATFORM_DEPTH_MASK_RADIUS_M = 0.080
 
 
 def _quat_to_rot(w, x, y, z):
@@ -737,6 +747,10 @@ class OakDriverNode(Node):
         self._last_pose: Optional[PoseStamped] = None
         self._mask_pose_stamp: Optional[float] = None
         self._platform_mask: Optional[np.ndarray] = None
+        # Tighter mask for the depth-blob detector that lives inside
+        # the ArUco marker ring (radius ~120 mm), so the marker
+        # mounting frame can't be the largest above-plane component.
+        self._platform_depth_mask: Optional[np.ndarray] = None
         self._expected_depth: Optional[np.ndarray] = None
         # Latest RGB raw frame, cached for the depth-debug overlay.
         # _tick already gets RGB raw for V0; we just stash it.
@@ -827,11 +841,20 @@ class OakDriverNode(Node):
             self.K_rgb, self.dist_rgb, R_pose, t_pose)
         if poly is None:
             self._platform_mask = None
+            self._platform_depth_mask = None
             self._expected_depth = None
             self._mask_pose_stamp = stamp_s
             return
         # cv2 image axes are (row=H, col=W).
         self._platform_mask = _platform_image_mask((RGB_H, RGB_W), poly)
+        # Tight mask for depth-blob: inside the marker ring, so the
+        # raised marker hardware doesn't win the largest-blob contest.
+        depth_poly = _project_platform_polygon(
+            self.K_rgb, self.dist_rgb, R_pose, t_pose,
+            radius_m=PLATFORM_DEPTH_MASK_RADIUS_M)
+        self._platform_depth_mask = (
+            _platform_image_mask((RGB_H, RGB_W), depth_poly)
+            if depth_poly is not None else None)
         self._expected_depth = _expected_plane_depth_map(
             (RGB_H, RGB_W), self.K_rgb, R_pose, t_pose)
         self._mask_pose_stamp = stamp_s
@@ -950,11 +973,11 @@ class OakDriverNode(Node):
             depth_msg = self.q_depth.tryGet()
             if depth_msg is not None:
                 self._n_depth_frame += 1
-                if (self._platform_mask is not None
+                if (self._platform_depth_mask is not None
                         and self._expected_depth is not None):
                     depth_frame = depth_msg.getFrame()  # uint16 mm, (H, W)
                     det = detect_ball_depth_blob(
-                        depth_frame, self._platform_mask,
+                        depth_frame, self._platform_depth_mask,
                         self._expected_depth)
                     above_mask = None
                     eroded_mask = None
@@ -990,14 +1013,17 @@ class OakDriverNode(Node):
 
                     # Debug overlay — render even on detection failure
                     # so we can see which platform pixels were eligible
-                    # and where the spurious blobs are landing.
+                    # and where the spurious blobs are landing. We pass
+                    # the *depth* mask (tight, inside-marker-ring) as
+                    # the "platform mask" so the cyan outline shows
+                    # exactly the region the detector considered.
                     if (self.depth_debug_enabled
                             and self._last_rgb_bgr is not None):
                         n_above = (int(np.sum(above_mask > 0))
                                    if above_mask is not None else 0)
                         dbg = render_depth_debug_overlay(
                             self._last_rgb_bgr,
-                            self._platform_mask, eroded_mask,
+                            self._platform_depth_mask, eroded_mask,
                             above_mask, blob_for_dbg,
                             plane_offset_mm, n_above=n_above)
                         ok, buf = cv2.imencode(
