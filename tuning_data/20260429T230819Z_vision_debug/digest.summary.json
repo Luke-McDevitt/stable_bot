@@ -1,0 +1,101 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260429T230819Z_vision_debug",
+  "duration_s": 23.688503061000002,
+  "topic_counts": {
+    "/ball_xy_depth": 209,
+    "/ball_xy_mono": 1307,
+    "/ball_xy_oak": 0,
+    "/control_cmd": 5,
+    "/control_result": 0,
+    "/oak/ball/depth/diagnostic": 208,
+    "/oak/ball/depth/rgb_pixel": 209,
+    "/oak/ball/spatial": 175,
+    "/oak/ball/v0/diagnostic": 207,
+    "/oak/ball/v0/rgb_pixel": 208,
+    "/oak/depth_blob/debug_image": 208,
+    "/oak/latency_ms": 208,
+    "/oak/rgb/image_compressed": 209,
+    "/platform/imu/data": 7407,
+    "/platform_pose": 206,
+    "/platform_pose/markers_visible": 206,
+    "/platform_rpy": 467,
+    "/status": 47
+  },
+  "v0": {
+    "detections_n": 208,
+    "detection_rate_hz_mean": 8.69915254237288,
+    "detection_rate_hz_min": 3.0,
+    "detection_rate_hz_max": 12.0,
+    "largest_silence_s": 0.218387293
+  },
+  "depth_blob": {
+    "detections_n": 209,
+    "detection_rate_hz_mean": 8.76271186440678,
+    "detection_rate_hz_min": 3.0,
+    "detection_rate_hz_max": 12.0,
+    "largest_silence_s": 0.264395354,
+    "plane_offset_mm": {
+      "n": 208,
+      "mean": -491.4558994586651,
+      "std": 2.8292715842596357,
+      "p50": -492.1702423095703,
+      "p95": 494.85664825439454,
+      "min": -496.99176025390625,
+      "max": -482.89410400390625,
+      "max_abs": 496.99176025390625
+    },
+    "area_px": {
+      "n": 208,
+      "mean": 10612.711538461539,
+      "std": 392.33065119470837,
+      "p50": 10604.0,
+      "p95": 11465.649999999998,
+      "min": 9495.0,
+      "max": 11833.0,
+      "max_abs": 11833.0
+    },
+    "confidence": {
+      "n": 208,
+      "mean": 0.6610954392414826,
+      "std": 0.055715818992065576,
+      "p50": 0.660960853099823,
+      "p95": 0.7328643828630447,
+      "min": 0.5000969171524048,
+      "max": 0.9144157767295837,
+      "max_abs": 0.9144157767295837
+    }
+  },
+  "platform_frame_mm": {
+    "v0_xy_n": 1307,
+    "depth_xy_n": 209,
+    "detector_disagreement_mm": {
+      "n": 1300,
+      "mean": 150.31878055820496,
+      "std": 0.9049970705600865,
+      "p50": 150.44444616403374,
+      "p95": 151.60551896336025,
+      "min": 146.16556067342486,
+      "max": 152.22700681080542,
+      "max_abs": 152.22700681080542
+    }
+  },
+  "pixel_space": {
+    "detector_disagreement_px": {
+      "n": 207,
+      "mean": 199.9658944436849,
+      "std": 1.2633779506749747,
+      "p50": 200.17912051772174,
+      "p95": 201.6047694291162,
+      "min": 195.6302085009937,
+      "max": 202.38978786822517,
+      "max_abs": 202.38978786822517
+    }
+  },
+  "markers_visible": {
+    "n": 206,
+    "mean": 8.004854368932039,
+    "min": 8,
+    "max": 9
+  },
+  "debug_image_frames": 208
+}
