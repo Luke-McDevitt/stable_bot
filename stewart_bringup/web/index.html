@@ -3516,7 +3516,13 @@ let _depthLatest = null;
 let _depthLastMs = 0;
 let _ballDepthLastMs = 0;
 let _ballDepthXY = null;
-const V0_STALE_MS = 500;         // hide circle after 500ms of no detections
+const V0_STALE_MS = 500;         // hide V0 circle after 500ms (color path is fast)
+// Depth-blob detection drops detection rate when foam absorbs IR
+// (observed ~1.5 Hz on a foam ball). A 500 ms freshness gate would
+// hide the circle between every message in that regime, so the
+// depth path uses a more permissive 1500 ms window. Color V0 keeps
+// the original short window to surface true detection-loss quickly.
+const DEPTH_STALE_MS = 1500;
 const V0_OVERLAY_TICK_MS = 200;  // re-evaluate staleness at 5 Hz
 
 function initVisionGUI() {
@@ -4413,13 +4419,13 @@ function _detectorMode() {
   return sel ? sel.value : 'both';
 }
 
-function _renderOneOverlay(ringId, dotId, latest, lastMs, xyLastMs, show) {
+function _renderOneOverlay(ringId, dotId, latest, lastMs, xyLastMs, show, staleMs) {
   const ring = $(ringId);
   const dot  = $(dotId);
   if (!ring || !dot) return;
   const now = performance.now();
-  const pixFresh = latest && (now - lastMs) < V0_STALE_MS;
-  const xyFresh  = (now - xyLastMs) < V0_STALE_MS;
+  const pixFresh = latest && (now - lastMs) < staleMs;
+  const xyFresh  = (now - xyLastMs) < staleMs;
   // Hide unless the global "ball circle" is on, this detector is
   // selected, and BOTH the pixel topic AND the platform-frame topic
   // are fresh. The platform-frame gate suppresses off-platform false
@@ -4445,9 +4451,11 @@ function renderBallOverlays() {
   const showV0    = cb.checked && (mode === 'v0'    || mode === 'both');
   const showDepth = cb.checked && (mode === 'depth' || mode === 'both');
   _renderOneOverlay('vis-overlay-ball',       'vis-overlay-ball-center',
-                    _v0Latest,    _v0LastMs,    _ballMonoLastMs,  showV0);
+                    _v0Latest,    _v0LastMs,    _ballMonoLastMs,
+                    showV0,    V0_STALE_MS);
   _renderOneOverlay('vis-overlay-ball-depth', 'vis-overlay-ball-depth-center',
-                    _depthLatest, _depthLastMs, _ballDepthLastMs, showDepth);
+                    _depthLatest, _depthLastMs, _ballDepthLastMs,
+                    showDepth, DEPTH_STALE_MS);
   // Clear stale platform-frame readouts so the user doesn't compare
   // a fresh number against a frozen one (very misleading at the
   // centered ball — depth could have dropped out 5s ago and you'd
@@ -4456,7 +4464,7 @@ function renderBallOverlays() {
   const v0xy = $('vis-ball-v0-xy');
   if (v0xy && (now - _ballMonoLastMs) >= V0_STALE_MS) v0xy.innerText = '— , —';
   const dxy = $('vis-ball-depth-xy');
-  if (dxy && (now - _ballDepthLastMs) >= V0_STALE_MS) dxy.innerText = '— , —';
+  if (dxy && (now - _ballDepthLastMs) >= DEPTH_STALE_MS) dxy.innerText = '— , —';
 }
 
 // Backwards-compat alias for any caller still wired to the old name.

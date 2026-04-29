@@ -186,7 +186,14 @@ def _platform_image_mask(shape: Tuple[int, int],
 # stereo noise + plane-fit error.
 BALL_HEIGHT_MIN_MM = 5.0
 BALL_HEIGHT_MAX_MM = 80.0
-DEPTH_BLOB_MIN_AREA_PX = 30
+# Lowered from 30 → 10 px after observing detection rate drop from
+# ~90 % to ~17 % on the foam ball. Foam absorbs IR poorly, so the
+# OAK's stereo depth map is sparse on the ball and the connected-
+# component areas are smaller than the geometric ball-cap area would
+# predict. A 10-px minimum keeps the detector firing as long as the
+# blob is unambiguously above the plane; the morphological close
+# below stitches the sparse hits back together.
+DEPTH_BLOB_MIN_AREA_PX = 10
 
 
 def _expected_plane_depth_map(shape: Tuple[int, int],
@@ -261,8 +268,15 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
     if not np.any(above):
         return None
     bin_img = above.astype(np.uint8) * 255
+    # Close BEFORE open: foam-ball depth has scattered dropouts (foam
+    # absorbs IR), so close (dilate-then-erode) stitches a sparse
+    # blob back into a single component. Open kills isolated 1–2 px
+    # noise speckles that survived the close.
+    kernel = np.ones((3, 3), np.uint8)
+    bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_CLOSE,
+                               kernel, iterations=2)
     bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_OPEN,
-                               np.ones((3, 3), np.uint8), iterations=1)
+                               kernel, iterations=1)
     n_lab, labels, stats, cents = cv2.connectedComponentsWithStats(
         bin_img, connectivity=8)
     # label 0 is background — skip it

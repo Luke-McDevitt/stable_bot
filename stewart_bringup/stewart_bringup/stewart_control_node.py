@@ -2570,6 +2570,9 @@ class StewartControlNode(Node):
                     'current_rpy': list(self.current_rpy),
                     'saved_at': datetime.datetime.utcnow().isoformat() + 'Z',
                 }, f)
+                # Trailing newline so `cat` shows the JSON cleanly
+                # instead of merging into the next shell prompt.
+                f.write('\n')
             os.replace(tmp, POSE_STATE_FILE)
         except Exception:
             pass
