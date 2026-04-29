@@ -91,6 +91,7 @@ class BallLocalizerNode(Node):
 
         self.last_v0: Optional[PointStamped] = None
         self.last_v1: Optional[PointStamped] = None
+        self.last_depth_pixel: Optional[PointStamped] = None
         self.last_pose: Optional[PoseStamped] = None
 
         self.create_subscription(
@@ -103,6 +104,13 @@ class BallLocalizerNode(Node):
         # oak_driver_node's SpatialLocationCalculator. Spec §7 truth.
         self.create_subscription(
             PointStamped, '/oak/ball/spatial', self._on_spatial, 10)
+        # Depth-blob detector pixel — independent of V0. Projected
+        # to platform frame the same way V0 is, then published to
+        # /ball_xy_depth so the GUI can compare both detectors with
+        # a centered ball.
+        self.create_subscription(
+            PointStamped, '/oak/ball/depth/rgb_pixel',
+            self._on_depth_pixel, 10)
 
         self.pub_xy_mono = self.create_publisher(
             PointStamped, '/ball_xy_mono', 10)
@@ -110,6 +118,8 @@ class BallLocalizerNode(Node):
             PointStamped, '/ball_xy_oak', 10)
         self.pub_xy_stereo = self.create_publisher(
             PointStamped, '/ball_xy_stereo', 10)
+        self.pub_xy_depth = self.create_publisher(
+            PointStamped, '/ball_xy_depth', 10)
         self.pub_diag = self.create_publisher(
             Float32MultiArray, '/oak/ball/diagnostic', 10)
 
@@ -158,6 +168,26 @@ class BallLocalizerNode(Node):
 
     def _on_pose(self, msg: PoseStamped):
         self.last_pose = msg
+
+    def _on_depth_pixel(self, msg: PointStamped):
+        """Depth-blob detector pixel → ray-plane intersection →
+        /ball_xy_depth in platform-frame mm. Same projection path as
+        V0 so the two outputs are directly comparable; on-platform
+        gate inside _project_to_platform applies."""
+        self.last_depth_pixel = msg
+        cx = float(msg.point.x)
+        cy = float(msg.point.y)
+        result = self._project_to_platform(cx, cy)
+        if result is None:
+            return
+        x_m, y_m, z_m = result
+        out = PointStamped()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.header.frame_id = 'platform'
+        out.point.x = x_m * 1000.0
+        out.point.y = y_m * 1000.0
+        out.point.z = z_m * 1000.0
+        self.pub_xy_depth.publish(out)
 
     def _select_pixel(self):
         """Pick a single (cx, cy) according to the spec selection rule.

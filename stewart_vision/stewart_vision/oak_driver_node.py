@@ -25,16 +25,17 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
+import yaml
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import CompressedImage
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 from std_msgs.msg import Float32, Float32MultiArray
 
 # DepthAI is hardware-side; allow the module to import on machines
@@ -72,17 +73,29 @@ HSV_HI = np.array([22,  255, 255], dtype=np.uint8)  # H,S,V upper
 MIN_CONTOUR_AREA_PX = 60
 
 
-def detect_ball_v0(rgb_bgr: np.ndarray) -> Optional[tuple]:
+def detect_ball_v0(rgb_bgr: np.ndarray,
+                   restrict_mask: Optional[np.ndarray] = None) -> Optional[tuple]:
     """Return (cx, cy, radius_px, confidence) or None.
 
     Confidence is a heuristic in [0, 1] derived from the contour's
     circularity and area relative to expected ball size. Real tuning
     happens in the running system.
+
+    If ``restrict_mask`` is given (a uint8 mask of the same H×W as
+    ``rgb_bgr`` with 255 inside the region of interest), the HSV
+    threshold mask is ANDed with it before contour finding so V0 only
+    considers pixels inside the projected platform disk. Without it,
+    V0 picks the most-orange thing anywhere in the frame — including
+    foam pads, table edges, or bench clutter — which we observed
+    repeatedly on 2026-04-29 (V0 locking onto pixel (138, 177), well
+    outside the platform).
     """
     if cv2 is None:
         return None
     hsv = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, HSV_LO, HSV_HI)
+    if restrict_mask is not None:
+        mask = cv2.bitwise_and(mask, restrict_mask)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
                             np.ones((3, 3), np.uint8), iterations=1)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
@@ -99,6 +112,198 @@ def detect_ball_v0(rgb_bgr: np.ndarray) -> Optional[tuple]:
     circ = 4.0 * np.pi * area / max(perim * perim, 1.0)
     confidence = float(np.clip(circ, 0.0, 1.0))
     return float(cx), float(cy), float(r), confidence
+
+
+# --- Platform-mask projection (RGB image space) -----------------------------
+
+# Platform disk radius, in metres. Slightly larger than the physical 200 mm
+# so a ball just inside the rim isn't trimmed by sub-pixel polygon
+# rasterization or pose noise. Matches the on-platform gate in
+# ball_localizer_node._project_to_platform.
+PLATFORM_MASK_RADIUS_M = 0.220
+
+
+def _quat_to_rot(w, x, y, z):
+    """Quaternion (w, x, y, z) → 3x3 rotation matrix. Same convention
+    as ball_localizer_node so the masks line up with the gate."""
+    n = w * w + x * x + y * y + z * z
+    if n < 1e-12:
+        return np.eye(3)
+    s = 2.0 / n
+    wx, wy, wz = s * w * x, s * w * y, s * w * z
+    xx, xy, xz = s * x * x, s * x * y, s * x * z
+    yy, yz, zz = s * y * y, s * y * z, s * z * z
+    return np.array([
+        [1.0 - (yy + zz),       xy - wz,        xz + wy],
+        [xy + wz,               1.0 - (xx + zz), yz - wx],
+        [xz - wy,               yz + wx,        1.0 - (xx + yy)],
+    ])
+
+
+def _project_platform_polygon(K: np.ndarray, dist: np.ndarray,
+                              R_pose: np.ndarray, t_pose: np.ndarray,
+                              radius_m: float = PLATFORM_MASK_RADIUS_M,
+                              n_samples: int = 72) -> Optional[np.ndarray]:
+    """Project the platform disk's outline into RGB image pixels.
+
+    Returns an Nx2 int32 array suitable for cv2.fillConvexPoly, or None
+    if the polygon ends up empty/behind the camera.
+    """
+    if cv2 is None:
+        return None
+    theta = np.linspace(0.0, 2.0 * np.pi, n_samples, endpoint=False)
+    pts_plat = np.stack(
+        [radius_m * np.cos(theta),
+         radius_m * np.sin(theta),
+         np.zeros_like(theta)], axis=1)
+    pts_cam = (R_pose @ pts_plat.T).T + t_pose
+    in_front = pts_cam[:, 2] > 1e-3
+    if not np.all(in_front):
+        return None
+    obj = pts_cam.reshape(-1, 1, 3).astype(np.float64)
+    rvec = np.zeros(3, dtype=np.float64)
+    tvec = np.zeros(3, dtype=np.float64)
+    pix, _ = cv2.projectPoints(obj, rvec, tvec, K, dist)
+    pix = pix.reshape(-1, 2)
+    return pix.astype(np.int32)
+
+
+def _platform_image_mask(shape: Tuple[int, int],
+                         polygon: np.ndarray) -> np.ndarray:
+    """Rasterize the projected polygon to a uint8 mask at ``shape``."""
+    mask = np.zeros(shape, dtype=np.uint8)
+    if polygon is None or len(polygon) < 3:
+        return mask
+    cv2.fillConvexPoly(mask, polygon, 255)
+    return mask
+
+
+# --- Depth-blob detector (option 3) -----------------------------------------
+
+# Acceptable height-above-platform window for a foam ball. The visible
+# top hemisphere of a 40 mm-diameter ball ranges 0..40 mm above the
+# platform plane; we leave a few mm of slack on each side to absorb
+# stereo noise + plane-fit error.
+BALL_HEIGHT_MIN_MM = 5.0
+BALL_HEIGHT_MAX_MM = 80.0
+DEPTH_BLOB_MIN_AREA_PX = 30
+
+
+def _expected_plane_depth_map(shape: Tuple[int, int],
+                              K: np.ndarray,
+                              R_pose: np.ndarray,
+                              t_pose: np.ndarray) -> np.ndarray:
+    """Per-pixel expected z-depth (mm) of the platform plane.
+
+    For pixel (u, v) the back-projected ray in camera frame is
+    d(u,v) = K^{-1}·(u, v, 1)^T. The platform plane is
+    n^T (P - t_pose) = 0 with n = R_pose[:, 2]. Substituting
+    P = s·d gives s = n^T·t_pose / n^T·d, and the z-depth at that
+    pixel is just s (because d.z = 1 by construction).
+
+    Returns a float32 array (H, W). Pixels behind the camera or where
+    the ray is parallel to the plane are filled with +inf so they
+    naturally fail the height-above-plane threshold.
+    """
+    H, W = shape
+    fx = float(K[0, 0]); fy = float(K[1, 1])
+    cx = float(K[0, 2]); cy = float(K[1, 2])
+    u = (np.arange(W, dtype=np.float32) - cx) / fx
+    v = (np.arange(H, dtype=np.float32) - cy) / fy
+    uu, vv = np.meshgrid(u, v)               # both (H, W) float32
+    # n in camera frame
+    n = R_pose[:, 2].astype(np.float32)
+    # n^T·d = n.x·u + n.y·v + n.z
+    denom = n[0] * uu + n[1] * vv + n[2]
+    num = float(np.dot(n, t_pose))
+    out = np.full_like(uu, np.inf, dtype=np.float32)
+    valid = np.abs(denom) > 1e-6
+    out[valid] = (num / denom[valid]).astype(np.float32) * 1000.0  # m → mm
+    out[out <= 0] = np.inf
+    return out
+
+
+def detect_ball_depth_blob(depth_mm: np.ndarray,
+                           platform_mask: np.ndarray,
+                           expected_depth_mm: np.ndarray,
+                           h_min_mm: float = BALL_HEIGHT_MIN_MM,
+                           h_max_mm: float = BALL_HEIGHT_MAX_MM,
+                           min_area_px: int = DEPTH_BLOB_MIN_AREA_PX) \
+        -> Optional[tuple]:
+    """Find an "above-the-platform" blob in the depth image.
+
+    Inputs:
+      depth_mm           uint16 (H, W) depth from StereoDepth (mm,
+                         0 = invalid)
+      platform_mask      uint8 (H, W) 255 inside the platform disk
+      expected_depth_mm  float32 (H, W) per-pixel expected platform-
+                         plane depth in mm (see
+                         _expected_plane_depth_map)
+
+    Returns (cx, cy, area_px, confidence) or None.
+    """
+    if cv2 is None:
+        return None
+    if depth_mm.shape != platform_mask.shape:
+        # StereoDepth depth-aligned to CAM_A should match RGB raw
+        # resolution; if it doesn't, resize depth to the mask shape.
+        depth_mm = cv2.resize(
+            depth_mm, (platform_mask.shape[1], platform_mask.shape[0]),
+            interpolation=cv2.INTER_NEAREST)
+    measured = depth_mm.astype(np.float32)
+    # Treat missing depth (0) as "no observation" — fill with +inf so
+    # the height test fails for those pixels.
+    invalid = measured <= 1.0
+    measured[invalid] = np.inf
+    height = expected_depth_mm - measured     # +ve = closer than plane
+    above = (height > h_min_mm) & (height < h_max_mm)
+    above &= platform_mask > 0
+    if not np.any(above):
+        return None
+    bin_img = above.astype(np.uint8) * 255
+    bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_OPEN,
+                               np.ones((3, 3), np.uint8), iterations=1)
+    n_lab, labels, stats, cents = cv2.connectedComponentsWithStats(
+        bin_img, connectivity=8)
+    # label 0 is background — skip it
+    if n_lab <= 1:
+        return None
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    j = int(np.argmax(areas)) + 1
+    area = float(stats[j, cv2.CC_STAT_AREA])
+    if area < min_area_px:
+        return None
+    cx, cy = cents[j]
+    # Confidence = clipped fraction of the largest blob's bounding-box
+    # area filled with above-plane pixels. A perfect ball cap fills
+    # ~π/4 of its bbox; we normalize against that.
+    bbox_w = float(stats[j, cv2.CC_STAT_WIDTH])
+    bbox_h = float(stats[j, cv2.CC_STAT_HEIGHT])
+    bbox_area = max(bbox_w * bbox_h, 1.0)
+    fill = area / bbox_area
+    confidence = float(np.clip(fill / (np.pi / 4.0), 0.0, 1.0))
+    return float(cx), float(cy), float(area), confidence
+
+
+def _load_rgb_intrinsics(yaml_path: str) -> Tuple[Optional[np.ndarray],
+                                                  Optional[np.ndarray]]:
+    """Read K and dist from the 'rgb' block of oak_intrinsics.yaml.
+
+    Returns (None, None) if the file or the block is missing.
+    """
+    if not os.path.isfile(yaml_path):
+        return None, None
+    try:
+        with open(yaml_path, 'r') as f:
+            d = yaml.safe_load(f)
+        rgb = d.get('rgb') or d.get('left')
+        if rgb is None:
+            return None, None
+        K = np.asarray(rgb['K'], dtype=np.float64).reshape(3, 3)
+        dist = np.asarray(rgb['dist'], dtype=np.float64).ravel()
+        return K, dist
+    except Exception:
+        return None, None
 
 
 # --- DepthAI pipeline builder ------------------------------------------------
@@ -220,6 +425,12 @@ def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 15,
     slc_cfg_in.out.link(slc.inputConfig)
 
     add_out('spatial', slc.out)            # 3-D point in RGB frame
+    # Full depth image (uint16 mm, aligned to CAM_A so resolution
+    # matches the RGB ISP output). Consumed by the depth-blob
+    # detector. Bandwidth: 540×960×2 bytes × 15 fps ≈ 15 MB/s — fine
+    # over USB3 SUPER. Skip it on USB2 if you ever fall back there:
+    # see the OAK_USB_SPEED env var.
+    add_out('depth', stereo.depth)
 
     return pipeline
 
@@ -265,6 +476,15 @@ class OakDriverNode(Node):
         # /ball_xy_oak (spec §7 truth signal).
         self.pub_spatial = self.create_publisher(
             PointStamped, '/oak/ball/spatial', 10)
+        # Independent depth-blob detection — orange-agnostic. Picks
+        # the largest connected region of pixels lying above the
+        # platform plane (5..80 mm closer to the camera than the
+        # plane's expected depth at that pixel). Lives alongside V0
+        # so we can compare the two with a centered ball.
+        self.pub_depth_pixel = self.create_publisher(
+            PointStamped, '/oak/ball/depth/rgb_pixel', 10)
+        self.pub_depth_diag = self.create_publisher(
+            Float32MultiArray, '/oak/ball/depth/diagnostic', 10)
 
         # Depth subsystem (stereo + SLC + IR projector) is opt-in. The
         # full pipeline pulls extra USB current (the IR projector alone
@@ -343,9 +563,56 @@ class OakDriverNode(Node):
         if self.enable_depth:
             self.q_spatial = self.device.getOutputQueue('spatial', 1, False)
             self.q_slc_cfg = self.device.getInputQueue('slc_config')
+            self.q_depth = self.device.getOutputQueue('depth', 1, False)
         else:
             self.q_spatial = None
             self.q_slc_cfg = None
+            self.q_depth = None
+
+        # Platform-mask + depth-blob state ---------------------------------
+        # We need RGB intrinsics + the latest /platform_pose to (a)
+        # mask V0 to the platform disk and (b) compute per-pixel
+        # expected platform-plane depth for the depth-blob detector.
+        # Both are recomputed on pose update; everything else is
+        # read-only at runtime.
+        self.K_rgb: Optional[np.ndarray] = None
+        self.dist_rgb: Optional[np.ndarray] = None
+        try:
+            from ament_index_python.packages \
+                import get_package_share_directory
+            share = get_package_share_directory('stewart_vision')
+            intr_path = os.path.join(share, 'config', 'oak_intrinsics.yaml')
+        except Exception:
+            intr_path = ''
+        if intr_path:
+            self.K_rgb, self.dist_rgb = _load_rgb_intrinsics(intr_path)
+            if self.K_rgb is None:
+                self.get_logger().warn(
+                    f"oak_intrinsics.yaml at {intr_path} not loaded; "
+                    f"V0 platform-mask + depth-blob disabled until "
+                    f"calibrate_oak.py --stage factory has run.")
+            else:
+                self.get_logger().info(
+                    f"loaded RGB intrinsics from {intr_path}")
+
+        self._last_pose: Optional[PoseStamped] = None
+        self._mask_pose_stamp: Optional[float] = None
+        self._platform_mask: Optional[np.ndarray] = None
+        self._expected_depth: Optional[np.ndarray] = None
+
+        # Toggle for V0 platform masking. Default on. Set
+        # OAK_MASK_V0_TO_PLATFORM=0 to fall back to the old greedy V0
+        # if you want to compare or if the mask is suppressing a real
+        # ball detection while debugging.
+        self.mask_v0_to_platform = (
+            os.environ.get('OAK_MASK_V0_TO_PLATFORM', '1') == '1')
+        self.get_logger().info(
+            f"V0 platform-masking: "
+            f"{'ON' if self.mask_v0_to_platform else 'OFF'} "
+            f"(toggle via OAK_MASK_V0_TO_PLATFORM=0|1)")
+
+        self.create_subscription(
+            PoseStamped, '/platform_pose', self._on_pose, 10)
 
         # Half-width of the depth ROI around the V0 pixel, in
         # normalized RGB coordinates. 24 px (48 px wide ROI) covers
@@ -363,6 +630,44 @@ class OakDriverNode(Node):
         # already producer-buffered, so we just drain them.
         self.create_timer(1.0 / 60.0, self._tick)
 
+    def _on_pose(self, msg: PoseStamped):
+        """Cache the latest platform pose. Mask + expected-depth-map
+        are recomputed lazily on the next _tick that needs them — see
+        _refresh_mask_if_stale."""
+        self._last_pose = msg
+
+    def _refresh_mask_if_stale(self):
+        """Project the platform disk into image pixels and refresh the
+        per-pixel expected-plane depth map whenever the cached pose
+        timestamp is older than what we received last. Both are
+        invariant in the pose so a quick stamp comparison gates the
+        recompute."""
+        if self.K_rgb is None or self._last_pose is None:
+            return
+        stamp = self._last_pose.header.stamp
+        stamp_s = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        if (self._mask_pose_stamp is not None
+                and abs(stamp_s - self._mask_pose_stamp) < 1e-6):
+            return
+        p = self._last_pose.pose
+        t_pose = np.array(
+            [p.position.x, p.position.y, p.position.z], dtype=np.float64)
+        R_pose = _quat_to_rot(
+            p.orientation.w, p.orientation.x,
+            p.orientation.y, p.orientation.z).astype(np.float64)
+        poly = _project_platform_polygon(
+            self.K_rgb, self.dist_rgb, R_pose, t_pose)
+        if poly is None:
+            self._platform_mask = None
+            self._expected_depth = None
+            self._mask_pose_stamp = stamp_s
+            return
+        # cv2 image axes are (row=H, col=W).
+        self._platform_mask = _platform_image_mask((RGB_H, RGB_W), poly)
+        self._expected_depth = _expected_plane_depth_map(
+            (RGB_H, RGB_W), self.K_rgb, R_pose, t_pose)
+        self._mask_pose_stamp = stamp_s
+
     def _publish_compressed(self, pub, payload: bytes, fmt: str):
         msg = CompressedImage()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -379,6 +684,12 @@ class OakDriverNode(Node):
         self._publish_compressed(pub, buf.tobytes(), 'jpeg')
 
     def _tick(self):
+        # Refresh the projected platform mask + expected-plane depth
+        # map whenever the latest pose is newer than what we baked
+        # into the cache. Cheap when stamps match; ~3 ms when they
+        # don't.
+        self._refresh_mask_if_stale()
+
         # RGB JPEG stream
         rgb_jpeg = self.q_rgb_jpeg.tryGet()
         if rgb_jpeg is not None:
@@ -403,7 +714,8 @@ class OakDriverNode(Node):
         rgb_raw = self.q_rgb_raw.tryGet()
         if rgb_raw is not None:
             frame = rgb_raw.getCvFrame()  # BGR uint8
-            det = detect_ball_v0(frame)
+            v0_mask = self._platform_mask if self.mask_v0_to_platform else None
+            det = detect_ball_v0(frame, restrict_mask=v0_mask)
             if det is not None:
                 cx, cy, r, conf = det
                 p = PointStamped()
@@ -458,6 +770,37 @@ class OakDriverNode(Node):
                         sp.point.y = float(P_mm.y) * 1e-3
                         sp.point.z = float(P_mm.z) * 1e-3
                         self.pub_spatial.publish(sp)
+
+        # Depth-image → depth-blob detector → /oak/ball/depth/rgb_pixel.
+        # Independent of V0; finds the largest blob whose measured
+        # depth is 5..80 mm closer to the camera than the platform
+        # plane's expected depth at that pixel. Requires the same
+        # platform mask V0 uses.
+        if (self.q_depth is not None
+                and self._platform_mask is not None
+                and self._expected_depth is not None):
+            depth_msg = self.q_depth.tryGet()
+            if depth_msg is not None:
+                depth_frame = depth_msg.getFrame()  # uint16 mm, (H, W)
+                det = detect_ball_depth_blob(
+                    depth_frame, self._platform_mask, self._expected_depth)
+                if det is not None:
+                    cx, cy, area_px, conf = det
+                    p = PointStamped()
+                    p.header.stamp = self.get_clock().now().to_msg()
+                    p.header.frame_id = 'oak_rgb'
+                    p.point.x = cx
+                    p.point.y = cy
+                    # piggy-back blob-area-derived radius proxy in z
+                    # (sqrt(area / pi)) so the GUI overlay can size
+                    # the cyan circle from a single PointStamped, the
+                    # same way the V0 stream piggy-backs radius.
+                    p.point.z = float(np.sqrt(max(area_px, 1.0) / np.pi))
+                    self.pub_depth_pixel.publish(p)
+                    d = Float32MultiArray()
+                    d.data = [float(cx), float(cy),
+                              float(area_px), float(conf)]
+                    self.pub_depth_diag.publish(d)
 
         # Raw mono left — Stage C ArUco solve consumes this.
         # estimatePoseBoard takes (K, dist) and handles distortion

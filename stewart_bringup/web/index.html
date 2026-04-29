@@ -79,9 +79,9 @@
           <svg id="vision-feed-overlay"
                class="absolute inset-0 w-full h-full pointer-events-none"
                viewBox="0 0 960 540">
-            <!-- V0 ball detection circle (spec §8). Hidden until
-                 /oak/ball/v0/rgb_pixel publishes recent (<500ms) data
-                 AND the operator enables the overlay checkbox. -->
+            <!-- V0 ball detection circle (spec §8). Orange. Hidden
+                 until /oak/ball/v0/rgb_pixel publishes recent (<500ms)
+                 data AND the detector toggle includes V0. -->
             <circle id="vis-overlay-ball"
                     cx="0" cy="0" r="0"
                     fill="none" stroke="#fb923c" stroke-width="2"
@@ -89,6 +89,17 @@
             <circle id="vis-overlay-ball-center"
                     cx="0" cy="0" r="2"
                     fill="#fb923c"
+                    visibility="hidden"/>
+            <!-- Depth-blob ball circle (option 3). Cyan, dashed, so
+                 it's visually distinct from V0 when "Both" is on. -->
+            <circle id="vis-overlay-ball-depth"
+                    cx="0" cy="0" r="0"
+                    fill="none" stroke="#22d3ee" stroke-width="2"
+                    stroke-dasharray="4 3"
+                    visibility="hidden"/>
+            <circle id="vis-overlay-ball-depth-center"
+                    cx="0" cy="0" r="2"
+                    fill="#22d3ee"
                     visibility="hidden"/>
             <!-- Drawn-route overlay (spec §11.2.3). Scaffold only —
                  needs Stage C extrinsics + per-sample platform→camera
@@ -112,13 +123,35 @@
           <label class="flex items-center gap-2"><input id="vis-show-stereo" type="checkbox"> stereo pair</label>
           <label class="flex items-center gap-2"><input id="vis-show-disparity" type="checkbox"> disparity</label>
           <label class="flex items-center gap-2"
-                 title="Draw a circle around the V0 (HSV-threshold) ball detection from /oak/ball/v0/rgb_pixel.">
+                 title="Draw a circle around the ball detection. Use the detector dropdown below to choose V0 (HSV color), depth-blob (above-platform stereo), or both at once for direct comparison.">
             <input id="vis-show-ball-circle" type="checkbox"> ball circle
           </label>
           <label class="flex items-center gap-2 text-slate-600 cursor-not-allowed"
                  title="Project the Demo-3 drawn route onto the camera image. Needs Stage C extrinsics + ArUco pose so platform-frame samples can be transformed to image pixels — scaffolded; not wired yet.">
             <input id="vis-show-route" type="checkbox" disabled> drawn route <span class="text-slate-700">(scaffold)</span>
           </label>
+        </div>
+        <!-- Detector toggle for option 2 (V0 + platform mask) vs
+             option 3 (depth-blob). "Both" overlays both circles so
+             you can compare them at a centered ball directly. -->
+        <div class="flex items-center gap-2 text-xs mt-2 text-slate-400">
+          <span>detector:</span>
+          <select id="vis-detector-mode"
+                  class="bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-xs">
+            <option value="both" selected>both</option>
+            <option value="v0">V0 (color)</option>
+            <option value="depth">depth-blob</option>
+          </select>
+          <span class="text-orange-400">●</span><span>V0</span>
+          <span class="text-cyan-400">●</span><span>depth</span>
+        </div>
+        <!-- Live platform-frame coords from /ball_xy_mono and
+             /ball_xy_depth so the operator can read off detector
+             accuracy at a centered ball without launching ros2
+             topic echo. mm; "—" when stale. -->
+        <div class="grid grid-cols-2 gap-x-3 text-xs mt-1 mono">
+          <div>V0 ball: <span id="vis-ball-v0-xy" class="text-orange-400">— , —</span> mm</div>
+          <div>depth ball: <span id="vis-ball-depth-xy" class="text-cyan-400">— , —</span> mm</div>
         </div>
         <!-- Telemetry strip (color-coded comparison KPIs, spec §11.1) -->
         <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-3 mono">
@@ -1712,8 +1745,28 @@ function setupROSInterface() {
   topic.ball_xy_mono = new ROSLIB.Topic({
     ros, name: '/ball_xy_mono',
     messageType: 'geometry_msgs/msg/PointStamped' });
-  topic.ball_xy_mono.subscribe(() => {
+  topic.ball_xy_mono.subscribe((m) => {
     _ballMonoLastMs = performance.now();
+    _ballMonoXY = { x: m.point.x, y: m.point.y };
+    const el = document.getElementById('vis-ball-v0-xy');
+    if (el) el.innerText = `${m.point.x.toFixed(1)} , ${m.point.y.toFixed(1)}`;
+  });
+
+  // Depth-blob ball detection — independent of V0. Pixel topic for
+  // the overlay circle, platform-frame topic for the readout.
+  topic.ball_depth_pixel = new ROSLIB.Topic({
+    ros, name: '/oak/ball/depth/rgb_pixel',
+    messageType: 'geometry_msgs/msg/PointStamped' });
+  topic.ball_depth_pixel.subscribe(onBallDepthPixel);
+
+  topic.ball_xy_depth = new ROSLIB.Topic({
+    ros, name: '/ball_xy_depth',
+    messageType: 'geometry_msgs/msg/PointStamped' });
+  topic.ball_xy_depth.subscribe((m) => {
+    _ballDepthLastMs = performance.now();
+    _ballDepthXY = { x: m.point.x, y: m.point.y };
+    const el = document.getElementById('vis-ball-depth-xy');
+    if (el) el.innerText = `${m.point.x.toFixed(1)} , ${m.point.y.toFixed(1)}`;
   });
 
   // OAK capture-to-Pi-receipt latency (ms). Computed in oak_driver_node
@@ -3454,6 +3507,15 @@ let _v0LastMs = 0;
 // platform — don't paint a circle. ball_localizer_node now rejects
 // projections outside r=220 mm, so /ball_xy_mono only fires on-disk.
 let _ballMonoLastMs = 0;
+let _ballMonoXY = null;          // {x, y} mm in platform frame
+// Depth-blob detector mirror state (option 3). Same gating logic as
+// V0: cyan circle hides unless _depthLatest fresh AND /ball_xy_depth
+// fresh. Distinct color/dash so when "both" is selected the two
+// circles can be visually compared at a centered ball.
+let _depthLatest = null;
+let _depthLastMs = 0;
+let _ballDepthLastMs = 0;
+let _ballDepthXY = null;
 const V0_STALE_MS = 500;         // hide circle after 500ms of no detections
 const V0_OVERLAY_TICK_MS = 200;  // re-evaluate staleness at 5 Hz
 
@@ -3514,8 +3576,10 @@ function initVisionGUI() {
 
   // --- Camera-feed overlay toggles + stale tick ---
   const ballCb = $('vis-show-ball-circle');
-  if (ballCb) ballCb.addEventListener('change', renderV0Overlay);
-  setInterval(renderV0Overlay, V0_OVERLAY_TICK_MS);
+  if (ballCb) ballCb.addEventListener('change', renderBallOverlays);
+  const detSel = $('vis-detector-mode');
+  if (detSel) detSel.addEventListener('change', renderBallOverlays);
+  setInterval(renderBallOverlays, V0_OVERLAY_TICK_MS);
 
   // Drawn-route overlay is intentionally disabled until the platform→
   // camera projection is wired (see renderRouteOverlay block comment).
@@ -4329,36 +4393,74 @@ function onBallV0Pixel(m) {
     r:  m.point.z,           // radius in pixels (piggy-backed in z)
   };
   _v0LastMs = performance.now();
-  renderV0Overlay();
+  renderBallOverlays();
 }
 
-function renderV0Overlay() {
-  const cb = $('vis-show-ball-circle');
-  const ring = $('vis-overlay-ball');
-  const dot  = $('vis-overlay-ball-center');
-  if (!cb || !ring || !dot) return;
+// Depth-blob ball overlay. Subscribed to /oak/ball/depth/rgb_pixel —
+// see oak_driver_node.detect_ball_depth_blob.
+function onBallDepthPixel(m) {
+  _depthLatest = {
+    cx: m.point.x,
+    cy: m.point.y,
+    r:  m.point.z,           // sqrt(area / pi) — proxy radius
+  };
+  _depthLastMs = performance.now();
+  renderBallOverlays();
+}
+
+function _detectorMode() {
+  const sel = $('vis-detector-mode');
+  return sel ? sel.value : 'both';
+}
+
+function _renderOneOverlay(ringId, dotId, latest, lastMs, xyLastMs, show) {
+  const ring = $(ringId);
+  const dot  = $(dotId);
+  if (!ring || !dot) return;
   const now = performance.now();
-  // Two-condition freshness: V0 pixel detection AND /ball_xy_mono
-  // (which only fires when ball_localizer's on-platform gate passes).
-  // If V0 finds something orange on a desk next to the platform,
-  // /oak/ball/v0/rgb_pixel still fires (good — V0 doesn't know about
-  // the platform), but ball_localizer rejects the projection and
-  // /ball_xy_mono goes silent — so we hide the overlay.
-  const v0Fresh   = _v0Latest && (now - _v0LastMs) < V0_STALE_MS;
-  const monoFresh = (now - _ballMonoLastMs) < V0_STALE_MS;
-  if (!cb.checked || !v0Fresh || !monoFresh) {
+  const pixFresh = latest && (now - lastMs) < V0_STALE_MS;
+  const xyFresh  = (now - xyLastMs) < V0_STALE_MS;
+  // Hide unless the global "ball circle" is on, this detector is
+  // selected, and BOTH the pixel topic AND the platform-frame topic
+  // are fresh. The platform-frame gate suppresses off-platform false
+  // positives — see ball_localizer_node._project_to_platform.
+  if (!show || !pixFresh || !xyFresh) {
     ring.setAttribute('visibility', 'hidden');
     dot.setAttribute('visibility',  'hidden');
     return;
   }
-  ring.setAttribute('cx', _v0Latest.cx);
-  ring.setAttribute('cy', _v0Latest.cy);
-  ring.setAttribute('r',  Math.max(_v0Latest.r, 4));
+  ring.setAttribute('cx', latest.cx);
+  ring.setAttribute('cy', latest.cy);
+  ring.setAttribute('r',  Math.max(latest.r, 4));
   ring.setAttribute('visibility', 'visible');
-  dot.setAttribute('cx', _v0Latest.cx);
-  dot.setAttribute('cy', _v0Latest.cy);
+  dot.setAttribute('cx', latest.cx);
+  dot.setAttribute('cy', latest.cy);
   dot.setAttribute('visibility', 'visible');
 }
+
+function renderBallOverlays() {
+  const cb = $('vis-show-ball-circle');
+  if (!cb) return;
+  const mode = _detectorMode();
+  const showV0    = cb.checked && (mode === 'v0'    || mode === 'both');
+  const showDepth = cb.checked && (mode === 'depth' || mode === 'both');
+  _renderOneOverlay('vis-overlay-ball',       'vis-overlay-ball-center',
+                    _v0Latest,    _v0LastMs,    _ballMonoLastMs,  showV0);
+  _renderOneOverlay('vis-overlay-ball-depth', 'vis-overlay-ball-depth-center',
+                    _depthLatest, _depthLastMs, _ballDepthLastMs, showDepth);
+  // Clear stale platform-frame readouts so the user doesn't compare
+  // a fresh number against a frozen one (very misleading at the
+  // centered ball — depth could have dropped out 5s ago and you'd
+  // still see its last number).
+  const now = performance.now();
+  const v0xy = $('vis-ball-v0-xy');
+  if (v0xy && (now - _ballMonoLastMs) >= V0_STALE_MS) v0xy.innerText = '— , —';
+  const dxy = $('vis-ball-depth-xy');
+  if (dxy && (now - _ballDepthLastMs) >= V0_STALE_MS) dxy.innerText = '— , —';
+}
+
+// Backwards-compat alias for any caller still wired to the old name.
+const renderV0Overlay = renderBallOverlays;
 
 // Drawn-route overlay (camera feed). SCAFFOLD ONLY.
 // Lights up when:
