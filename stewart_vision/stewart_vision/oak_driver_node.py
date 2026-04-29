@@ -95,13 +95,26 @@ def detect_ball_v0(rgb_bgr: np.ndarray) -> Optional[tuple]:
 def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
-    Resolution choices:
-      RGB: 1080p ISP, downscaled to 540p for streaming (the controller
-           doesn't need 1080p; the operator only sees compressed frames).
-      Mono: 800p (1280x800 OV9282 native).
+    Phase-A pipeline (kept lean to fit Myriad X memory headroom):
+      RGB: 1080p ISP scaled to 540p, MJPEG-encoded
+      Mono left: 800p, rectified by StereoDepth
+      Mono right: 800p, rectified by StereoDepth (no output yet)
+      StereoDepth: rectification only — LR-check OFF, subpixel OFF,
+                   no disparity output. The two flags + the disparity
+                   queue ~double the stereo memory footprint and we
+                   don't need them until the stereo-triangulation
+                   comparison estimator (spec §7) lands.
 
-    Stereo depth runs at the mono sensors' native rate; disparity is
-    streamed at low fps (5) for the GUI debug panel.
+    Why so trim:
+      The combination LR-check=ON + subpixel=ON + disparity output +
+      both rectified outputs + RGB encoder + raw RGB queue overflowed
+      the Myriad X's working RAM and the device firmware crashed
+      mid-stream ("Device crashed, but no crash dump could be
+      extracted" → X_LINK_ERROR on the next tryGet). Trimming the
+      pipeline restores stability. Add the disparity / right_rect /
+      LR-check / subpixel bits back when wiring `/ball_xy_stereo` —
+      at that point the Myriad X has a real reason to be doing the
+      work.
     """
     pipeline = dai.Pipeline()
 
@@ -121,19 +134,20 @@ def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30):
     mono_l.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
     mono_l.setFps(mono_fps)
 
-    # Mono right
+    # Mono right (still needed as input to StereoDepth — without both
+    # eyes the rectification of the left eye doesn't run).
     mono_r = pipeline.create(dai.node.MonoCamera)
     mono_r.setBoardSocket(dai.CameraBoardSocket.CAM_C)
     mono_r.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
     mono_r.setFps(mono_fps)
 
-    # Stereo depth — outputs rectified left, rectified right, disparity.
+    # Stereo depth, configured for *rectification only* in Phase A.
     stereo = pipeline.create(dai.node.StereoDepth)
     stereo.setDefaultProfilePreset(
         dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
-    stereo.setLeftRightCheck(True)
+    stereo.setLeftRightCheck(False)        # off: not used yet, frees memory
     stereo.setExtendedDisparity(False)
-    stereo.setSubpixel(True)
+    stereo.setSubpixel(False)              # off: not used yet, frees memory
     mono_l.out.link(stereo.left)
     mono_r.out.link(stereo.right)
 
@@ -153,8 +167,9 @@ def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30):
     add_out('rgb_jpeg',  enc_rgb.bitstream)
     add_out('rgb_raw',   cam_rgb.video)        # uncompressed for V0 detector
     add_out('left_rect', stereo.rectifiedLeft)
-    add_out('right_rect', stereo.rectifiedRight)
-    add_out('disparity', stereo.disparity)
+    # right_rect + disparity intentionally NOT exposed in Phase A.
+    # Add them back when wiring `/ball_xy_stereo` (spec §7) and the
+    # disparity debug pane.
 
     return pipeline
 
@@ -207,13 +222,12 @@ class OakDriverNode(Node):
         self.q_rgb_jpeg  = self.device.getOutputQueue('rgb_jpeg', 4, False)
         self.q_rgb_raw   = self.device.getOutputQueue('rgb_raw', 2, False)
         self.q_left      = self.device.getOutputQueue('left_rect', 2, False)
-        self.q_right     = self.device.getOutputQueue('right_rect', 2, False)
-        self.q_disparity = self.device.getOutputQueue('disparity', 2, False)
+        # q_right / q_disparity intentionally absent in Phase A — see
+        # _build_pipeline docstring.
 
         # Drive everything from a single timer; DepthAI queues are
         # already producer-buffered, so we just drain them.
         self.create_timer(1.0 / 60.0, self._tick)
-        self._frame_count = 0
 
     def _publish_compressed(self, pub, payload: bytes, fmt: str):
         msg = CompressedImage()
@@ -256,29 +270,15 @@ class OakDriverNode(Node):
                 d.data = [float(cx), float(cy), float(r), float(conf)]
                 self.pub_v0_diag.publish(d)
 
-        # Mono streams
+        # Rectified left mono — Stage C ArUco solve consumes this.
         left = self.q_left.tryGet()
         if left is not None:
             self._encode_and_publish_mono(self.pub_left, left.getCvFrame())
-        right = self.q_right.tryGet()
-        if right is not None:
-            self._encode_and_publish_mono(self.pub_right, right.getCvFrame())
 
-        # Disparity (color-mapped, low rate — 5 Hz target)
-        self._frame_count += 1
-        if self._frame_count % 12 == 0:
-            disp = self.q_disparity.tryGet()
-            if disp is not None:
-                d = disp.getFrame()
-                # Normalize to 8-bit for visualization.
-                d8 = cv2.normalize(d, None, 0, 255, cv2.NORM_MINMAX)
-                d8 = d8.astype(np.uint8)
-                color = cv2.applyColorMap(d8, cv2.COLORMAP_JET)
-                ok, buf = cv2.imencode('.jpg', color,
-                                       [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                if ok:
-                    self._publish_compressed(
-                        self.pub_disp, buf.tobytes(), 'jpeg')
+        # Right rectified + disparity outputs intentionally not pulled
+        # in Phase A. pub_right / pub_disp publishers stay declared so
+        # subscribers see the topic names; they just never fire until
+        # _build_pipeline adds the corresponding XLinkOuts back.
 
     def destroy_node(self):
         try:
