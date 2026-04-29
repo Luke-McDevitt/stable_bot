@@ -932,6 +932,64 @@
   <!-- RIGHT COLUMN: homing + errors -->
   <section class="lg:col-span-1 space-y-4">
 
+    <details id="sysid-panel"
+             class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <summary class="cursor-pointer select-none">
+        <span class="text-sm uppercase text-slate-400">System-ID</span>
+        <span class="text-xs text-slate-500 ml-2">empirical Jacobian</span>
+      </summary>
+      <p class="text-xs text-slate-500 mt-2 mb-3">
+        Per-leg perturbation test. Drives each leg ±δ from rest at
+        each Z, samples IMU, builds an empirical 3×6 Jacobian
+        (∂rpy/∂leg). Compared to the IK's theoretical Jacobian to
+        expose per-leg gain mismatches and asymmetric mounting.
+        Level loop must be OFF; drives must be armed in pos mode.
+      </p>
+      <div class="grid grid-cols-3 gap-2 mb-2 text-xs">
+        <label class="flex flex-col">
+          <span class="text-slate-400">Z min (mm)</span>
+          <input id="sysid-z-min" type="number" step="1" value="30"
+                 class="bg-slate-700 rounded px-1 py-0.5 mono"></label>
+        <label class="flex flex-col">
+          <span class="text-slate-400">Z max (mm)</span>
+          <input id="sysid-z-max" type="number" step="1" value="50"
+                 class="bg-slate-700 rounded px-1 py-0.5 mono"></label>
+        <label class="flex flex-col">
+          <span class="text-slate-400">Z step (mm)</span>
+          <input id="sysid-z-step" type="number" step="1" value="5"
+                 class="bg-slate-700 rounded px-1 py-0.5 mono"></label>
+      </div>
+      <label class="flex flex-col text-xs mb-2">
+        <span class="text-slate-400">δ values (turns, comma-separated)</span>
+        <input id="sysid-deltas" type="text" value="0.025, 0.05, 0.10"
+               class="bg-slate-700 rounded px-1 py-0.5 mono"></label>
+      <div class="grid grid-cols-2 gap-2 mb-2 text-xs">
+        <label class="flex flex-col">
+          <span class="text-slate-400">Settle (s)</span>
+          <input id="sysid-settle" type="number" step="0.1" value="1.5"
+                 class="bg-slate-700 rounded px-1 py-0.5 mono"></label>
+        <label class="flex flex-col">
+          <span class="text-slate-400">Samples / step</span>
+          <input id="sysid-samples" type="number" step="1" value="5"
+                 class="bg-slate-700 rounded px-1 py-0.5 mono"></label>
+      </div>
+      <div id="sysid-eta" class="text-xs text-slate-400 mono mb-2">ETA: —</div>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <button id="sysid-start"
+                class="bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">
+          Start system-ID
+        </button>
+        <button id="sysid-abort"
+                class="bg-rose-700 hover:bg-rose-600 rounded py-1 text-xs">
+          Abort
+        </button>
+      </div>
+      <div id="sysid-progress"
+           class="text-xs mono text-slate-400 min-h-4">idle</div>
+      <div id="sysid-result"
+           class="text-xs mono text-slate-300 mt-2 whitespace-pre-wrap"></div>
+    </details>
+
     <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
       <h2 class="text-sm uppercase text-slate-400 mb-2">ODrive errors</h2>
       <div class="flex gap-2 mb-2">
@@ -1430,6 +1488,13 @@ function setupROSInterface() {
         }
         return;
       }
+      if (r.cmd === 'sysid_start' || r.cmd === 'sysid_abort') {
+        const sr = $('sysid-result');
+        if (sr) {
+          sr.innerText = (r.success ? '✓ ' : '✗ ') + r.cmd + ': ' + r.message;
+        }
+        return;
+      }
       if (r.cmd === 'capture_endstop' || r.cmd === 'save_limits' || r.cmd === 'clear_endstops') {
         toast('endstop-capture-msg', line, r.success);
         // Update the captured-status indicators when capture-endstop reports back.
@@ -1566,6 +1631,7 @@ function setupROSInterface() {
   // Speed cap is seeded from /status topic above (topic discovery works
   // even when service discovery doesn't in this setup).
   wireLevelTuningPanel();
+  wireSysIdPanel();
 }
 
 // --- UI helpers ---
@@ -1629,7 +1695,34 @@ function renderLevelRecordState(s) {
   if (s.gains) {
     populateGainInputs(s.gains);
   }
-  if (s.state === 'sweep_running') {
+  if (s.state === 'sysid_running') {
+    const parts = [];
+    if (s.z_idx && s.z_total)
+      parts.push(`Z ${s.z_idx}/${s.z_total}`);
+    if (s.z !== undefined) parts.push(`Z=${Number(s.z).toFixed(1)}mm`);
+    if (s.phase) parts.push(s.phase);
+    if (s.delta !== undefined && s.leg !== undefined)
+      parts.push(`leg ${s.leg} δ=${s.delta}`);
+    if (s.delta_idx && s.delta_total)
+      parts.push(`δ ${s.delta_idx}/${s.delta_total}`);
+    const txt = parts.join(' · ');
+    prog.innerText = txt;
+    prog.className = 'text-xs mono text-cyan-400 mt-2 min-h-4';
+    const sp = $('sysid-progress');
+    if (sp) {
+      sp.innerText = txt;
+      sp.className = 'text-xs mono text-cyan-400 min-h-4';
+    }
+  } else if (s.state === 'sysid_done') {
+    const sp = $('sysid-progress');
+    if (sp) {
+      sp.innerText = `done — ${s.sysid_dir || ''}`;
+      sp.className = 'text-xs mono text-emerald-400 min-h-4';
+    }
+    const sr = $('sysid-result');
+    if (sr) sr.innerText = `Wrote: ${s.sysid_dir}/jacobian.json` +
+      (s.z_count ? `\n${s.z_count} Z × ${s.d_count} δ collected.` : '');
+  } else if (s.state === 'sweep_running') {
     const parts = [];
     if (s.test_idx && s.test_total)
       parts.push(`Test ${s.test_idx}/${s.test_total}`);
@@ -1822,6 +1915,78 @@ function setLvlGainsStatus(text, cls) {
   if (!el) return;
   el.innerText = text;
   el.className = 'mono text-xs ' + (cls || 'text-slate-500');
+}
+
+// --- System-ID panel ---
+// Reads the editable inputs, publishes sysid_start over /control_cmd.
+// State updates flow through /level_record_state (the existing 5 Hz
+// heartbeat) — `state == 'sysid_running' | 'sysid_done'` is what we
+// look for.
+function sysidParseDeltas(s) {
+  return s.split(',').map(x => parseFloat(x.trim())).filter(x => isFinite(x) && x > 0);
+}
+function sysidComputeEta() {
+  const zMin = parseFloat($('sysid-z-min').value);
+  const zMax = parseFloat($('sysid-z-max').value);
+  const zStep = parseFloat($('sysid-z-step').value);
+  const settle = parseFloat($('sysid-settle').value);
+  const deltas = sysidParseDeltas($('sysid-deltas').value);
+  if (![zMin, zMax, zStep, settle].every(isFinite) || deltas.length === 0) {
+    $('sysid-eta').innerText = 'ETA: (fill all fields)';
+    return null;
+  }
+  const zCount = Math.max(1, Math.floor((zMax - zMin) / zStep) + 1);
+  // Per leg per delta: 4 settles (+ small overhead).
+  const perLeg = 4 * settle + 0.2;
+  const perZ = 6 * deltas.length * perLeg + 2.0;
+  const total = zCount * perZ;
+  const m = Math.floor(total / 60);
+  const s = Math.round(total - m * 60);
+  $('sysid-eta').innerText =
+    `ETA: ~${m}m ${s.toString().padStart(2, '0')}s  ` +
+    `(${zCount} Z × ${deltas.length} δ × 6 legs)`;
+  return { zCount, deltas, settle };
+}
+function wireSysIdPanel() {
+  const ids = ['sysid-z-min', 'sysid-z-max', 'sysid-z-step',
+               'sysid-deltas', 'sysid-settle', 'sysid-samples'];
+  for (const id of ids) {
+    const el = $(id);
+    if (el) el.addEventListener('input', sysidComputeEta);
+  }
+  sysidComputeEta();
+  $('sysid-start').addEventListener('click', () => {
+    const zMin = parseFloat($('sysid-z-min').value);
+    const zMax = parseFloat($('sysid-z-max').value);
+    const zStep = parseFloat($('sysid-z-step').value);
+    if (!(zStep > 0) || zMax < zMin) {
+      $('sysid-result').innerText = 'bad Z range';
+      return;
+    }
+    const z_mm_list = [];
+    for (let z = zMin; z <= zMax + 1e-6; z += zStep) z_mm_list.push(z);
+    const deltas = sysidParseDeltas($('sysid-deltas').value);
+    const settle = parseFloat($('sysid-settle').value);
+    const samples = parseInt($('sysid-samples').value);
+    if (!isFinite(settle) || !isFinite(samples) || deltas.length === 0) {
+      $('sysid-result').innerText = 'bad settle/samples/deltas';
+      return;
+    }
+    if (!confirm(
+        `System-ID will perturb each leg ±δ at ${z_mm_list.length} Z heights.\n` +
+        `Make sure the LEVEL LOOP IS OFF and drives are armed in pos mode.\n\n` +
+        `Continue?`)) return;
+    $('sysid-result').innerText = 'starting…';
+    publishCmd({
+      cmd: 'sysid_start',
+      z_mm_list, delta_turns_list: deltas,
+      settle_s: settle, samples_per_step: samples,
+    });
+  });
+  $('sysid-abort').addEventListener('click', () => {
+    $('sysid-result').innerText = 'abort flagged…';
+    publishCmd({ cmd: 'sysid_abort' });
+  });
 }
 
 function wireLevelTuningPanel() {

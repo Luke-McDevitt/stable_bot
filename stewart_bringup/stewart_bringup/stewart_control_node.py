@@ -528,6 +528,48 @@ class EncoderListener:
                     out[n] = float(v[0])
         return out
 
+    def write_sdo(self, bus_lock, node_id, endpoint_id, value, kind):
+        """Fire-and-forget SDO write. ODrive doesn't echo writes, so
+        there's no response to poll — we just send the frame and move
+        on. Use this for runtime self-heal of params that don't have a
+        dedicated CAN command (e.g. wL_FF_enable, vel_integrator_gain).
+        Returns True on send success, False if the frame failed."""
+        arb = (node_id << 5) | CMD_RX_SDO
+        prologue = struct.pack('<BHB', 0x01, int(endpoint_id), 0)
+        # Pack the value bytes. Mirrors the configurator's _pack_value.
+        if kind == 'bool':
+            payload = struct.pack('<B', 1 if value else 0)
+        elif kind in ('uint8', 'int8'):
+            payload = struct.pack('<B' if kind.startswith('u') else '<b',
+                                  int(value))
+        elif kind in ('uint16',):
+            payload = struct.pack('<H', int(value))
+        elif kind in ('uint32',):
+            payload = struct.pack('<I', int(value))
+        elif kind in ('int16',):
+            payload = struct.pack('<h', int(value))
+        elif kind in ('int32',):
+            payload = struct.pack('<i', int(value))
+        elif kind in ('float32', 'float'):
+            payload = struct.pack('<f', float(value))
+        elif kind == 'float64':
+            payload = struct.pack('<d', float(value))
+        else:
+            return False
+        data = prologue + payload
+        if len(data) > 8:
+            return False
+        if len(data) < 8:
+            data = data + b'\x00' * (8 - len(data))
+        with bus_lock:
+            try:
+                self.bus.send(can.Message(
+                    arbitration_id=arb, data=data,
+                    is_extended_id=False), timeout=0.2)
+                return True
+            except Exception:
+                return False
+
     def read_sdo(self, bus_lock, node_id, endpoint_id, kind, timeout=1.0):
         """Single-frame SDO read. The listener handles dispatch in its
         own thread; this just sends the request and polls sdo_replies.
@@ -2038,6 +2080,10 @@ class StewartControlNode(Node):
                 extra['gains'] = dict(self.level_gains)
                 extra['gains_file_path'] = LEVEL_GAINS_PATH
                 ok, reply_msg = True, "gains dumped"
+            elif cmd == 'sysid_start':
+                ok, reply_msg = self._do_sysid_start(d)
+            elif cmd == 'sysid_abort':
+                ok, reply_msg = self._do_sysid_abort()
             elif cmd == 'level_save_gains':
                 # Edit gains directly from the GUI: validate, write the
                 # YAML, reload in-memory. Body is `gains: {<key>: <val>, ...}`
@@ -3049,6 +3095,10 @@ class StewartControlNode(Node):
         stale = [i for i, e in enumerate(enc) if e is None]
         if stale:
             return False, f"stale encoder reading on legs {stale} — refusing to seed"
+        # Phase 1: standard CAN cmd 0x00B (control_mode + input_mode)
+        # under bus_lock. Mode/input change is runtime-only — flash
+        # unaffected. Also seed feeder's per-leg target from the latest
+        # encoder so we don't slam toward a stale target on first tick.
         with self.bus_lock:
             for n in range(6):
                 try:
@@ -3059,8 +3109,22 @@ class StewartControlNode(Node):
                     return False, f"set_controller_mode leg {n} failed: {e}"
                 self.feeder.set_pos_target_one(n, float(enc[n]))
                 self.feeder.set_mode(n, 'pos')
+        # Phase 2: SDO write of wL_FF_enable=True. Belt-and-suspenders
+        # against the recurring "FF lost on flash reset / WebGUI reconfig"
+        # issue. Endpoint id verified against fw 0.6.11-1's
+        # flat_endpoints.json (see odrive_endpoints_reference.md). Each
+        # write_sdo acquires bus_lock internally — must NOT be inside
+        # the lock above or it deadlocks.
+        wlff_failures = []
+        for n in range(6):
+            if not self.listener.write_sdo(
+                    self.bus_lock, n, 305, True, 'bool'):
+                wlff_failures.append(n)
         time.sleep(0.05)
-        return True, "all 6 legs prepped (pos+passthrough, seeded from encoders)"
+        msg = "all 6 legs prepped (pos+passthrough+wL_FF=True, seeded from encoders)"
+        if wlff_failures:
+            msg += f"  WARN wL_FF write failed on legs {wlff_failures}"
+        return True, msg
 
     def _do_enable_level(self, want):
         if want:
@@ -3815,6 +3879,405 @@ class StewartControlNode(Node):
         if proc is not None:
             self._lr_stop_proc(proc)
         return True, "abort flagged"
+
+    # ---------------- System-ID (empirical Jacobian) ----------------
+    # Drive each leg in turn by ±δ from the rest pose at multiple Z
+    # heights and multiple δ amplitudes; measure the resulting platform
+    # attitude change. Builds an empirical 3×6 Jacobian (∂rpy/∂leg_n)
+    # at each Z. Compared to the IK's theoretical Jacobian, this
+    # exposes per-leg gain mismatches that explain the systematic
+    # offset the level loop has been struggling with.
+    #
+    # Spec (2026-04-29 conversation):
+    #  - level loop must be OFF during measurement (we want clean
+    #    Δleg→Δrpy without the loop fighting us)
+    #  - drives must be armed in pos mode
+    #  - per Z: bag /level_diag for offline review
+    #  - measure yaw too (small but informative for asymmetric mounts)
+    #  - inner-loop config snapshot saved per-Z bag (drift detector)
+    SYSID_DEFAULTS = {
+        'z_mm_list':        [30.0, 35.0, 40.0, 45.0, 50.0],
+        'delta_turns_list': [0.025, 0.050, 0.100],
+        'settle_s':         1.5,
+        'samples_per_step': 5,
+    }
+
+    def _do_sysid_start(self, params):
+        if not self.armed:
+            return False, "arm first (system-id needs all 6 legs in CLOSED_LOOP pos mode)"
+        if self.limits is None:
+            return False, "no leg_limits.yaml"
+        if self.bus is None or self.feeder is None or self.listener is None:
+            return False, "bus/feeder/listener not running"
+        if self.level_enabled:
+            return False, ("level loop is ON. Disable it first — system-ID "
+                           "measures bare Δleg→Δrpy without the loop fighting "
+                           "the perturbation.")
+        if getattr(self, '_sysid_thread', None) is not None and \
+                self._sysid_thread.is_alive():
+            return False, "system-id already running"
+        # Validate params; fall back to defaults.
+        z_list = params.get('z_mm_list') or self.SYSID_DEFAULTS['z_mm_list']
+        d_list = params.get('delta_turns_list') or self.SYSID_DEFAULTS['delta_turns_list']
+        try:
+            z_list = [float(z) for z in z_list]
+            d_list = [float(d) for d in d_list]
+        except (TypeError, ValueError) as e:
+            return False, f"bad z_mm_list / delta_turns_list: {e}"
+        if not z_list or not d_list:
+            return False, "z_mm_list and delta_turns_list must each have ≥1 entry"
+        if any(d <= 0 for d in d_list):
+            return False, "all delta values must be > 0"
+        if any(d > 0.3 for d in d_list):
+            return False, ("delta > 0.3 turns is dangerous (may exceed leg "
+                           "soft limits). Reduce.")
+        run_params = dict(self.SYSID_DEFAULTS)
+        run_params.update({
+            'z_mm_list': z_list,
+            'delta_turns_list': d_list,
+            'settle_s':         float(params.get('settle_s',
+                                                 self.SYSID_DEFAULTS['settle_s'])),
+            'samples_per_step': int(params.get('samples_per_step',
+                                               self.SYSID_DEFAULTS['samples_per_step'])),
+        })
+        # Spawn worker thread. State exported via _sweep_state so the
+        # existing /level_record_state heartbeat shows progress with
+        # no GUI plumbing change.
+        self._sweep_stop.clear()
+        self._sysid_thread = threading.Thread(
+            target=self._sysid_run, args=(run_params,), daemon=True)
+        self._sysid_thread.start()
+        return True, (f"system-id started: {len(z_list)} Z × "
+                      f"{len(d_list)} δ × 6 legs")
+
+    def _do_sysid_abort(self):
+        self._sweep_stop.set()
+        with self._bag_lock:
+            proc = self._bag_proc
+            self._bag_proc = None
+            self._bag_dir = None
+        if proc is not None:
+            self._lr_stop_proc(proc)
+        return True, "system-id abort flagged"
+
+    def _sysid_eta_s(self, z_count, d_count, settle_s):
+        # Per leg per delta: +δ (settle), back, -δ (settle), back. ~4 × settle.
+        per_leg = 4 * settle_s
+        per_z = 6 * d_count * per_leg + 2.0   # +2s for Z transition + bag start
+        return z_count * per_z
+
+    def _sysid_run(self, params):
+        try:
+            self._sysid_run_inner(params)
+        except Exception as e:
+            self.get_logger().error(f"system-id thread crashed: {e}")
+            self._lr_set_state('aborted', error=f"sysid: {e}")
+
+    def _sysid_run_inner(self, params):
+        z_list = params['z_mm_list']
+        d_list = params['delta_turns_list']
+        settle_s = params['settle_s']
+        n_samples = params['samples_per_step']
+
+        stamp = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+        sysid_dir = os.path.join(BAGS_DIR, f"system_id_{stamp}")
+        os.makedirs(sysid_dir, exist_ok=True)
+
+        # Same FF runtime self-heal as level — write
+        # control_mode=POSITION, input_mode=PASSTHROUGH, wL_FF=True
+        # before starting the perturbation series. Keeps the loop's
+        # inner config consistent with how we'd run it during normal
+        # level operation, so the Jacobian we measure here is valid
+        # for the level loop as deployed.
+        ok, msg = self._prepare_for_level()
+        if not ok:
+            self._lr_set_state('aborted', error=f"sysid prep: {msg}")
+            return
+        self.get_logger().info(f"system-id: {msg}")
+
+        # Master record: per-Z dicts of {delta: {'leg_n': {rpy_pos, rpy_neg, rpy_zero, encoder_zero}}}
+        master = {
+            'started_utc': datetime.datetime.utcnow().isoformat() + 'Z',
+            'z_mm_list': z_list,
+            'delta_turns_list': d_list,
+            'settle_s': settle_s,
+            'samples_per_step': n_samples,
+            'git_sha': self._lr_git_sha(),
+            'per_z': {},   # {z_str: {...}}
+            'bags': [],    # list of bag_dir strings, one per Z
+        }
+
+        for z_idx, z in enumerate(z_list):
+            if self._sweep_stop.is_set():
+                self._lr_set_state('aborted', reason='user abort', sysid=True)
+                break
+
+            self._lr_set_state('sysid_running', phase='moving_to_z',
+                               z=z, z_idx=z_idx + 1, z_total=len(z_list))
+            ok, _ = self._do_set_pose(0.0, 0.0, float(z), 0.0, 0.0, 0.0,
+                                      allow_large=True)
+            if not ok:
+                self._lr_set_state('aborted', error=f"set_pose Z={z} failed")
+                break
+
+            # Wait for the platform to physically reach Z and stop
+            # slewing. _lr_wait_z_reached compares against the live
+            # commanded targets so it works even when the level loop
+            # is OFF (target == current_xyz IK output).
+            if not self._lr_wait_z_reached(z, self._sweep_stop):
+                self.get_logger().warn(f"sysid Z={z}: settle timeout, "
+                                       f"continuing anyway")
+
+            # Snapshot rest IMU + encoders for this Z (the linearization point).
+            time.sleep(0.5)
+            rest_rpy = self._sysid_avg_imu(n_samples)
+            rest_enc = self.listener.get_all(max_age_s=0.5)
+            if any(v is None for v in rest_enc):
+                self._lr_set_state('aborted',
+                                   error=f"Z={z}: stale encoders before perturbation")
+                break
+
+            # Spawn one bag for this Z, recording the entire perturbation
+            # battery so we can review the per-leg responses offline.
+            bag_dir = os.path.join(
+                sysid_dir,
+                datetime.datetime.utcnow().strftime('%H%M%SZ_') +
+                f"z{int(round(z*10)):04d}")
+            inner_cfg = self._lr_capture_inner_loop_config()
+            with self._bag_lock:
+                if self._bag_proc is not None and self._bag_proc.poll() is None:
+                    self._lr_stop_proc(self._bag_proc)
+                self._bag_proc = self._lr_spawn_bag(bag_dir)
+                self._bag_dir = bag_dir
+                self._bag_t0 = time.monotonic()
+            meta = {
+                'sysid_run': True,
+                'sysid_z_mm': z,
+                'sysid_z_idx': z_idx + 1,
+                'sysid_z_total': len(z_list),
+                'rest_rpy': rest_rpy,
+                'rest_encoders': rest_enc,
+                'delta_turns_list': d_list,
+                'level_loop_hz': self.level_loop_hz,
+            }
+            if inner_cfg is not None:
+                meta['inner_loop_config'] = inner_cfg
+            self._lr_save_notes(bag_dir, f"sysid_z{int(round(z*10)):04d}",
+                                'system-id child bag', meta)
+            master['bags'].append(bag_dir)
+
+            # Per Z: walk all 6 legs × all deltas. For each
+            # combination: ±δ from rest, return to rest between.
+            # Capture IMU averages at +δ, -δ, and at rest after return.
+            per_z_data = {
+                'rest_rpy': rest_rpy,
+                'rest_encoders': rest_enc,
+                'measurements': {},   # str(delta): {leg_n: {pos_rpy, neg_rpy}}
+            }
+            for d in d_list:
+                if self._sweep_stop.is_set():
+                    break
+                per_d = {}
+                for leg in range(6):
+                    if self._sweep_stop.is_set():
+                        break
+                    self._lr_set_state(
+                        'sysid_running', phase='perturbing',
+                        z=z, z_idx=z_idx + 1, z_total=len(z_list),
+                        leg=leg, delta=d, delta_idx=d_list.index(d) + 1,
+                        delta_total=len(d_list))
+
+                    # +δ
+                    self.feeder.set_pos_target_one(
+                        leg, float(rest_enc[leg]) + d)
+                    if not self._sysid_wait(leg, settle_s, self._sweep_stop):
+                        break
+                    rpy_pos = self._sysid_avg_imu(n_samples)
+
+                    # Return to rest
+                    self.feeder.set_pos_target_one(leg, float(rest_enc[leg]))
+                    if not self._sysid_wait(leg, settle_s, self._sweep_stop):
+                        break
+
+                    # -δ
+                    self.feeder.set_pos_target_one(
+                        leg, float(rest_enc[leg]) - d)
+                    if not self._sysid_wait(leg, settle_s, self._sweep_stop):
+                        break
+                    rpy_neg = self._sysid_avg_imu(n_samples)
+
+                    # Return to rest
+                    self.feeder.set_pos_target_one(leg, float(rest_enc[leg]))
+                    if not self._sysid_wait(leg, settle_s, self._sweep_stop):
+                        break
+
+                    per_d[str(leg)] = {
+                        'rpy_pos': rpy_pos,
+                        'rpy_neg': rpy_neg,
+                    }
+                per_z_data['measurements'][f"{d:.4f}"] = per_d
+
+            master['per_z'][f"{z:.1f}"] = per_z_data
+            # Stop bag for this Z.
+            with self._bag_lock:
+                proc = self._bag_proc
+                self._bag_proc = None
+                self._bag_dir = None
+            if proc is not None:
+                self._lr_stop_proc(proc)
+            time.sleep(0.5)
+            # Incremental save of the master so we don't lose data
+            # if a later Z aborts.
+            self._sysid_dump(sysid_dir, master)
+
+        # Compute Jacobian per (Z, δ).
+        master['empirical_jacobian'] = self._sysid_compute_empirical(master)
+        master['theoretical_jacobian'] = self._sysid_compute_theoretical(z_list, d_list)
+        master['diff_pct_per_leg_per_z'] = self._sysid_compute_diff(master)
+        self._sysid_dump(sysid_dir, master)
+
+        if self._sweep_stop.is_set():
+            self._lr_set_state('aborted', reason='user abort', sysid=True)
+        else:
+            self._lr_set_state('sysid_done', sysid_dir=sysid_dir,
+                               z_count=len(z_list), d_count=len(d_list))
+
+    def _sysid_wait(self, leg, settle_s, abort_event):
+        """Wait `settle_s` for IMU/leg to settle. Bails on abort.
+        Returns True if settle completed, False if aborted."""
+        end = time.monotonic() + settle_s
+        while time.monotonic() < end:
+            if abort_event is not None and abort_event.is_set():
+                return False
+            time.sleep(0.02)
+        return True
+
+    def _sysid_avg_imu(self, n=5):
+        """Average n IMU samples over ~50 ms. Drops the last reading
+        timestamp into the result so the sidecar has the time series."""
+        rpys = []
+        for _ in range(max(1, n)):
+            with self.imu_lock:
+                rpy = self.imu_rpy
+            if rpy is not None:
+                rpys.append(tuple(rpy))
+            time.sleep(0.01)
+        if not rpys:
+            return [None, None, None]
+        ar = np.array(rpys)
+        return [float(ar[:, i].mean()) for i in range(3)]
+
+    def _sysid_compute_empirical(self, master):
+        """Build {z_str: {delta_str: 3x6 jacobian list-of-lists}} from
+        per_z['measurements']. Each Jacobian column for leg n is
+        (rpy_pos - rpy_neg) / (2δ) for that (Z, δ)."""
+        out = {}
+        for z_key, z_data in master.get('per_z', {}).items():
+            per_z_jac = {}
+            meas = z_data.get('measurements', {}) or {}
+            for d_key, per_d in meas.items():
+                try:
+                    d = float(d_key)
+                except ValueError:
+                    continue
+                if d <= 0:
+                    continue
+                # 3 (roll/pitch/yaw) × 6 legs
+                jac = [[None] * 6 for _ in range(3)]
+                for leg_str, per_leg in per_d.items():
+                    try:
+                        leg = int(leg_str)
+                    except ValueError:
+                        continue
+                    rp = per_leg.get('rpy_pos')
+                    rn = per_leg.get('rpy_neg')
+                    if rp is None or rn is None:
+                        continue
+                    for axis in range(3):
+                        if rp[axis] is None or rn[axis] is None:
+                            continue
+                        jac[axis][leg] = (rp[axis] - rn[axis]) / (2.0 * d)
+                per_z_jac[d_key] = jac
+            out[z_key] = per_z_jac
+        return out
+
+    def _sysid_compute_theoretical(self, z_list, d_list):
+        """Numeric Jacobian from _compute_motor_targets, for comparison.
+        At pose (0,0,Z,0,0,0), perturb leg n by Δ in IK and infer the
+        rpy that would produce that — finite-diff'd. Same convention
+        as the empirical: 3×6 ∂rpy/∂leg_n. Empirical and theoretical
+        should agree if the IK matches reality."""
+        # The IK produces leg lengths from rpy. The inverse (rpy from
+        # legs) is what we want here. We take a finite-difference of
+        # the forward IK at +rpy_eps for each axis, which gives us
+        # ∂legs/∂rpy (3x6 transpose). Pseudo-invert to get ∂rpy/∂legs.
+        eps = 0.01  # 0.01° rpy perturbation for the FD
+        out = {}
+        for z in z_list:
+            t0, _ = _compute_motor_targets(
+                (0.0, 0.0, float(z)), (0.0, 0.0, 0.0),
+                self.geom, self.limits)
+            cols = []
+            for axis in range(3):
+                rpy = [0.0, 0.0, 0.0]
+                rpy[axis] = eps
+                t1, _ = _compute_motor_targets(
+                    (0.0, 0.0, float(z)),
+                    (rpy[0], rpy[1], rpy[2]),
+                    self.geom, self.limits)
+                col = [(t1[i] - t0[i]) / eps for i in range(6)]
+                cols.append(col)
+            # cols is 3x6: ∂legs/∂rpy_axis. We want ∂rpy/∂legs (3x6).
+            # The 6×3 tall matrix is rank-deficient (only 3 dims of
+            # rpy); pseudo-inverse gives the least-squares mapping
+            # ∂rpy/∂legs.
+            d_legs_d_rpy = np.array(cols).T   # shape (6, 3)
+            d_rpy_d_legs = np.linalg.pinv(d_legs_d_rpy)   # shape (3, 6)
+            # Same shape as empirical: dict by delta (theoretical
+            # doesn't depend on δ, so emit identical entries for each).
+            per_d = {}
+            for d in d_list:
+                per_d[f"{d:.4f}"] = d_rpy_d_legs.tolist()
+            out[f"{z:.1f}"] = per_d
+        return out
+
+    def _sysid_compute_diff(self, master):
+        """Per-cell %deviation: (emp - theo) / theo × 100. Useful for
+        spotting which legs/axes deviate most. Cells where theo is
+        near zero show up as None to avoid divide-by-zero noise."""
+        emp = master.get('empirical_jacobian', {}) or {}
+        theo = master.get('theoretical_jacobian', {}) or {}
+        out = {}
+        for z_key, e_per_d in emp.items():
+            t_per_d = theo.get(z_key, {})
+            per_d_out = {}
+            for d_key, e_jac in e_per_d.items():
+                t_jac = t_per_d.get(d_key)
+                if not t_jac:
+                    continue
+                rows = []
+                for axis in range(3):
+                    row = []
+                    for leg in range(6):
+                        e = e_jac[axis][leg]
+                        t = t_jac[axis][leg]
+                        if e is None or t is None or abs(t) < 1e-6:
+                            row.append(None)
+                        else:
+                            row.append(float((e - t) / t * 100.0))
+                    rows.append(row)
+                per_d_out[d_key] = rows
+            out[z_key] = per_d_out
+        return out
+
+    def _sysid_dump(self, sysid_dir, master):
+        path = os.path.join(sysid_dir, 'jacobian.json')
+        try:
+            with open(path, 'w') as f:
+                json.dump(self._scrub_non_finite(master), f, indent=2,
+                          allow_nan=False)
+        except Exception as e:
+            self.get_logger().warn(f"sysid dump failed: {e}")
 
     def _lr_wait_z_reached(self, z, abort_event):
         """Wait until leg encoders match the live commanded targets AND
