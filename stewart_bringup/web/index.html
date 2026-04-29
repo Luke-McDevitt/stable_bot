@@ -3560,7 +3560,13 @@ let _depthLatest = null;
 let _depthLastMs = 0;
 let _ballDepthLastMs = 0;
 let _ballDepthXY = null;
-const V0_STALE_MS = 500;         // hide V0 circle after 500ms (color path is fast)
+// V0 freshness window. 500 ms was tight when the RGB feed ran at
+// 15 fps and rosbridge wasn't throttled; with the new 100 ms
+// throttle on /oak/rgb/image_compressed, image-and-pixel-topic
+// arrival schedules can drift 200 ms apart and the renderer's 5 Hz
+// staleness check would flicker. 1500 ms is comfortably above any
+// realistic skew.
+const V0_STALE_MS = 1500;
 // Depth-blob detection drops detection rate when foam absorbs IR
 // (observed ~1.5 Hz on a foam ball). A 500 ms freshness gate would
 // hide the circle between every message in that regime, so the

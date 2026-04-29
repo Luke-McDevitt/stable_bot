@@ -121,16 +121,14 @@ def detect_ball_v0(rgb_bgr: np.ndarray,
 # rasterization or pose noise. Matches the on-platform gate in
 # ball_localizer_node._project_to_platform.
 PLATFORM_MASK_RADIUS_M = 0.220
-# The depth-blob detector needs a TIGHTER mask than V0 because the
-# ArUco marker ring is mounted on a frame that physically protrudes
-# above the deck (the markers sit at ring_radius_mm=120 with size 50
-# so they cover r∈[~95, ~145] mm, and the mounting hardware is 5 to
-# tens of mm above the deck). Inside the 220-mm V0 mask, the
-# marker-ring frame dominates the connected components — bag
-# 20260429T230819Z showed depth-blob locked at 150 mm from V0 ball
-# with std=0.9 mm, on a 10000-pixel blob. V0 doesn't care because
-# the markers aren't orange. Keep depth-blob inside the marker ring.
-PLATFORM_DEPTH_MASK_RADIUS_M = 0.080
+# With self-cal removed (probe data confirmed pose math is accurate
+# within 20 mm), the depth-blob detector no longer needs a tight
+# mask to keep the median honest — invalid stereo on the smooth
+# deck just produces height=-inf, which fails the threshold
+# naturally. Keep the depth mask just slightly tighter than the
+# physical 200 mm deck so the rim's stereo discontinuity doesn't
+# leak in: 0.190 m + 12 px erosion is well inside the rim.
+PLATFORM_DEPTH_MASK_RADIUS_M = 0.190
 
 
 def _quat_to_rot(w, x, y, z):
@@ -242,7 +240,7 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
                            h_max_mm: float = BALL_HEIGHT_MAX_MM,
                            min_area_px: int = DEPTH_BLOB_MIN_AREA_PX,
                            edge_erode_px: int = 12) \
-        -> Optional[tuple]:
+        -> Tuple[Optional[tuple], dict]:
     """Find an "above-the-platform" blob in the depth image.
 
     Inputs:
@@ -274,10 +272,19 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
       4. Threshold (height - offset) ∈ [h_min, h_max] inside the
          eroded mask. Take the largest connected component.
 
-    Returns (cx, cy, area_px, confidence) or None.
+    Returns (blob_or_None, stats_dict). Stats are filled at every
+    intermediate gate so the periodic [probe] log can pinpoint why
+    a frame produced no detection.
     """
+    stats: dict = {
+        'mask_pixels': 0, 'eroded_pixels': 0,
+        'valid_in_eroded': 0, 'n_above': 0,
+        'max_height_mm': 0.0, 'min_height_mm_in_mask': 0.0,
+        'median_height_in_mask_mm': 0.0,
+        'largest_blob_area': 0, 'fail_reason': 'cv2_missing',
+    }
     if cv2 is None:
-        return None
+        return None, stats
     if depth_mm.shape != platform_mask.shape:
         # StereoDepth depth-aligned to CAM_A should match RGB raw
         # resolution; if it doesn't, resize depth to the mask shape.
@@ -318,10 +325,24 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
     # diagnostic tuple for backwards-compat / overlay HUD.
     plane_offset = 0.0
 
+    # Capture stats now that we have everything: how many mask
+    # pixels, how many had valid stereo, height distribution.
+    stats['mask_pixels'] = int(np.sum(platform_mask > 0))
+    stats['eroded_pixels'] = int(np.sum(eroded > 0))
+    valid_mask_pixels = (~invalid) & (eroded > 0)
+    stats['valid_in_eroded'] = int(np.sum(valid_mask_pixels))
+    if stats['valid_in_eroded']:
+        valid_heights = height[valid_mask_pixels]
+        stats['max_height_mm'] = float(np.max(valid_heights))
+        stats['min_height_mm_in_mask'] = float(np.min(valid_heights))
+        stats['median_height_in_mask_mm'] = float(np.median(valid_heights))
+
     above = (height > h_min_mm) & (height < h_max_mm)
     above &= eroded > 0
+    stats['n_above'] = int(np.sum(above))
     if not np.any(above):
-        return None
+        stats['fail_reason'] = 'no_pixels_above'
+        return None, stats
     bin_img = above.astype(np.uint8) * 255
     # Close BEFORE open: foam-ball depth has scattered dropouts (foam
     # absorbs IR), so close (dilate-then-erode) stitches a sparse
@@ -332,27 +353,31 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
                                kernel, iterations=2)
     bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_OPEN,
                                kernel, iterations=1)
-    n_lab, labels, stats, cents = cv2.connectedComponentsWithStats(
+    n_lab, labels, cc_stats, cents = cv2.connectedComponentsWithStats(
         bin_img, connectivity=8)
     # label 0 is background — skip it
     if n_lab <= 1:
-        return None
-    areas = stats[1:, cv2.CC_STAT_AREA]
+        stats['fail_reason'] = 'no_components'
+        return None, stats
+    areas = cc_stats[1:, cv2.CC_STAT_AREA]
     j = int(np.argmax(areas)) + 1
-    area = float(stats[j, cv2.CC_STAT_AREA])
+    area = float(cc_stats[j, cv2.CC_STAT_AREA])
+    stats['largest_blob_area'] = int(area)
     if area < min_area_px:
-        return None
+        stats['fail_reason'] = 'blob_below_min_area'
+        return None, stats
     cx, cy = cents[j]
     # Confidence = clipped fraction of the largest blob's bounding-box
     # area filled with above-plane pixels. A perfect ball cap fills
     # ~π/4 of its bbox; we normalize against that.
-    bbox_w = float(stats[j, cv2.CC_STAT_WIDTH])
-    bbox_h = float(stats[j, cv2.CC_STAT_HEIGHT])
+    bbox_w = float(cc_stats[j, cv2.CC_STAT_WIDTH])
+    bbox_h = float(cc_stats[j, cv2.CC_STAT_HEIGHT])
     bbox_area = max(bbox_w * bbox_h, 1.0)
     fill = area / bbox_area
     confidence = float(np.clip(fill / (np.pi / 4.0), 0.0, 1.0))
-    return (float(cx), float(cy), float(area), confidence,
-            plane_offset, bin_img, eroded)
+    stats['fail_reason'] = 'ok'
+    return ((float(cx), float(cy), float(area), confidence,
+             plane_offset, bin_img, eroded), stats)
 
 
 def render_depth_debug_overlay(rgb_bgr: np.ndarray,
@@ -756,6 +781,11 @@ class OakDriverNode(Node):
         self._n_v0 = 0
         self._n_depth_blob = 0
         self._diag_t0 = time.monotonic()
+        # Per-frame depth detector stats from the last detection
+        # attempt. Surfaced in the [probe] log so we can see which
+        # gate (no above-plane pixels, blob too small, etc.) is
+        # filtering out the ball without re-running the algorithm.
+        self._last_depth_stats: Optional[dict] = None
         self.create_timer(5.0, self._log_pipeline_health)
 
         # Toggle for V0 platform masking. Default on. Set
@@ -871,6 +901,20 @@ class OakDriverNode(Node):
                         pts.append(f"x={col}:{v}")
                     self.get_logger().info(
                         f"[probe] depth_row(y={h//2}): " + "  ".join(pts))
+                    # Last detector-algo internal stats. Tells us
+                    # which gate killed the detection.
+                    s = self._last_depth_stats
+                    if s is not None:
+                        self.get_logger().info(
+                            f"[probe] depth_alg: "
+                            f"mask={s.get('mask_pixels', 0)} "
+                            f"eroded={s.get('eroded_pixels', 0)} "
+                            f"valid_in_mask={s.get('valid_in_eroded', 0)} "
+                            f"n_above={s.get('n_above', 0)} "
+                            f"max_h={s.get('max_height_mm', 0):.0f}mm "
+                            f"med_h={s.get('median_height_in_mask_mm', 0):.0f}mm "
+                            f"largest_blob={s.get('largest_blob_area', 0)}px "
+                            f"fail={s.get('fail_reason', '?')}")
             except Exception as e:
                 self.get_logger().info(f"[probe] failed: {e}")
 
@@ -1032,9 +1076,10 @@ class OakDriverNode(Node):
                 if (self._platform_depth_mask is not None
                         and self._expected_depth is not None):
                     depth_frame = depth_msg.getFrame()  # uint16 mm, (H, W)
-                    det = detect_ball_depth_blob(
+                    det, depth_stats = detect_ball_depth_blob(
                         depth_frame, self._platform_depth_mask,
                         self._expected_depth)
+                    self._last_depth_stats = depth_stats
                     above_mask = None
                     eroded_mask = None
                     plane_offset_mm = 0.0
