@@ -12,6 +12,10 @@
       "id": 305,
       "type": "bool"
     },
+    "axis0.config.motor.current_soft_max": {
+      "id": 315,
+      "type": "float32"
+    },
     "axis0.config.can.encoder_msg_rate_ms": {
       "id": 275,
       "type": "uint32"

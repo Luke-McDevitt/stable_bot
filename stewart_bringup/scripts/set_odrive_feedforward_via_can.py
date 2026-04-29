@@ -42,10 +42,17 @@ Usage:
   python3 set_odrive_feedforward_via_can.py --apply \
       --control-mode position --input-mode passthrough --clear-errors
 
+  # Bump per-axis current cap persistently (GUI's set_leg_current is
+  # runtime-only — does not survive disarm/reboot. 2026-04-29 the
+  # platform jammed at -3.6° tilt because flash had 6 A and the GUI's
+  # 11 A wasn't sticking):
+  python3 set_odrive_feedforward_via_can.py --apply --current-soft-max 12.0
+
   # Full "prepare for level loop" baseline (one command):
   python3 set_odrive_feedforward_via_can.py --apply \
       --control-mode position --input-mode passthrough --clear-errors \
-      --vel-integrator-gain 0.333 --wl-ff true --encoder-rate-ms 2
+      --vel-integrator-gain 0.333 --wl-ff true --encoder-rate-ms 2 \
+      --current-soft-max 12.0
 
 Modes:
   --status (default if nothing else): SDO-read each parameter on each
@@ -179,6 +186,14 @@ def _build_targets(args):
     if getattr(args, 'input_mode', None) is not None:
         out.append(('axis0.controller.config.input_mode',
                     int(args.input_mode), int))
+    # Optional: persistent per-axis current soft cap. The runtime
+    # CMD_SET_LIMITS (cmd 0x00F) does NOT persist — set_leg_current
+    # in the GUI silently reverts to the flash value on reboot/disarm.
+    # 2026-04-29: legs 0 and 5 jammed at 6 A (default flash value)
+    # despite GUI showing 11 A; root cause was no persistent write.
+    if getattr(args, 'current_soft_max', None) is not None:
+        out.append(('axis0.config.motor.current_soft_max',
+                    float(args.current_soft_max), float))
     return out
 
 
@@ -511,6 +526,16 @@ def main():
                         'name (passthrough/vel_ramp/trap_traj/...) or a '
                         'number (0-8). For the level loop you want '
                         '"passthrough" (=1). Persists to flash on save.')
+    p.add_argument('--current-soft-max', type=float, default=None,
+                   metavar='AMPS',
+                   help='set axis0.config.motor.current_soft_max (the '
+                        'per-axis soft current cap). Persists to flash, '
+                        'unlike the GUI\'s set_leg_current which only '
+                        'updates the runtime value. Bump above 6 A if '
+                        'legs are saturating against gravity load when '
+                        'the platform is significantly tilted. Stays '
+                        'below current_hard_max (default 90 A factory '
+                        'cal); set in the 8-15 A range for typical use.')
     p.add_argument('--clear-errors', action='store_true',
                    help='also call clear_errors() on each axis before save. '
                         'Use this when drives have stuck active_errors '
