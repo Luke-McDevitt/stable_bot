@@ -260,6 +260,17 @@ class BallLocalizerNode(Node):
         # Express hit in platform frame.
         delta = hit_mono - t_pose
         p_plat = R_pose.T @ delta
+        # On-platform gate. The ray-plane intersection extends infinitely;
+        # an orange object on a desk next to the platform projects to a
+        # platform-frame point well outside the disk. Reject anything
+        # beyond 220 mm radius (platform radius 200 mm + 20 mm margin
+        # for ball-rim slop and pose noise) — V0 false-positives off the
+        # side stop driving /ball_xy_mono and the GUI overlay (which
+        # gates on /ball_xy_mono freshness).
+        ON_PLATFORM_R_M = 0.220
+        r2 = float(p_plat[0]) ** 2 + float(p_plat[1]) ** 2
+        if r2 > ON_PLATFORM_R_M ** 2:
+            return None
         return float(p_plat[0]), float(p_plat[1]), float(p_plat[2])
 
     def _project_spatial_to_platform(
@@ -285,6 +296,12 @@ class BallLocalizerNode(Node):
         R_pose = _quat_to_rot(qw, qx, qy, qz)
         delta = P_mono - t_pose
         p_plat = R_pose.T @ delta
+        # Same on-platform gate as the mono path — see
+        # _project_to_platform docstring.
+        ON_PLATFORM_R_M = 0.220
+        r2 = float(p_plat[0]) ** 2 + float(p_plat[1]) ** 2
+        if r2 > ON_PLATFORM_R_M ** 2:
+            return None
         return float(p_plat[0]), float(p_plat[1]), float(p_plat[2])
 
     def _on_spatial(self, msg: PointStamped):

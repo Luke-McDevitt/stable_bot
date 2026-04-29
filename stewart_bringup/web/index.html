@@ -1558,10 +1558,11 @@ let topic = {};     // name -> ROSLIB.Topic
 let velCapInitialized = false;  // seeded from /status or /get_speed_cap
 let lastStatusMs = 0;           // last /status reception (ms epoch, 0 = never)
 let lastStatus = null;          // last parsed /status JSON (or null)
-// Last time the Stabilization-panel Z slider received user input.
-// Used by syncStabZFromStatus to avoid yanking the slider while the
-// user is actively dragging it.
+// Last time various Z sliders received user input. Used by the
+// /status echo paths to avoid yanking a slider while the user is
+// actively dragging it.
 let _stabZUserEditMs = 0;
+let _d2ZUserEditMs   = 0;
 const lastRxMs = { status: 0, encoders: 0, rpy: 0, currents: 0 };
 
 const $ = (id) => document.getElementById(id);
@@ -1702,6 +1703,18 @@ function setupROSInterface() {
     ros, name: '/oak/ball/v0/rgb_pixel',
     messageType: 'geometry_msgs/msg/PointStamped' });
   topic.ball_v0.subscribe(onBallV0Pixel);
+
+  // Localized ball position (on-platform-gated). The GUI overlay
+  // gates on this so orange false positives off the side of the
+  // platform don't paint a circle — ball_localizer drops projections
+  // beyond 220 mm radius, so /ball_xy_mono only fires when the V0
+  // detection is actually on the disk.
+  topic.ball_xy_mono = new ROSLIB.Topic({
+    ros, name: '/ball_xy_mono',
+    messageType: 'geometry_msgs/msg/PointStamped' });
+  topic.ball_xy_mono.subscribe(() => {
+    _ballMonoLastMs = performance.now();
+  });
 
   // OAK capture-to-Pi-receipt latency (ms). Computed in oak_driver_node
   // from dai.Clock.now() vs ImgFrame.getTimestamp() — both Pi-side, no
@@ -1905,13 +1918,14 @@ function setupROSInterface() {
       const s = JSON.parse(m.data);
       lastStatus = s;     // stash parsed JSON for non-rendering consumers
                           // (e.g. _ivaIsArmed in the sweep preflight)
-      // Keep the Stabilization Z slider in sync with whatever Z the
-      // controller is actually holding. Source of truth: status's
-      // current_xyz, updated by every set_pose in stewart_control_node.
-      // This makes the slider correct whether Z was changed by the
-      // stab panel itself, the IVA panel's Apply tilt, the IVA
-      // sweep, or any other consumer of /control_cmd.
+      // Keep both Z sliders (Stabilization panel + Demo 2 panel) in
+      // sync with whatever Z the controller is actually holding. Source
+      // of truth: status's current_xyz, updated by every set_pose in
+      // stewart_control_node. This makes the sliders correct whether
+      // Z was changed by the stab panel, Demo 2, the IVA panel's
+      // Apply tilt, an IVA sweep, or any other /control_cmd consumer.
       syncStabZFromStatus(s);
+      syncDemo2ZFromStatus(s);
       $('status-box').innerText = Object.entries(s).map(([k,v])=>
         `${k.padEnd(28)} ${JSON.stringify(v)}`).join('\n');
       updateLevelButtons(!!s.level_enabled);
@@ -3434,6 +3448,12 @@ let _fpsLastFrameMs = 0;
 // .cx/.cy/.r in 960x540 pixel space (RGB ISP from oak_driver_node).
 let _v0Latest = null;
 let _v0LastMs = 0;
+// Last time /ball_xy_mono published (i.e., last on-platform localized
+// detection). The V0 overlay gates on BOTH this AND a fresh V0 pixel
+// so off-platform false positives — orange on a desk next to the
+// platform — don't paint a circle. ball_localizer_node now rejects
+// projections outside r=220 mm, so /ball_xy_mono only fires on-disk.
+let _ballMonoLastMs = 0;
 const V0_STALE_MS = 500;         // hide circle after 500ms of no detections
 const V0_OVERLAY_TICK_MS = 200;  // re-evaluate staleness at 5 Hz
 
@@ -3464,6 +3484,9 @@ function initVisionGUI() {
   $('d2-cancel-btn').addEventListener('click', cancelDemo2Target);
   $('d2-z').addEventListener('input', (e) => {
     $('d2-z-val').innerText = e.target.value;
+    // Mark a "user is dragging" timestamp so the /status echo path
+    // (syncDemo2ZFromStatus) doesn't fight a live drag.
+    _d2ZUserEditMs = Date.now();
     // Push z-offset only while a demo is active.
     if (activeDemo >= 1) publishCmdRaw(`z_offset:${e.target.value}`);
   });
@@ -3737,34 +3760,53 @@ function ivaCaptureLevelRef() {
   _ivaSetRecStatus('level reference captured', true);
 }
 
-// Pull current Z from /status.current_xyz and update the
-// Stabilization-panel Z slider so it never goes stale. Called from
-// the /status subscription handler at ~2 Hz.
-//
-// Skips programmatic updates while the user is actively dragging
-// (touched the slider in the last 1 s) so a long drag isn't yanked
-// by stale echoes. Threshold of 0.5 mm avoids jittering the slider
-// when the controller's reported Z and the slider's value are
-// already in agreement.
-function syncStabZFromStatus(s) {
-  if (!s || !Array.isArray(s.current_xyz) || s.current_xyz.length < 3) return;
-  const newZ = Number(s.current_xyz[2]);
+// Generic Z-slider sync: pull current Z from /status.current_xyz and
+// update a slider whose mtime tracker says the user isn't currently
+// dragging. Threshold of 0.5 mm avoids jittering when slider and
+// controller are already in agreement. Used for both the
+// Stabilization panel and the Demo 2 panel — same /status, two
+// different sliders.
+function _syncZSlider(opts) {
+  const newZ = opts.newZ;
   if (!isFinite(newZ)) return;
-  // Don't fight the user mid-drag.
-  if (Date.now() - _stabZUserEditMs < 1000) return;
-  const stabZ = document.getElementById('stab-z-slider');
-  const stabZr = document.getElementById('stab-z-readout');
-  if (!stabZ) return;
-  const cur = parseFloat(stabZ.value);
+  if (Date.now() - opts.lastUserEditMs < 1000) return;   // user dragging
+  const slider  = document.getElementById(opts.sliderId);
+  const readout = document.getElementById(opts.readoutId);
+  if (!slider) return;
+  const cur = parseFloat(slider.value);
   const rounded = Math.round(newZ);
   if (Math.abs(cur - rounded) < 0.5) return;
   // Clamp to slider's declared range so .value still parses cleanly
   // even if some upstream commanded a Z outside [min, max].
-  const lo = Number(stabZ.min);
-  const hi = Number(stabZ.max);
+  const lo = Number(slider.min);
+  const hi = Number(slider.max);
   const clamped = Math.max(lo, Math.min(hi, rounded));
-  stabZ.value = String(clamped);
-  if (stabZr) stabZr.innerText = stabZ.value + ' mm';
+  slider.value = String(clamped);
+  if (readout) readout.innerText = opts.readoutSuffix
+    ? slider.value + opts.readoutSuffix
+    : slider.value;
+}
+
+function syncStabZFromStatus(s) {
+  if (!s || !Array.isArray(s.current_xyz) || s.current_xyz.length < 3) return;
+  _syncZSlider({
+    newZ: Number(s.current_xyz[2]),
+    lastUserEditMs: _stabZUserEditMs,
+    sliderId: 'stab-z-slider',
+    readoutId: 'stab-z-readout',
+    readoutSuffix: ' mm',
+  });
+}
+
+function syncDemo2ZFromStatus(s) {
+  if (!s || !Array.isArray(s.current_xyz) || s.current_xyz.length < 3) return;
+  _syncZSlider({
+    newZ: Number(s.current_xyz[2]),
+    lastUserEditMs: _d2ZUserEditMs,
+    sliderId: 'd2-z',
+    readoutId: 'd2-z-val',
+    readoutSuffix: '',
+  });
 }
 
 // Read the IVA panel's Z slider. Returns the height in mm above the
@@ -4295,9 +4337,16 @@ function renderV0Overlay() {
   const ring = $('vis-overlay-ball');
   const dot  = $('vis-overlay-ball-center');
   if (!cb || !ring || !dot) return;
-  const fresh = _v0Latest &&
-                (performance.now() - _v0LastMs) < V0_STALE_MS;
-  if (!cb.checked || !fresh) {
+  const now = performance.now();
+  // Two-condition freshness: V0 pixel detection AND /ball_xy_mono
+  // (which only fires when ball_localizer's on-platform gate passes).
+  // If V0 finds something orange on a desk next to the platform,
+  // /oak/ball/v0/rgb_pixel still fires (good — V0 doesn't know about
+  // the platform), but ball_localizer rejects the projection and
+  // /ball_xy_mono goes silent — so we hide the overlay.
+  const v0Fresh   = _v0Latest && (now - _v0LastMs) < V0_STALE_MS;
+  const monoFresh = (now - _ballMonoLastMs) < V0_STALE_MS;
+  if (!cb.checked || !v0Fresh || !monoFresh) {
     ring.setAttribute('visibility', 'hidden');
     dot.setAttribute('visibility',  'hidden');
     return;
