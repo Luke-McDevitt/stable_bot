@@ -4208,19 +4208,32 @@ function ivaPushBag(name) {
 
 // Auto-abort on /odrive_errors. The error topic is already
 // subscribed elsewhere — extend the existing JSON-shape detection.
-function _ivaSweepCheckOdriveErrors(s) {
+function _ivaSweepCheckOdriveErrors(nodes) {
   if (!_ivaSweep.running) return;
   try {
-    const errs = (typeof s === 'string') ? JSON.parse(s) : s;
-    let any = false;
-    for (const k in errs) {
-      if (Number(errs[k]?.active_errors || 0) !== 0) { any = true; break; }
+    const arr = (typeof nodes === 'string') ? JSON.parse(nodes) : nodes;
+    if (!Array.isArray(arr)) return;
+    // Collect per-leg detail so the abort message names which legs
+    // and which error bits — distinguishes a fresh fault from a
+    // stale WATCHDOG_TIMER_EXPIRED that should have been cleared by
+    // prep_pos_ff. If you see this with the same code as prep
+    // cleared, something genuinely went wrong during the sweep.
+    const offenders = [];
+    for (const e of arr) {
+      const ae = Number(e?.active_errors || 0);
+      if (ae !== 0) {
+        const decoded = (Array.isArray(e.active_decoded)
+                         && e.active_decoded.length)
+            ? e.active_decoded.join('+')
+            : `0x${ae.toString(16)}`;
+        offenders.push(`leg ${e.node ?? '?'}: ${decoded}`);
+      }
     }
-    if (any) {
+    if (offenders.length) {
       _ivaSweep.abort = true;
       _ivaSetSweepStatus(
-        `aborted — /odrive_errors reports active fault. `
-        + `Clear errors and re-arm before retrying.`, false);
+        `aborted — /odrive_errors: ${offenders.join('; ')}. `
+        + `Re-arm or clear errors before retrying.`, false);
     }
   } catch (e) {}
 }

@@ -2139,10 +2139,34 @@ class StewartControlNode(Node):
                 # this, set_pose can be silently ignored if a leg's
                 # runtime mode happens to be VELOCITY (e.g. left over
                 # from manual jogging or a flash-cached config).
+                #
+                # ALSO clears any latched ODrive errors first (Phase 0).
+                # The most common false-positive on the IVA sweep's
+                # /odrive_errors watchdog is a stale WATCHDOG_TIMER_EXPIRED
+                # (0x01000000) from a previous arm/disarm cycle — see
+                # project memory feedback_odrive_watchdog. Clearing here
+                # gives the sweep a known-clean starting state, so any
+                # error reported mid-sweep is genuine and abort-worthy.
                 if not self.armed:
-                    ok, reply_msg = False, "arm first"
+                    ok, reply_msg = False, (
+                        "arm first (Arming panel OR Stabilization → Arm)")
                 else:
-                    ok, reply_msg = self._prepare_for_level()
+                    cleared = []
+                    if self.bus is not None:
+                        with self.bus_lock:
+                            for n in range(6):
+                                try:
+                                    _send_cmd(self.bus, n,
+                                              CMD_CLEAR_ERRORS, b'\x00')
+                                    cleared.append(n)
+                                except Exception:
+                                    pass
+                    # Tiny pause so clear-errors takes effect before the
+                    # mode-write in Phase 1.
+                    time.sleep(0.05)
+                    ok, prep_msg = self._prepare_for_level()
+                    reply_msg = (f"cleared errors on legs {cleared}; "
+                                 f"{prep_msg}") if ok else prep_msg
             elif cmd == 'go_to_rest':
                 # Always stop the level loop first so it can't keep re-
                 # adding tilt correction while we're trying to park.
