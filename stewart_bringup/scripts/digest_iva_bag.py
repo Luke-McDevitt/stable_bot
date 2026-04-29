@@ -104,10 +104,36 @@ def _read_bag(bag_dir: str):
     """Walk the bag once, deserialize the topics we care about.
     Returns dicts of stamps + decoded values per topic.
     """
-    storage = StorageOptions(uri=bag_dir, storage_id='mcap')
+    # Auto-detect storage from metadata.yaml. On ROS 2 Kilted, forcing
+    # storage_id='mcap' AND passing the directory URI fails because
+    # the mcap plugin tries to open the directory as a file. Empty
+    # storage_id is the documented "let rosbag2 figure it out" mode
+    # and works for both mcap and sqlite3 bags.
+    storage = StorageOptions(uri=bag_dir, storage_id='')
     converter = ConverterOptions('', '')
     reader = SequentialReader()
-    reader.open(storage, converter)
+    try:
+        reader.open(storage, converter)
+    except Exception as e_auto:
+        # Fallback: enumerate .mcap files in the dir and try each.
+        # Some rosbag2 versions still want an explicit file URI.
+        mcap_files = sorted(p for p in os.listdir(bag_dir)
+                            if p.endswith('.mcap'))
+        last_err = e_auto
+        for mf in mcap_files:
+            try:
+                storage2 = StorageOptions(
+                    uri=os.path.join(bag_dir, mf), storage_id='mcap')
+                reader = SequentialReader()
+                reader.open(storage2, converter)
+                break
+            except Exception as e_file:
+                last_err = e_file
+                continue
+        else:
+            raise RuntimeError(
+                f"could not open bag at {bag_dir} (auto: {e_auto}; "
+                f"file fallback: {last_err})")
 
     topic_types = {t.name: t.type for t in reader.get_all_topics_and_types()}
 
