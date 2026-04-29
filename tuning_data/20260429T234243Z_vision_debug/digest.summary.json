@@ -1,0 +1,66 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260429T234243Z_vision_debug",
+  "duration_s": 11.046664613,
+  "topic_counts": {
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 625,
+    "/ball_xy_oak": 118,
+    "/control_cmd": 3,
+    "/control_result": 0,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/spatial": 116,
+    "/oak/ball/v0/diagnostic": 118,
+    "/oak/ball/v0/rgb_pixel": 117,
+    "/oak/depth_blob/debug_image": 115,
+    "/oak/latency_ms": 119,
+    "/oak/rgb/image_compressed": 117,
+    "/platform/imu/data": 3425,
+    "/platform_pose": 117,
+    "/platform_pose/markers_visible": 117,
+    "/platform_rpy": 222,
+    "/status": 23
+  },
+  "v0": {
+    "detections_n": 117,
+    "detection_rate_hz_mean": 10.345454545454546,
+    "detection_rate_hz_min": 5.0,
+    "detection_rate_hz_max": 13.0,
+    "largest_silence_s": 0.17140807400000002
+  },
+  "depth_blob": {
+    "detections_n": 0,
+    "detection_rate_hz_mean": 0.0,
+    "detection_rate_hz_min": 0.0,
+    "detection_rate_hz_max": 0.0,
+    "largest_silence_s": 0.0,
+    "plane_offset_mm": {
+      "n": 0
+    },
+    "area_px": {
+      "n": 0
+    },
+    "confidence": {
+      "n": 0
+    }
+  },
+  "platform_frame_mm": {
+    "v0_xy_n": 625,
+    "depth_xy_n": 0,
+    "detector_disagreement_mm": {
+      "n": 0
+    }
+  },
+  "pixel_space": {
+    "detector_disagreement_px": {
+      "n": 0
+    }
+  },
+  "markers_visible": {
+    "n": 117,
+    "mean": 8.0,
+    "min": 8,
+    "max": 8
+  },
+  "debug_image_frames": 115
+}
