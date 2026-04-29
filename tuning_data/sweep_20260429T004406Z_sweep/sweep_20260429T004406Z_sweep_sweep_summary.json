@@ -92,7 +92,7 @@
       "bag": "004421Z_z0300",
       "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004421Z_z0300_summary.json",
       "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004421Z_z0300_timeseries.csv",
-      "plot_path": null,
+      "plot_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004421Z_z0300_plots.png",
       "n_samples": 14306,
       "n_step_trials": 8
     },
@@ -101,7 +101,7 @@
       "bag": "004541Z_z0350",
       "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004541Z_z0350_summary.json",
       "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004541Z_z0350_timeseries.csv",
-      "plot_path": null,
+      "plot_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004541Z_z0350_plots.png",
       "n_samples": 14307,
       "n_step_trials": 8
     },
@@ -110,7 +110,7 @@
       "bag": "004700Z_z0400",
       "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004700Z_z0400_summary.json",
       "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004700Z_z0400_timeseries.csv",
-      "plot_path": null,
+      "plot_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004700Z_z0400_plots.png",
       "n_samples": 14131,
       "n_step_trials": 8
     },
@@ -119,7 +119,7 @@
       "bag": "004819Z_z0450",
       "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004819Z_z0450_summary.json",
       "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004819Z_z0450_timeseries.csv",
-      "plot_path": null,
+      "plot_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004819Z_z0450_plots.png",
       "n_samples": 14262,
       "n_step_trials": 8
     },
@@ -128,7 +128,7 @@
       "bag": "004939Z_z0500",
       "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004939Z_z0500_summary.json",
       "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004939Z_z0500_timeseries.csv",
-      "plot_path": null,
+      "plot_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/004939Z_z0500_plots.png",
       "n_samples": 14223,
       "n_step_trials": 8
     },
@@ -137,7 +137,7 @@
       "bag": "005058Z_z0550",
       "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/005058Z_z0550_summary.json",
       "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/005058Z_z0550_timeseries.csv",
-      "plot_path": null,
+      "plot_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T004406Z_sweep/005058Z_z0550_plots.png",
       "n_samples": 14226,
       "n_step_trials": 8
     }
