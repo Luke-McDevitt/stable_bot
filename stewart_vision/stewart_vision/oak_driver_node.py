@@ -839,14 +839,45 @@ class OakDriverNode(Node):
                     h, w = df.shape[:2]
                     sub = df[h // 2 - 5:h // 2 + 5,
                              w // 2 - 5:w // 2 + 5]
-                    valid = sub[sub > 0]
-                    meas = float(np.median(valid)) if valid.size else 0.0
+                    valid_center = sub[sub > 0]
+                    meas = float(np.median(valid_center)) if valid_center.size else 0.0
+                    # Frame-wide stats so we can see whether the
+                    # whole image reads at the wrong scale or just
+                    # the center patch.
+                    valid_all = df[df > 0]
+                    if valid_all.size:
+                        d_min = float(np.min(valid_all))
+                        d_p25 = float(np.percentile(valid_all, 25))
+                        d_med = float(np.median(valid_all))
+                        d_p75 = float(np.percentile(valid_all, 75))
+                        d_max = float(np.max(valid_all))
+                        invalid_frac = float(np.sum(df == 0)) / float(df.size)
+                    else:
+                        d_min = d_p25 = d_med = d_p75 = d_max = 0.0
+                        invalid_frac = 1.0
                     self.get_logger().info(
                         f"[probe] pose.z={pose_z_mm:.0f}mm "
                         f"exp_center={exp_center:.0f}mm "
                         f"meas_center={meas:.0f}mm "
                         f"depth_shape={df.shape} "
-                        f"mask_shape={self._platform_mask.shape}")
+                        f"mask_shape={self._platform_mask.shape} "
+                        f"dtype={df.dtype}")
+                    self.get_logger().info(
+                        f"[probe] depth_full: "
+                        f"min={d_min:.0f} p25={d_p25:.0f} "
+                        f"median={d_med:.0f} p75={d_p75:.0f} "
+                        f"max={d_max:.0f} "
+                        f"invalid={invalid_frac*100:.1f}%")
+                    # Sample row at image vertical center, 5 columns
+                    # spread evenly. Tells us if the wrong-scale
+                    # reading is image-wide or pocketed.
+                    row = df[h // 2, :]
+                    pts = []
+                    for col in (0, w // 4, w // 2, 3 * w // 4, w - 1):
+                        v = int(row[col])
+                        pts.append(f"x={col}:{v}")
+                    self.get_logger().info(
+                        f"[probe] depth_row(y={h//2}): " + "  ".join(pts))
             except Exception as e:
                 self.get_logger().info(f"[probe] failed: {e}")
 
