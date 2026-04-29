@@ -290,14 +290,21 @@ def _load_level_gains():
         'kp': 0.7, 'ki': 0.2, 'deadband_deg': 0.05,
         'rate_limit_deg_per_iter': 0.2, 'max_corr_deg': 5.0,
         'filter_alpha': 0.3,
-        # When |err_filt| < deadband_deg, the integrator decays toward
-        # zero by this factor PER TICK at the reference rate (50 Hz).
-        # 0.99 ⇒ ~50-tick (1 second) time constant at 50 Hz; scaled
+        # Integrator-decay band:
+        #   |err_filt| > integ_decay_outer_deg → full integration, no decay
+        #   integ_decay_outer_deg ≥ |err_filt| ≥ deadband_deg → linear blend
+        #   |err_filt| < deadband_deg → no integration, full decay
+        #
+        # The blend range is what addresses the "loop keeps correcting
+        # at small but non-zero error" pattern observed 2026-04-29 —
+        # decay engages well before the deadband so wind-up bleeds off
+        # while error is still in the 0.02-0.10° range that the loop
+        # spends most of its time at. Set outer == deadband to disable
+        # the blend zone (binary in/out of deadband, original behavior).
+        'integ_decay_outer_deg': 0.10,
+        # Decay strength PER TICK at the reference rate (50 Hz). Scaled
         # automatically to whatever loop rate is actually running.
-        # 1.0 disables decay (legacy behavior — wind-up causes the
-        # 5.9-second limit cycle observed in 2026-04-28 sweeps). 0.0
-        # zeros the integrator immediately when in deadband (most
-        # aggressive). 0.99 is a good default starting point.
+        # 0.99 ⇒ ~1 second time constant. 1.0 disables decay entirely.
         'integ_decay_per_tick_at_50hz': 0.99,
     }
     if not os.path.exists(LEVEL_GAINS_PATH):
@@ -3207,21 +3214,28 @@ class StewartControlNode(Node):
             err_r_f = alpha * err_r + (1 - alpha) * err_r_f
             err_p_f = alpha * err_p + (1 - alpha) * err_p_f
             clip_flags = 0
-            # Outside deadband: standard PI integrator action.
-            # Inside deadband: decay toward zero so historical wind-up
-            # doesn't keep producing corrections after the error has
-            # essentially settled (the cause of the slow 0.17 Hz limit
-            # cycle observed in 2026-04-28 sweeps).
-            if abs(err_r_f) > deadband:
-                integ_r += -err_r_f * ki * dt
-            else:
-                integ_r *= integ_decay
-                clip_flags |= (1 << 4)   # deadband_r
-            if abs(err_p_f) > deadband:
-                integ_p += -err_p_f * ki * dt
-            else:
-                integ_p *= integ_decay
-                clip_flags |= (1 << 5)   # deadband_p
+            # Graduated integrator update:
+            #   |err| > outer  → full integration, no decay (decay_w=1, scale=1)
+            #   |err| < deadband → no integration, full decay (decay_w=0, scale=0)
+            #   between: linear blend, so wind-up bleeds off while error
+            #            is still small but non-zero.
+            outer_r = max(deadband + 1e-6,
+                          g.get('integ_decay_outer_deg', 0.10))
+            for axis_n, err_f in (('r', err_r_f), ('p', err_p_f)):
+                ae = abs(err_f)
+                if ae >= outer_r:
+                    blend = 1.0
+                elif ae <= deadband:
+                    blend = 0.0
+                    clip_flags |= (1 << (4 if axis_n == 'r' else 5))
+                else:
+                    blend = (ae - deadband) / (outer_r - deadband)
+                # decay_weight: 1 at outer (no decay), integ_decay at deadband
+                decay_weight = integ_decay + blend * (1.0 - integ_decay)
+                if axis_n == 'r':
+                    integ_r = integ_r * decay_weight + (-err_f * ki * dt) * blend
+                else:
+                    integ_p = integ_p * decay_weight + (-err_f * ki * dt) * blend
             if integ_r > max_corr or integ_r < -max_corr:
                 clip_flags |= (1 << 6)   # integ_clamp_r
             integ_r = max(-max_corr, min(max_corr, integ_r))
