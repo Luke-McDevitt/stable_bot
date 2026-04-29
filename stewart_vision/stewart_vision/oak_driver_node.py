@@ -156,11 +156,16 @@ def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30):
     mono_r.setFps(mono_fps)
 
     # StereoDepth — depth output aligned to RGB. Conservative settings
-    # to keep Myriad X working memory in budget.
+    # to keep Myriad X working memory in budget. NOTE: LR-check MUST
+    # be ON when setDepthAlign points at a non-input socket (CAM_A here);
+    # the OAK firmware rejects the config otherwise (error code 180:
+    # "Disparity/depth CENTER alignment requires left-right check mode
+    # enabled"). Subpixel and disparity-output stay off — those were the
+    # actual memory hogs in the earlier mid-stream crash.
     stereo = pipeline.create(dai.node.StereoDepth)
     stereo.setDefaultProfilePreset(
         dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
-    stereo.setLeftRightCheck(False)
+    stereo.setLeftRightCheck(True)
     stereo.setExtendedDisparity(False)
     stereo.setSubpixel(False)
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
