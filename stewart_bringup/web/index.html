@@ -1410,19 +1410,23 @@ function setupROSInterface() {
           prog.className = 'text-xs mono mt-2 min-h-4 ' +
             (r.success ? 'text-emerald-400' : 'text-red-400');
         }
-        if (r.gains && (r.cmd === 'level_get_gains' ||
-                        r.cmd === 'level_reload_gains' ||
-                        r.cmd === 'level_save_gains')) {
-          populateGainInputs(r.gains);
-        }
         if (r.cmd === 'level_save_gains') {
+          if (r.success) {
+            clearLvlGainDirty();   // edits are now committed; let heartbeat resume populating
+          }
           setLvlGainsStatus(
             r.success ? `✓ ${r.message}` : `✗ ${r.message}`,
             r.success ? 'text-emerald-400' : 'text-red-400');
         } else if (r.cmd === 'level_reload_gains') {
+          if (r.success) clearLvlGainDirty();
           setLvlGainsStatus(
             r.success ? '✓ reverted from yaml' : `✗ ${r.message}`,
             r.success ? 'text-emerald-400' : 'text-red-400');
+        }
+        if (r.gains && (r.cmd === 'level_get_gains' ||
+                        r.cmd === 'level_reload_gains' ||
+                        r.cmd === 'level_save_gains')) {
+          populateGainInputs(r.gains);
         }
         return;
       }
@@ -1767,30 +1771,42 @@ function lvlDeleteBag(name) {
     .catch(e => alert('delete failed: ' + e));
 }
 // Level-gain inputs in the GUI panel are linked to specific keys on
-// the gains dict. Populating: write the live values into each input,
-// but only when the user isn't actively focused on it (so we don't
-// stomp on a half-typed value mid-edit).
+// the gains dict. Sticky-dirty model: the heartbeat populates each
+// input from the server's value UNTIL the user types in it, after
+// which that field is marked dirty and the heartbeat stops touching it.
+// Save (success) and Revert clear the dirty flag and allow heartbeat
+// repopulation again.
 const LVL_GAIN_KEYS = [
   'kp', 'ki', 'deadband_deg', 'filter_alpha',
   'rate_limit_deg_per_iter', 'max_corr_deg',
   'integ_decay_outer_deg', 'integ_decay_per_tick_at_50hz',
 ];
+const lvlGainDirty = new Set();
+function clearLvlGainDirty() {
+  lvlGainDirty.clear();
+  // Also clear the visual hint
+  for (const k of LVL_GAIN_KEYS) {
+    const el = document.getElementById('lvl-g-' + k);
+    if (el) el.classList.remove('ring-1', 'ring-amber-400');
+  }
+}
+function markLvlGainDirty(key) {
+  lvlGainDirty.add(key);
+  const el = document.getElementById('lvl-g-' + key);
+  if (el) el.classList.add('ring-1', 'ring-amber-400');
+}
 function populateGainInputs(gains) {
   for (const k of LVL_GAIN_KEYS) {
     const el = document.getElementById('lvl-g-' + k);
     if (!el) continue;
-    if (document.activeElement === el) continue;   // don't stomp the input the user is editing
+    if (lvlGainDirty.has(k)) continue;            // user is editing this — don't stomp
+    if (document.activeElement === el) continue;  // belt-and-suspenders
     if (gains[k] !== undefined && gains[k] !== null) {
       el.value = gains[k];
     }
   }
 }
 function readGainInputs() {
-  // Returns dict of any gain whose input has a parseable number AND
-  // differs from the data attribute (set by populateGainInputs to mark
-  // the "loaded from server" baseline). Skip unchanged values to keep
-  // the diff small. For now: send everything filled — backend handles
-  // the merge and only changes what's different.
   const out = {};
   for (const k of LVL_GAIN_KEYS) {
     const el = document.getElementById('lvl-g-' + k);
@@ -1839,8 +1855,15 @@ function wireLevelTuningPanel() {
     setTimeout(lvlFetchBags, 800);
   });
   // Gains: editable inputs + Save/Revert/Zero buttons.
-  // Inputs are populated by populateGainInputs() when /level_record_state
-  // delivers a `gains` block (which it does at 5 Hz).
+  // Each input gets a sticky-dirty marker — once the user types,
+  // populateGainInputs() stops overwriting it on the heartbeat.
+  // Save success / Revert clears the dirty set.
+  for (const k of LVL_GAIN_KEYS) {
+    const el = document.getElementById('lvl-g-' + k);
+    if (!el) continue;
+    el.addEventListener('input', () => markLvlGainDirty(k));
+    el.addEventListener('change', () => markLvlGainDirty(k));
+  }
   $('lvl-gains-save').addEventListener('click', () => {
     const payload = readGainInputs();
     if (Object.keys(payload).length === 0) {
@@ -1849,11 +1872,12 @@ function wireLevelTuningPanel() {
     }
     setLvlGainsStatus('saving…', 'text-slate-400');
     publishCmd({cmd: 'level_save_gains', gains: payload});
-    // The reply comes back on /control_result; we listen for it
-    // separately to report success/failure.
+    // The reply comes back on /control_result; the dirty flags get
+    // cleared there on success.
   });
   $('lvl-gains-revert').addEventListener('click', () => {
     setLvlGainsStatus('reverting from yaml…', 'text-slate-400');
+    clearLvlGainDirty();
     publishCmd({cmd: 'level_reload_gains'});
   });
   $('lvl-zero-integ').addEventListener('click', () =>
