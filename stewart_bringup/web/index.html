@@ -3417,9 +3417,13 @@ function setCalStatus(msg, ok) {
 function onBallState(m) {
   const px = m.pose.position.x;
   const py = m.pose.position.y;   // platform-frame mm
-  // Off-platform watchdog: ball physically off the disk.
+  // Off-platform watchdog: only meaningful when a ball-tracking demo
+  // is engaged. The stub ball_kf_node can publish garbage /ball_state
+  // values (pixel-space coordinates rather than platform-frame mm)
+  // long before any demo is started — those would re-trigger the
+  // strobe forever. Observed 2026-04-29 during Phase A bring-up.
   const r = Math.hypot(px, py);
-  if (r > 200) onOffPlatform();
+  if (r > 200 && activeDemo > 0) onOffPlatform();
 
   // SVG renders with an inner scale(1,-1), so we use platform-frame y directly.
   const dot = $('ball-dot');
