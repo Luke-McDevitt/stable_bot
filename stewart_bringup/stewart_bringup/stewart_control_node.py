@@ -290,6 +290,13 @@ def _load_level_gains():
         'kp': 0.7, 'ki': 0.2, 'deadband_deg': 0.05,
         'rate_limit_deg_per_iter': 0.2, 'max_corr_deg': 5.0,
         'filter_alpha': 0.3,
+        # If True AND empirical_ik is loaded, the level loop uses the
+        # measured platform Jacobian's pinv to map (corr_r, corr_p, 0)
+        # to leg deltas instead of the geometric IK. The geometric IK
+        # is still used for the translation part (xyz). Lets us A/B
+        # the empirical replacement vs the original IK by toggling
+        # the gain via the GUI.
+        'use_empirical_ik': True,
         # Integrator-decay band:
         #   |err_filt| > integ_decay_outer_deg → full integration, no decay
         #   integ_decay_outer_deg ≥ |err_filt| ≥ deadband_deg → linear blend
@@ -321,23 +328,154 @@ def _load_level_gains():
     return out
 
 
-def _compute_motor_targets(xyz, rpy, geom, limits):
-    ext = _leg_extensions_mm(xyz, rpy, geom)
+def _compute_motor_targets(xyz, rpy, geom, limits, empirical_ik=None):
+    """Compute the 6 leg-position targets (turns) for a desired
+    platform pose. By default this is the GEOMETRIC IK (the original
+    behavior). When `empirical_ik` is provided, the rotational part
+    of the pose (rpy) is mapped via the measured platform Jacobian
+    instead of the geometric IK — translational part (xyz) is still
+    handled geometrically because we never measured x/y perturbation
+    response. Hybrid IK in other words: geometric translation,
+    empirical rotation.
+    """
+    if empirical_ik is None:
+        ext = _leg_extensions_mm(xyz, rpy, geom)
+        targets = np.zeros(6)
+        any_clamped = False
+        for i in range(6):
+            ext_turns = MOTOR_EXTENSION_SIGN * ext[i] / MM_PER_REV
+            raw = limits[i]['rest'] + ext_turns
+            lo, hi = limits[i]['lo'], limits[i]['hi']
+            if raw < lo:
+                targets[i] = lo
+                any_clamped = True
+            elif raw > hi:
+                targets[i] = hi
+                any_clamped = True
+            else:
+                targets[i] = raw
+        return targets, any_clamped
+    # Hybrid path. Base targets at zero rpy, geometric.
+    base_ext = _leg_extensions_mm(xyz, (0.0, 0.0, 0.0), geom)
     targets = np.zeros(6)
+    for i in range(6):
+        ext_turns = MOTOR_EXTENSION_SIGN * base_ext[i] / MM_PER_REV
+        targets[i] = limits[i]['rest'] + ext_turns
+    # Empirical rotation: pinv(J_at_z) @ rpy (in degrees) → leg deltas (turns).
+    leg_deltas = empirical_ik.rpy_to_leg_deltas(xyz[2], rpy)
+    targets = targets + np.asarray(leg_deltas)
+    # Re-clamp to soft limits.
     any_clamped = False
     for i in range(6):
-        ext_turns = MOTOR_EXTENSION_SIGN * ext[i] / MM_PER_REV
-        raw = limits[i]['rest'] + ext_turns
         lo, hi = limits[i]['lo'], limits[i]['hi']
-        if raw < lo:
-            targets[i] = lo
-            any_clamped = True
-        elif raw > hi:
-            targets[i] = hi
-            any_clamped = True
-        else:
-            targets[i] = raw
+        if targets[i] < lo:
+            targets[i] = lo; any_clamped = True
+        elif targets[i] > hi:
+            targets[i] = hi; any_clamped = True
     return targets, any_clamped
+
+
+class EmpiricalIK:
+    """Loads a jacobian.json (from system-id) and provides a
+    Z-interpolated rpy-to-leg-deltas mapping. Used by the level loop
+    as a drop-in replacement for the rotational part of the geometric
+    IK, accounting for real per-leg gain mismatches.
+
+    The mapping is `leg_deltas (turns) = pinv(J_z) @ rpy (degrees)`
+    where J_z is the empirical Jacobian at Z, averaged across the
+    "clean" deltas (≥0.05 turns) to skip the stiction-noise-dominated
+    small-δ measurements.
+    """
+
+    # Skip δ smaller than this when averaging the empirical Jacobian.
+    # The 2026-04-29 sysid run showed the small-δ cells are
+    # disproportionately affected by stiction (leg 4's roll response
+    # doubles between δ=0.025 and δ=0.10), so they shouldn't dominate
+    # the IK fit.
+    MIN_DELTA_FOR_FIT = 0.05
+
+    def __init__(self, jacobian_path):
+        self.path = jacobian_path
+        self.z_list = []
+        self.pinv_per_z = []   # list of np.ndarray (6, 3)
+        self.J_per_z = []      # list of np.ndarray (3, 6) — raw J for diagnostics
+        self.loaded_at = None
+        self._load()
+
+    def is_loaded(self):
+        return bool(self.z_list)
+
+    def _load(self):
+        try:
+            with open(self.path) as f:
+                doc = json.load(f)
+        except Exception as e:
+            self.load_error = f"open: {e}"
+            return
+        emp = doc.get('empirical_jacobian') or {}
+        rows = []
+        for z_str, per_d in emp.items():
+            try:
+                z = float(z_str)
+            except ValueError:
+                continue
+            jacs = []
+            for d_str, jac in per_d.items():
+                try:
+                    d = float(d_str)
+                except ValueError:
+                    continue
+                if d < self.MIN_DELTA_FOR_FIT:
+                    continue
+                arr = np.array([
+                    [float(v) if v is not None else np.nan for v in row]
+                    for row in jac
+                ], dtype=float)
+                jacs.append(arr)
+            if not jacs:
+                continue
+            mean_J = np.nanmean(np.stack(jacs), axis=0)
+            mean_J = np.nan_to_num(mean_J, nan=0.0)
+            pinv_J = np.linalg.pinv(mean_J)
+            rows.append((z, mean_J, pinv_J))
+        rows.sort(key=lambda r: r[0])
+        self.z_list = [r[0] for r in rows]
+        self.J_per_z = [r[1] for r in rows]
+        self.pinv_per_z = [r[2] for r in rows]
+        self.loaded_at = doc.get('started_utc')
+
+    def _interp_pinv(self, z_mm):
+        """Linear interpolation of pinv(J) on Z. Clamps outside the
+        measured range to the nearest endpoint — safer than
+        extrapolating the empirical fit."""
+        if not self.z_list:
+            return None
+        z = float(z_mm)
+        if z <= self.z_list[0]:
+            return self.pinv_per_z[0]
+        if z >= self.z_list[-1]:
+            return self.pinv_per_z[-1]
+        for i in range(len(self.z_list) - 1):
+            z_lo, z_hi = self.z_list[i], self.z_list[i + 1]
+            if z_lo <= z < z_hi:
+                a = (z - z_lo) / (z_hi - z_lo)
+                return (1.0 - a) * self.pinv_per_z[i] + a * self.pinv_per_z[i + 1]
+        return self.pinv_per_z[-1]
+
+    def rpy_to_leg_deltas(self, z_mm, rpy_deg):
+        """Returns 6-vector of leg-position deltas (turns) that
+        achieve the desired (roll, pitch, yaw) at Z=z_mm. Yaw is
+        included even though the level loop usually commands yaw=0;
+        the model captures real yaw response from individual legs and
+        passing 0 just means the inversion finds the leg combo that
+        produces the desired roll/pitch with minimal yaw side-effect."""
+        pinv = self._interp_pinv(z_mm)
+        if pinv is None:
+            return np.zeros(6)
+        rpy_arr = np.array([float(rpy_deg[0]), float(rpy_deg[1]),
+                            float(rpy_deg[2]) if len(rpy_deg) > 2 else 0.0],
+                           dtype=float)
+        return pinv @ rpy_arr
 
 
 # ---------------- Background threads ----------------------------------
@@ -856,6 +994,18 @@ class StewartControlNode(Node):
 
         # Level-PI tuning support — see docs/level_pi_tuning_plan.md.
         self.level_gains = _load_level_gains()
+        # Empirical IK from system-id. Loaded if a jacobian.json exists
+        # under tuning_data/system_id_*/. Picks the most recent run.
+        # If no jacobian available, level loop falls back to geometric IK.
+        self.empirical_ik = self._load_empirical_ik()
+        if self.empirical_ik is not None and self.empirical_ik.is_loaded():
+            self.get_logger().info(
+                f"empirical IK loaded from {self.empirical_ik.path} "
+                f"({len(self.empirical_ik.z_list)} Z heights, "
+                f"started {self.empirical_ik.loaded_at})")
+        else:
+            self.get_logger().info(
+                "empirical IK not loaded — using geometric IK only")
         # Step-injection offsets read by _level_run on each tick. Driven
         # by the step-test routine and the auto-sweep step battery.
         self.level_step_offset_roll = 0.0
@@ -2084,6 +2234,13 @@ class StewartControlNode(Node):
                 ok, reply_msg = self._do_sysid_start(d)
             elif cmd == 'sysid_abort':
                 ok, reply_msg = self._do_sysid_abort()
+            elif cmd == 'reload_empirical_ik':
+                ok, reply_msg = self._do_reload_empirical_ik()
+                if self.empirical_ik is not None and \
+                        self.empirical_ik.is_loaded():
+                    extra['empirical_ik_path'] = self.empirical_ik.path
+                    extra['empirical_ik_z_list'] = list(
+                        self.empirical_ik.z_list)
             elif cmd == 'level_save_gains':
                 # Edit gains directly from the GUI: validate, write the
                 # YAML, reload in-memory. Body is `gains: {<key>: <val>, ...}`
@@ -2167,6 +2324,47 @@ class StewartControlNode(Node):
         self.feeder.set_pos_targets(cur)
         return True, (f"clamped at {new_target:+.4f}" if clamped
                       else f"L{n} → {new_target:+.4f}")
+
+    def _load_empirical_ik(self):
+        """Find the most recent system_id_*/jacobian.json under
+        tuning_data/ and load it. Returns None if none found.
+        Failure to parse a file logs a warning but doesn't crash —
+        the node falls back to geometric IK."""
+        repo_tuning = os.path.join(_BRINGUP_DIR, '..', 'tuning_data')
+        repo_tuning = os.path.abspath(repo_tuning)
+        if not os.path.isdir(repo_tuning):
+            return None
+        candidates = []
+        for name in os.listdir(repo_tuning):
+            if not name.startswith('system_id_'):
+                continue
+            jp = os.path.join(repo_tuning, name, 'jacobian.json')
+            if os.path.isfile(jp):
+                candidates.append((name, jp))
+        if not candidates:
+            return None
+        # Newest by name (timestamps are lexicographically sortable).
+        candidates.sort(key=lambda c: c[0])
+        _name, latest = candidates[-1]
+        try:
+            return EmpiricalIK(latest)
+        except Exception as e:
+            self.get_logger().warn(f"empirical IK load failed: {e}")
+            return None
+
+    def _do_reload_empirical_ik(self):
+        """Re-scan tuning_data/ and reload the empirical IK. Useful
+        after committing a new system-id run without restarting the
+        node."""
+        prev = self.empirical_ik
+        self.empirical_ik = self._load_empirical_ik()
+        if self.empirical_ik is None or not self.empirical_ik.is_loaded():
+            return False, "no jacobian.json found under tuning_data/"
+        msg = (f"loaded {self.empirical_ik.path} "
+               f"({len(self.empirical_ik.z_list)} Z heights)")
+        if prev is None:
+            return True, "empirical IK enabled: " + msg
+        return True, "empirical IK reloaded: " + msg
 
     def _do_set_pose(self, x, y, z, r, p, yw, allow_large=False):
         if not self.armed:
@@ -2966,6 +3164,8 @@ class StewartControlNode(Node):
         'filter_alpha':                  (0.0, 1.0),
         'integ_decay_outer_deg':         (0.0, 5.0),
         'integ_decay_per_tick_at_50hz':  (0.0, 1.0),
+        # 0 = use geometric IK (legacy). 1 = use empirical IK if loaded.
+        'use_empirical_ik':              (0.0, 1.0),
     }
 
     def _do_level_save_gains(self, gains_dict):
@@ -3444,8 +3644,14 @@ class StewartControlNode(Node):
                        self.current_rpy[2]]
             motor_targets = list(nan6)
             if self.limits is not None and self.feeder is not None:
+                # Pick IK: empirical (if loaded AND gain enabled) or geometric.
+                use_emp = bool(g.get('use_empirical_ik', 0)) and \
+                    self.empirical_ik is not None and \
+                    self.empirical_ik.is_loaded()
+                ik = self.empirical_ik if use_emp else None
                 targets, _ = _compute_motor_targets(
-                    tuple(xyz), tuple(rpy_cmd), self.geom, self.limits)
+                    tuple(xyz), tuple(rpy_cmd), self.geom, self.limits,
+                    empirical_ik=ik)
                 self.feeder.set_pos_targets(targets)
                 motor_targets = [float(v) for v in targets]
             # Diag publish — outside the IK guard so we still get data
