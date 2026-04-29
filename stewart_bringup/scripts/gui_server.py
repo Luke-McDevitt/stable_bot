@@ -76,12 +76,23 @@ _iva_proc = None
 _iva_path = None
 _iva_started_at = None
 IVA_TOPICS = [
+    # Pose truth + vision pose (the comparison subjects)
     '/platform_rpy',
     '/platform_pose',
     '/platform_pose/markers_visible',
+    # Raw IMU for offline deeper-look (acceleration / angular vel)
+    '/platform/imu/data',
+    # Operator commands + control-node replies — needed to know what
+    # tilt was commanded at each timestamp during a sweep
     '/control_cmd',
     '/control_result',
-    '/platform/imu/data',
+    # Motor state — same level of detail as level_pi tuning bags so
+    # post-run analysis can correlate vision residuals against
+    # what the actuators were actually doing
+    '/leg_encoders',
+    '/leg_currents',
+    '/status',
+    '/odrive_errors',
 ]
 # Default bag location: in-repo so a commit is one step.
 def _iva_default_dir():

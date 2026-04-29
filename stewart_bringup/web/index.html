@@ -1448,6 +1448,55 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
           <span class="mono whitespace-nowrap">cd ~/stable_bot_repo &amp;&amp; git add tuning_data &amp;&amp; git commit -m "iva sweep" &amp;&amp; git push</span>
         </p>
       </div>
+
+      <!-- Automated grid sweep -->
+      <div class="border-t border-slate-700 pt-3 mt-3">
+        <div class="text-xs text-slate-400 mb-2">
+          Automated sweep — walks a (roll, pitch) grid and holds at
+          each cell. Pair with <b>Start recording</b> to capture the
+          full dataset. Refuses to run unless armed.
+        </div>
+        <div class="grid grid-cols-2 gap-2 text-xs mb-2">
+          <label>Grid:&nbsp;
+            <select id="iva-sweep-grid"
+                    class="mono bg-slate-900 border border-slate-700 rounded px-1">
+              <option value="3">3 × 3 = 9 cells</option>
+              <option value="5" selected>5 × 5 = 25 cells</option>
+              <option value="7">7 × 7 = 49 cells</option>
+              <option value="9">9 × 9 = 81 cells</option>
+            </select>
+          </label>
+          <label>Amp:&nbsp;
+            <input id="iva-sweep-amp" type="number"
+                   min="2" max="15" step="0.5" value="8"
+                   class="mono w-14 bg-slate-900 border border-slate-700 rounded px-1">
+            °
+          </label>
+          <label>Dwell:&nbsp;
+            <input id="iva-sweep-dwell" type="number"
+                   min="0.5" max="5" step="0.1" value="1.5"
+                   class="mono w-14 bg-slate-900 border border-slate-700 rounded px-1">
+            s/cell
+          </label>
+          <label class="flex items-center gap-1"
+                 title="Auto-start the bag recorder before the sweep and stop it after the last cell.">
+            <input id="iva-sweep-auto-rec" type="checkbox" checked> auto-record
+          </label>
+        </div>
+        <div class="flex gap-1 mb-2">
+          <button id="iva-sweep-run"
+                  class="flex-1 bg-blue-600 hover:bg-blue-500 rounded py-1 text-xs">
+            Run sweep
+          </button>
+          <button id="iva-sweep-cancel"
+                  class="flex-1 bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs"
+                  disabled>
+            Cancel
+          </button>
+        </div>
+        <div id="iva-sweep-status"
+             class="text-xs text-slate-400 mono whitespace-pre-wrap min-h-4">idle</div>
+      </div>
     </details>
   </section>
 
@@ -1545,6 +1594,9 @@ function setupROSInterface() {
     try {
       const d = JSON.parse(m.data);
       renderErrors(d.nodes);
+      // The IVA sweep watches the same payload to auto-abort
+      // if any leg faults mid-sweep.
+      _ivaSweepCheckOdriveErrors(d.nodes);
     } catch (e) { console.error(e); }
   });
 
@@ -3393,6 +3445,10 @@ function initVisionGUI() {
   if (ivaZeroRef) ivaZeroRef.addEventListener('click', ivaCaptureLevelRef);
   if (ivaRecStartBtn) ivaRecStartBtn.addEventListener('click', ivaRecStart);
   if (ivaRecStopBtn)  ivaRecStopBtn.addEventListener('click',  ivaRecStop);
+  const ivaSweepRunBtn    = $('iva-sweep-run');
+  const ivaSweepCancelBtn = $('iva-sweep-cancel');
+  if (ivaSweepRunBtn)    ivaSweepRunBtn.addEventListener('click', ivaSweepRun);
+  if (ivaSweepCancelBtn) ivaSweepCancelBtn.addEventListener('click', ivaSweepCancel);
 
   // Sync record-button state to server-side recorder state on load
   // (page reload during a recording shouldn't lose the reference).
@@ -3638,6 +3694,216 @@ function _ivaSetRecStatus(msg, ok) {
     (ok === false ? 'text-red-400'
      : ok === true ? 'text-emerald-400'
      : 'text-slate-400');
+}
+
+// =====================================================================
+// Automated tilt-sweep grid runner
+// =====================================================================
+// Walks a (roll, pitch) grid in a snake-pattern (rastered) order so
+// successive cells are adjacent — the platform doesn't have to
+// traverse the workspace diagonally between every cell. Each cell
+// publishes a set_pose command and waits `dwell_s` seconds, during
+// which time the recorder captures the IMU + camera + commanded
+// pose for offline residual analysis.
+//
+// Preflight: refuses to start unless the platform is armed (reads
+// the most recent /status; armed = any leg in CLOSED_LOOP_CONTROL).
+// Watchdog: subscribes to /odrive_errors and aborts the sweep if
+// any leg reports an active error code.
+//
+// Timing of one cell:
+//    publishCmd(set_pose) —— 0 ms
+//    settle               —— ~250 ms (legs reaching target)
+//    record               —— rest of dwell budget
+//    next cell
+
+let _ivaSweep = {
+  running: false,
+  step: 0,
+  total: 0,
+  abort: false,
+  grid: null,
+  dwellMs: 0,
+  autoRec: false,
+  startedRec: false,    // whether THIS sweep started the recorder
+};
+
+function _ivaBuildGrid(n, amp) {
+  // n = grid side (e.g. 5 for 5×5). amp = max angle (degrees).
+  // Snake order: row 0 left-to-right, row 1 right-to-left, etc.
+  // Centered on (0, 0); spans [-amp, +amp] inclusive on both axes.
+  const out = [];
+  const stepDeg = (n > 1) ? (2 * amp) / (n - 1) : 0;
+  for (let row = 0; row < n; row++) {
+    const pitch = -amp + row * stepDeg;
+    const cols = [];
+    for (let col = 0; col < n; col++) {
+      cols.push(-amp + col * stepDeg);
+    }
+    if (row % 2 === 1) cols.reverse();   // snake
+    for (const roll of cols) {
+      out.push({ roll, pitch });
+    }
+  }
+  return out;
+}
+
+function _ivaIsArmed() {
+  // Pull the most recent /status JSON from the Status panel —
+  // we already render it there, so it's a few hundred ms old at
+  // worst. /status carries armed flags per leg.
+  try {
+    const txt = document.getElementById('status-box')?.innerText || '';
+    // Status is rendered as "key   value" pairs. Look for any
+    // *_armed line that's true, OR for the level_enabled flag,
+    // OR for the per-leg armed array.
+    const m = txt.match(/leg_armed\s+(\[.*?\])/);
+    if (m) {
+      const arr = JSON.parse(m[1]);
+      if (Array.isArray(arr) && arr.some(Boolean)) return true;
+    }
+    if (/armed\s+true/i.test(txt)) return true;
+  } catch (e) {}
+  return false;
+}
+
+function _ivaSetSweepStatus(msg, ok) {
+  const el = document.getElementById('iva-sweep-status');
+  if (!el) return;
+  el.innerText = msg;
+  el.className = 'text-xs mono whitespace-pre-wrap min-h-4 ' +
+    (ok === false ? 'text-red-400'
+     : ok === true ? 'text-emerald-400'
+     : 'text-slate-400');
+}
+
+async function ivaSweepRun() {
+  if (_ivaSweep.running) return;
+
+  // Preflight: armed?
+  if (!_ivaIsArmed()) {
+    _ivaSetSweepStatus(
+      'refusing to sweep — platform not armed. '
+      + 'Use the Arming panel first.', false);
+    return;
+  }
+
+  const n = parseInt(document.getElementById('iva-sweep-grid').value);
+  const amp = parseFloat(document.getElementById('iva-sweep-amp').value);
+  const dwellS = parseFloat(document.getElementById('iva-sweep-dwell').value);
+  if (!isFinite(n) || !isFinite(amp) || !isFinite(dwellS)) {
+    _ivaSetSweepStatus('invalid grid params', false);
+    return;
+  }
+  const autoRec = !!document.getElementById('iva-sweep-auto-rec').checked;
+
+  const grid = _ivaBuildGrid(n, amp);
+  _ivaSweep = {
+    running: true, step: 0, total: grid.length, abort: false,
+    grid, dwellMs: Math.round(dwellS * 1000),
+    autoRec, startedRec: false,
+  };
+
+  // Auto-record start (if requested AND not already recording).
+  if (autoRec) {
+    try {
+      const r = await fetch('/iva/status');
+      const j = await r.json();
+      if (!j.recording) {
+        const s = await fetch('/iva/start', { method: 'POST' });
+        const sj = await s.json();
+        if (!sj.ok) {
+          _ivaSetSweepStatus(
+            'auto-record start failed: ' + (sj.message || ''), false);
+          _ivaSweep.running = false;
+          return;
+        }
+        _ivaSweep.startedRec = true;
+        _ivaSetRecStatus(sj.message || 'recording', true);
+        document.getElementById('iva-rec-start').disabled = true;
+        document.getElementById('iva-rec-stop').disabled = false;
+      }
+    } catch (e) {
+      _ivaSetSweepStatus('auto-record check failed: ' + e, false);
+      _ivaSweep.running = false;
+      return;
+    }
+  }
+
+  document.getElementById('iva-sweep-run').disabled = true;
+  document.getElementById('iva-sweep-cancel').disabled = false;
+  _ivaSetSweepStatus(`starting sweep — ${grid.length} cells, `
+    + `dwell ${dwellS.toFixed(1)} s, eta ${Math.round(grid.length*dwellS)} s`,
+    null);
+
+  // Run cells sequentially.
+  for (let i = 0; i < grid.length; i++) {
+    if (_ivaSweep.abort) break;
+    _ivaSweep.step = i;
+    const p = grid[i];
+    publishCmd({
+      cmd: 'set_pose',
+      x: 0, y: 0, z: 50,
+      roll: p.roll, pitch: p.pitch, yaw: 0,
+    });
+    _ivaSetSweepStatus(
+      `cell ${i+1}/${grid.length}: roll=${p.roll.toFixed(1)}° `
+      + `pitch=${p.pitch.toFixed(1)}°`, null);
+    await new Promise(res => setTimeout(res, _ivaSweep.dwellMs));
+  }
+
+  // Recovery: command back to neutral.
+  publishCmd({
+    cmd: 'set_pose',
+    x: 0, y: 0, z: 50, roll: 0, pitch: 0, yaw: 0,
+  });
+
+  // Auto-record stop (only if WE started it).
+  if (_ivaSweep.startedRec) {
+    try {
+      const r = await fetch('/iva/stop', { method: 'POST' });
+      const j = await r.json();
+      _ivaSetRecStatus(j.message || 'saved', !!j.ok);
+      document.getElementById('iva-rec-start').disabled = false;
+      document.getElementById('iva-rec-stop').disabled = true;
+    } catch (e) {
+      _ivaSetRecStatus('auto-record stop failed: ' + e, false);
+    }
+  }
+
+  const aborted = _ivaSweep.abort;
+  _ivaSweep.running = false;
+  document.getElementById('iva-sweep-run').disabled = false;
+  document.getElementById('iva-sweep-cancel').disabled = true;
+  _ivaSetSweepStatus(aborted
+    ? `aborted at cell ${_ivaSweep.step + 1}/${grid.length} — `
+      + `commanded back to neutral`
+    : `done — ${grid.length} cells, ~${Math.round(grid.length*_ivaSweep.dwellMs/1000)} s`,
+    !aborted);
+}
+
+function ivaSweepCancel() {
+  if (!_ivaSweep.running) return;
+  _ivaSweep.abort = true;
+}
+
+// Auto-abort on /odrive_errors. The error topic is already
+// subscribed elsewhere — extend the existing JSON-shape detection.
+function _ivaSweepCheckOdriveErrors(s) {
+  if (!_ivaSweep.running) return;
+  try {
+    const errs = (typeof s === 'string') ? JSON.parse(s) : s;
+    let any = false;
+    for (const k in errs) {
+      if (Number(errs[k]?.active_errors || 0) !== 0) { any = true; break; }
+    }
+    if (any) {
+      _ivaSweep.abort = true;
+      _ivaSetSweepStatus(
+        `aborted — /odrive_errors reports active fault. `
+        + `Clear errors and re-arm before retrying.`, false);
+    }
+  } catch (e) {}
 }
 
 function visionHeartbeat() {
