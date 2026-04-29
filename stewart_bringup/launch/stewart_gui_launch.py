@@ -49,6 +49,19 @@ def generate_launch_description():
         emulate_tty=True,
     ))
 
+    # Vision stack — OAK driver, ArUco platform pose, Stage-C
+    # calibration node, plus the ball localizer / KF / ref_generator
+    # / bag_recorder scaffolds. Brought online 2026-04-29 for the
+    # Phase-A bring-up of the closed-loop ball demos. The OAK pipeline
+    # defaults to USB 2.0 in the driver code; the systemd service
+    # overrides this to USB 3.0 via OAK_USB_SPEED=super because the
+    # Pi 5 already has `usb_max_current_enable=1` in config.txt.
+    vision_launch = os.path.join(
+        get_package_share_directory('stewart_vision'),
+        'launch', 'stewart_vision_launch.py')
+    ld.add_action(IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(vision_launch)))
+
     # rosbridge_websocket (default port 9090, host 0.0.0.0). Delay 3 s so
     # stewart_control_node finishes DDS discovery publishing; otherwise the
     # first browser connect can hit the ~1 s service-wait timeout for some
