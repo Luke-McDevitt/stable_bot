@@ -1,0 +1,664 @@
+{
+  "bag_path": "/home/sorak/stable_bot_bags/sweep_20260429T004406Z_sweep/004541Z_z0350",
+  "name": "004541Z_z0350",
+  "duration_s": 76.69081807136536,
+  "n_diag_msgs": 14307,
+  "tick_period_actual_mean_ms": 0.612518399137755,
+  "tick_period_actual_max_ms": 6.616688799113035,
+  "health": {
+    "yaw_first_deg": -39.31147003173828,
+    "yaw_last_deg": -39.21355056762695,
+    "yaw_range_deg": 0.6966705322265625,
+    "yaw_drift_rate_deg_per_s": 0.0012768081834804298,
+    "per_leg_state": [
+      {
+        "leg": 0,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 1,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 2,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 3,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 4,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      },
+      {
+        "leg": 5,
+        "closed_loop_pct": 100.0,
+        "idle_count": 0,
+        "stale_count": 0,
+        "other_count": 0,
+        "first_drop_t_s": null
+      }
+    ],
+    "any_leg_dropped_out": false,
+    "per_leg_active_errors": [
+      {
+        "leg": 0,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 1,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 2,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 3,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 4,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      },
+      {
+        "leg": 5,
+        "seen_mask_hex": "0x00000000",
+        "decoded": [],
+        "first_seen_t_s": null
+      }
+    ],
+    "any_leg_active_error": false,
+    "per_leg_feeder_mode": [
+      {
+        "leg": 0,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 1,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 2,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 3,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 4,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      },
+      {
+        "leg": 5,
+        "modes_seen": [
+          "pos"
+        ],
+        "pos_pct": 100.0
+      }
+    ],
+    "any_leg_not_in_pos": false
+  },
+  "inner_loop_config": {
+    "present": true,
+    "any_differ_across_drives": true,
+    "per_endpoint": {
+      "axis0.config.can.encoder_msg_rate_ms": {
+        "values": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.config.can.error_msg_rate_ms": {
+        "values": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.config.can.heartbeat_msg_rate_ms": {
+        "values": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.config.can.iq_msg_rate_ms": {
+        "values": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.config.can.node_id": {
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "differs_across_drives": true
+      },
+      "axis0.config.enable_watchdog": {
+        "values": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.config.motor.current_hard_max": {
+        "values": [
+          90.0,
+          90.0,
+          90.0,
+          90.0,
+          90.0,
+          90.0
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.config.motor.current_soft_max": {
+        "values": [
+          6.0,
+          6.0,
+          6.0,
+          6.0,
+          6.0,
+          6.0
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.config.motor.torque_constant": {
+        "values": [
+          0.055133331567049026,
+          0.055133331567049026,
+          0.055133331567049026,
+          0.055133331567049026,
+          0.055133331567049026,
+          0.055133331567049026
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.config.motor.wL_FF_enable": {
+        "values": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.config.watchdog_timeout": {
+        "values": [
+          0.5,
+          0.5,
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.controller.config.control_mode": {
+        "values": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.controller.config.input_mode": {
+        "values": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.controller.config.pos_gain": {
+        "values": [
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.controller.config.vel_gain": {
+        "values": [
+          0.1666666716337204,
+          0.1666666716337204,
+          0.1666666716337204,
+          0.1666666716337204,
+          0.1666666716337204,
+          0.1666666716337204
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.controller.config.vel_integrator_gain": {
+        "values": [
+          0.3330000042915344,
+          0.3330000042915344,
+          0.3330000042915344,
+          0.3330000042915344,
+          0.3330000042915344,
+          0.3330000042915344
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.controller.config.vel_integrator_limit": {
+        "values": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.controller.config.vel_limit": {
+        "values": [
+          2.325000047683716,
+          2.325000047683716,
+          2.325000047683716,
+          2.325000047683716,
+          2.325000047683716,
+          2.325000047683716
+        ],
+        "differs_across_drives": false
+      },
+      "axis0.controller.config.vel_limit_tolerance": {
+        "values": [
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0
+        ],
+        "differs_across_drives": false
+      }
+    }
+  },
+  "baseline": {
+    "window_s": [
+      0.0,
+      28.046792030334473
+    ],
+    "samples": 5236,
+    "sample_rate_hz": 195.66635566337004,
+    "rms_roll_deg": 0.1751407214488926,
+    "rms_pitch_deg": 0.1589495181007854,
+    "p2p_roll_deg": 0.49710050225257874,
+    "p2p_pitch_deg": 0.6764179170131683,
+    "mean_roll_deg": -0.033393129266493723,
+    "mean_pitch_deg": -0.04866703346652247,
+    "std_roll_deg": 0.17192780818538292,
+    "std_pitch_deg": 0.15131579282427954,
+    "fft_peak_freq_hz": 0.0799944217757032,
+    "fft_peak_amp_deg": 0.216293169413288,
+    "saturation_pct_any": 16.787624140565317,
+    "saturation_pct_by_flag": {
+      "rate_limit_r": 0.0,
+      "rate_limit_p": 0.0,
+      "max_corr_r": 0.0,
+      "max_corr_p": 0.0,
+      "deadband_r": 5.40488922841864,
+      "deadband_p": 11.382734912146677,
+      "integ_clamp_r": 0.0,
+      "integ_clamp_p": 0.0
+    }
+  },
+  "settling": {
+    "threshold_deg": 0.1,
+    "hold_s": 1.0,
+    "settling_time_roll_s": 11.49674654006958,
+    "settling_time_pitch_s": 3.447705030441284,
+    "ss_window_s": 5.0,
+    "ss_mean_roll_deg": 0.18776366638723435,
+    "ss_mean_pitch_deg": 0.035773119329554064,
+    "ss_std_roll_deg": 0.4244914955241649,
+    "ss_std_pitch_deg": 0.656264106873809,
+    "ss_p2p_roll_deg": 1.9601749777793884,
+    "ss_p2p_pitch_deg": 1.8397608995437622,
+    "time_in_band_005_pct": 2.8936884042776265,
+    "time_in_band_010_pct": 7.192283497588593,
+    "time_in_band_020_pct": 21.98224645278535,
+    "integrator_drift_p2p_roll_deg": 0.34765031933784485,
+    "integrator_drift_p2p_pitch_deg": 0.4560213088989258,
+    "dominant_osc_hz": 0.17783710339534645,
+    "dominant_osc_period_s": 5.623123526573181,
+    "dominant_osc_amp_deg": 0.4886973766569074
+  },
+  "steps_per_trial": [
+    {
+      "t_edge": 28.546992778778076,
+      "amp_deg": 1.0,
+      "rise_time_s": 1.148111343383789,
+      "overshoot_pct": 48.16128000096287,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.6613248955186526,
+      "peak_deg": 1.4816128000096287
+    },
+    {
+      "t_edge": 34.552226305007935,
+      "amp_deg": 1.0,
+      "rise_time_s": 0.903390645980835,
+      "overshoot_pct": 32.98458116736642,
+      "settling_time_s": null,
+      "ss_offset_deg": -1.098909790583246,
+      "peak_deg": 1.3298458116736642
+    },
+    {
+      "t_edge": 40.56450176239014,
+      "amp_deg": 1.0,
+      "rise_time_s": 0.939361572265625,
+      "overshoot_pct": 17.51859767790784,
+      "settling_time_s": null,
+      "ss_offset_deg": -1.0395635683907078,
+      "peak_deg": 1.1751859767790784
+    },
+    {
+      "t_edge": 46.5869402885437,
+      "amp_deg": 1.0,
+      "rise_time_s": 0.9621214866638184,
+      "overshoot_pct": 28.229856458870152,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9530768004916915,
+      "peak_deg": 1.2822985645887015
+    },
+    {
+      "t_edge": 52.60869884490967,
+      "amp_deg": 1.0,
+      "rise_time_s": 1.029675006866455,
+      "overshoot_pct": 50.713493699027644,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9860080118191465,
+      "peak_deg": 1.5071349369902765
+    },
+    {
+      "t_edge": 58.625879764556885,
+      "amp_deg": 1.0,
+      "rise_time_s": 0.9953577518463135,
+      "overshoot_pct": 48.15460291297677,
+      "settling_time_s": null,
+      "ss_offset_deg": -1.0407455795109133,
+      "peak_deg": 1.4815460291297677
+    },
+    {
+      "t_edge": 64.64319467544556,
+      "amp_deg": 1.0,
+      "rise_time_s": 1.2773025035858154,
+      "overshoot_pct": 43.25330615524323,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.56974967047521,
+      "peak_deg": 1.4325330615524323
+    },
+    {
+      "t_edge": 70.67081546783447,
+      "amp_deg": 1.0,
+      "rise_time_s": 1.063628911972046,
+      "overshoot_pct": 27.374408651848103,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.8525333445661032,
+      "peak_deg": 1.273744086518481
+    }
+  ],
+  "steps_aggregated": {
+    "n_trials": 8,
+    "rise_time_s_mean": 1.0398686528205872,
+    "rise_time_s_std": 0.11484420731252151,
+    "rise_time_s_n": 8,
+    "overshoot_pct_mean": 37.04876584052538,
+    "overshoot_pct_std": 11.40920741782303,
+    "overshoot_pct_n": 8,
+    "settling_time_s_mean": null,
+    "settling_time_s_std": null,
+    "settling_time_s_n": 0,
+    "ss_offset_deg_mean": -0.9002389576694589,
+    "ss_offset_deg_std": 0.17935671496822717,
+    "ss_offset_deg_n": 8
+  },
+  "sidecar": {
+    "name": "z0350",
+    "notes": "auto-sweep child bag",
+    "gains": {
+      "kp": 1.0,
+      "ki": 0.3,
+      "deadband_deg": 0.02,
+      "rate_limit_deg_per_iter": 0.25,
+      "max_corr_deg": 5.0,
+      "filter_alpha": 0.3,
+      "integ_decay_per_tick_at_50hz": 0.99
+    },
+    "gains_file_path": "/home/sorak/ros2_ws/src/stewart_bringup/config/level_gains.yaml",
+    "git_sha": "866530c",
+    "started_utc": "2026-04-29T00:45:41.747827Z",
+    "topics": [
+      "/level_diag",
+      "/platform_rpy",
+      "/leg_encoders",
+      "/leg_currents",
+      "/control_cmd"
+    ],
+    "sweep_dir": "/home/sorak/stable_bot_bags/sweep_20260429T004406Z_sweep",
+    "sweep_test_idx": 2,
+    "sweep_test_total": 6,
+    "commanded_z_mm": 35.0,
+    "step_count": 8,
+    "step_amp_deg": 1.0,
+    "step_hold_s": 3.0,
+    "baseline_s": 30.0,
+    "level_loop_hz": 200.0,
+    "ctrl_period_s": 0.005,
+    "inner_loop_config": {
+      "0": {
+        "axis0.config.motor.wL_FF_enable": true,
+        "axis0.controller.config.vel_integrator_gain": 0.3330000042915344,
+        "axis0.controller.config.vel_integrator_limit": null,
+        "axis0.controller.config.pos_gain": 20.0,
+        "axis0.controller.config.vel_gain": 0.1666666716337204,
+        "axis0.controller.config.vel_limit": 2.325000047683716,
+        "axis0.controller.config.vel_limit_tolerance": 2.0,
+        "axis0.controller.config.control_mode": 3,
+        "axis0.controller.config.input_mode": 1,
+        "axis0.config.motor.current_soft_max": 6.0,
+        "axis0.config.motor.current_hard_max": 90.0,
+        "axis0.config.motor.torque_constant": 0.055133331567049026,
+        "axis0.config.watchdog_timeout": 0.5,
+        "axis0.config.enable_watchdog": true,
+        "axis0.config.can.node_id": 0,
+        "axis0.config.can.heartbeat_msg_rate_ms": 10,
+        "axis0.config.can.encoder_msg_rate_ms": 10,
+        "axis0.config.can.error_msg_rate_ms": 100,
+        "axis0.config.can.iq_msg_rate_ms": 10
+      },
+      "1": {
+        "axis0.config.motor.wL_FF_enable": true,
+        "axis0.controller.config.vel_integrator_gain": 0.3330000042915344,
+        "axis0.controller.config.vel_integrator_limit": null,
+        "axis0.controller.config.pos_gain": 20.0,
+        "axis0.controller.config.vel_gain": 0.1666666716337204,
+        "axis0.controller.config.vel_limit": 2.325000047683716,
+        "axis0.controller.config.vel_limit_tolerance": 2.0,
+        "axis0.controller.config.control_mode": 3,
+        "axis0.controller.config.input_mode": 1,
+        "axis0.config.motor.current_soft_max": 6.0,
+        "axis0.config.motor.current_hard_max": 90.0,
+        "axis0.config.motor.torque_constant": 0.055133331567049026,
+        "axis0.config.watchdog_timeout": 0.5,
+        "axis0.config.enable_watchdog": true,
+        "axis0.config.can.node_id": 1,
+        "axis0.config.can.heartbeat_msg_rate_ms": 10,
+        "axis0.config.can.encoder_msg_rate_ms": 10,
+        "axis0.config.can.error_msg_rate_ms": 100,
+        "axis0.config.can.iq_msg_rate_ms": 10
+      },
+      "2": {
+        "axis0.config.motor.wL_FF_enable": true,
+        "axis0.controller.config.vel_integrator_gain": 0.3330000042915344,
+        "axis0.controller.config.vel_integrator_limit": null,
+        "axis0.controller.config.pos_gain": 20.0,
+        "axis0.controller.config.vel_gain": 0.1666666716337204,
+        "axis0.controller.config.vel_limit": 2.325000047683716,
+        "axis0.controller.config.vel_limit_tolerance": 2.0,
+        "axis0.controller.config.control_mode": 3,
+        "axis0.controller.config.input_mode": 1,
+        "axis0.config.motor.current_soft_max": 6.0,
+        "axis0.config.motor.current_hard_max": 90.0,
+        "axis0.config.motor.torque_constant": 0.055133331567049026,
+        "axis0.config.watchdog_timeout": 0.5,
+        "axis0.config.enable_watchdog": true,
+        "axis0.config.can.node_id": 2,
+        "axis0.config.can.heartbeat_msg_rate_ms": 10,
+        "axis0.config.can.encoder_msg_rate_ms": 10,
+        "axis0.config.can.error_msg_rate_ms": 100,
+        "axis0.config.can.iq_msg_rate_ms": 10
+      },
+      "3": {
+        "axis0.config.motor.wL_FF_enable": true,
+        "axis0.controller.config.vel_integrator_gain": 0.3330000042915344,
+        "axis0.controller.config.vel_integrator_limit": null,
+        "axis0.controller.config.pos_gain": 20.0,
+        "axis0.controller.config.vel_gain": 0.1666666716337204,
+        "axis0.controller.config.vel_limit": 2.325000047683716,
+        "axis0.controller.config.vel_limit_tolerance": 2.0,
+        "axis0.controller.config.control_mode": 3,
+        "axis0.controller.config.input_mode": 1,
+        "axis0.config.motor.current_soft_max": 6.0,
+        "axis0.config.motor.current_hard_max": 90.0,
+        "axis0.config.motor.torque_constant": 0.055133331567049026,
+        "axis0.config.watchdog_timeout": 0.5,
+        "axis0.config.enable_watchdog": true,
+        "axis0.config.can.node_id": 3,
+        "axis0.config.can.heartbeat_msg_rate_ms": 10,
+        "axis0.config.can.encoder_msg_rate_ms": 10,
+        "axis0.config.can.error_msg_rate_ms": 100,
+        "axis0.config.can.iq_msg_rate_ms": 10
+      },
+      "4": {
+        "axis0.config.motor.wL_FF_enable": true,
+        "axis0.controller.config.vel_integrator_gain": 0.3330000042915344,
+        "axis0.controller.config.vel_integrator_limit": null,
+        "axis0.controller.config.pos_gain": 20.0,
+        "axis0.controller.config.vel_gain": 0.1666666716337204,
+        "axis0.controller.config.vel_limit": 2.325000047683716,
+        "axis0.controller.config.vel_limit_tolerance": 2.0,
+        "axis0.controller.config.control_mode": 3,
+        "axis0.controller.config.input_mode": 1,
+        "axis0.config.motor.current_soft_max": 6.0,
+        "axis0.config.motor.current_hard_max": 90.0,
+        "axis0.config.motor.torque_constant": 0.055133331567049026,
+        "axis0.config.watchdog_timeout": 0.5,
+        "axis0.config.enable_watchdog": true,
+        "axis0.config.can.node_id": 4,
+        "axis0.config.can.heartbeat_msg_rate_ms": 10,
+        "axis0.config.can.encoder_msg_rate_ms": 10,
+        "axis0.config.can.error_msg_rate_ms": 100,
+        "axis0.config.can.iq_msg_rate_ms": 10
+      },
+      "5": {
+        "axis0.config.motor.wL_FF_enable": true,
+        "axis0.controller.config.vel_integrator_gain": 0.3330000042915344,
+        "axis0.controller.config.vel_integrator_limit": null,
+        "axis0.controller.config.pos_gain": 20.0,
+        "axis0.controller.config.vel_gain": 0.1666666716337204,
+        "axis0.controller.config.vel_limit": 2.325000047683716,
+        "axis0.controller.config.vel_limit_tolerance": 2.0,
+        "axis0.controller.config.control_mode": 3,
+        "axis0.controller.config.input_mode": 1,
+        "axis0.config.motor.current_soft_max": 6.0,
+        "axis0.config.motor.current_hard_max": 90.0,
+        "axis0.config.motor.torque_constant": 0.055133331567049026,
+        "axis0.config.watchdog_timeout": 0.5,
+        "axis0.config.enable_watchdog": true,
+        "axis0.config.can.node_id": 5,
+        "axis0.config.can.heartbeat_msg_rate_ms": 10,
+        "axis0.config.can.encoder_msg_rate_ms": 10,
+        "axis0.config.can.error_msg_rate_ms": 100,
+        "axis0.config.can.iq_msg_rate_ms": 10
+      }
+    }
+  }
+}
