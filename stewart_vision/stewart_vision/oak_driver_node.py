@@ -235,7 +235,8 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
                            expected_depth_mm: np.ndarray,
                            h_min_mm: float = BALL_HEIGHT_MIN_MM,
                            h_max_mm: float = BALL_HEIGHT_MAX_MM,
-                           min_area_px: int = DEPTH_BLOB_MIN_AREA_PX) \
+                           min_area_px: int = DEPTH_BLOB_MIN_AREA_PX,
+                           edge_erode_px: int = 12) \
         -> Optional[tuple]:
     """Find an "above-the-platform" blob in the depth image.
 
@@ -246,6 +247,27 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
       expected_depth_mm  float32 (H, W) per-pixel expected platform-
                          plane depth in mm (see
                          _expected_plane_depth_map)
+      edge_erode_px      pixels to erode the mask by before height
+                         thresholding. Stereo matching produces
+                         systematically wrong depths within a few
+                         pixels of any depth discontinuity (the
+                         platform rim is one); eroding suppresses
+                         that fringe.
+
+    Method:
+      1. Erode the platform mask to dump the depth-discontinuity
+         fringe.
+      2. Compute height = expected_depth - measured_depth.
+      3. Take the median height across the eroded mask's valid
+         pixels. This is the empirical platform plane offset — it
+         absorbs the cm-level bias in the ArUco-derived expected
+         plane and re-zeroes the threshold without needing a
+         tighter pose. The ball's pixels are a small fraction of
+         the platform area, so they don't move the median. (This
+         is also why we use median over mean — robust to a small
+         high-outlier population, i.e., the ball.)
+      4. Threshold (height - offset) ∈ [h_min, h_max] inside the
+         eroded mask. Take the largest connected component.
 
     Returns (cx, cy, area_px, confidence) or None.
     """
@@ -257,14 +279,37 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
         depth_mm = cv2.resize(
             depth_mm, (platform_mask.shape[1], platform_mask.shape[0]),
             interpolation=cv2.INTER_NEAREST)
+
+    # Erode the mask. The kernel is 2*r+1 square so an erode of
+    # `edge_erode_px` shaves that many pixels off every direction.
+    if edge_erode_px > 0:
+        k = 2 * int(edge_erode_px) + 1
+        eroded = cv2.erode(platform_mask,
+                           np.ones((k, k), np.uint8), iterations=1)
+    else:
+        eroded = platform_mask
+
     measured = depth_mm.astype(np.float32)
     # Treat missing depth (0) as "no observation" — fill with +inf so
     # the height test fails for those pixels.
     invalid = measured <= 1.0
-    measured[invalid] = np.inf
-    height = expected_depth_mm - measured     # +ve = closer than plane
+    measured_safe = measured.copy()
+    measured_safe[invalid] = np.inf
+    raw_height = expected_depth_mm - measured_safe   # +ve = closer than plane
+
+    # Empirical plane offset: median height across valid platform
+    # pixels. Clipped to ±100 mm to absorb sensible ArUco bias but
+    # reject "the pose just collapsed" pathologies.
+    valid_for_plane = (~invalid) & (eroded > 0) & np.isfinite(raw_height)
+    if int(np.sum(valid_for_plane)) >= 100:
+        plane_offset = float(np.median(raw_height[valid_for_plane]))
+        plane_offset = max(-100.0, min(100.0, plane_offset))
+    else:
+        plane_offset = 0.0
+
+    height = raw_height - plane_offset
     above = (height > h_min_mm) & (height < h_max_mm)
-    above &= platform_mask > 0
+    above &= eroded > 0
     if not np.any(above):
         return None
     bin_img = above.astype(np.uint8) * 255
@@ -296,7 +341,7 @@ def detect_ball_depth_blob(depth_mm: np.ndarray,
     bbox_area = max(bbox_w * bbox_h, 1.0)
     fill = area / bbox_area
     confidence = float(np.clip(fill / (np.pi / 4.0), 0.0, 1.0))
-    return float(cx), float(cy), float(area), confidence
+    return float(cx), float(cy), float(area), confidence, plane_offset
 
 
 def _load_rgb_intrinsics(yaml_path: str) -> Tuple[Optional[np.ndarray],
@@ -828,7 +873,7 @@ class OakDriverNode(Node):
                         depth_frame, self._platform_mask,
                         self._expected_depth)
                     if det is not None:
-                        cx, cy, area_px, conf = det
+                        cx, cy, area_px, conf, plane_offset_mm = det
                         p = PointStamped()
                         p.header.stamp = self.get_clock().now().to_msg()
                         p.header.frame_id = 'oak_rgb'
@@ -842,8 +887,15 @@ class OakDriverNode(Node):
                         self.pub_depth_pixel.publish(p)
                         self._n_depth_blob += 1
                         d = Float32MultiArray()
+                        # [cx, cy, area, confidence, plane_offset_mm]
+                        # The last field is the empirical median
+                        # height across the platform mask — large
+                        # absolute values mean the ArUco-derived
+                        # plane is biased and the self-cal is
+                        # absorbing it. Watch this in the GUI.
                         d.data = [float(cx), float(cy),
-                                  float(area_px), float(conf)]
+                                  float(area_px), float(conf),
+                                  float(plane_offset_mm)]
                         self.pub_depth_diag.publish(d)
 
         # Raw mono left — Stage C ArUco solve consumes this.
