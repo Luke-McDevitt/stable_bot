@@ -78,8 +78,15 @@ class PlatformPoseNode(Node):
                 f"No intrinsics yet at {intr_path}. Run "
                 f"`python3 scripts/calibrate_oak.py --stage A` first.")
 
+        # ArUco runs on the RGB stream (CAM_A) so the OAK-D Pro's IR
+        # dot projector — which contaminates the mono cameras with
+        # bright speckle — doesn't break corner detection. RGB has a
+        # hardware IR-cut filter, so it sees the markers cleanly even
+        # at 800 mA projector. /platform_pose then lives in the RGB
+        # camera frame, which also matches V0 and SLC outputs (no
+        # cross-frame conversion needed downstream).
         self.create_subscription(
-            CompressedImage, '/oak/left/image_compressed',
+            CompressedImage, '/oak/rgb/image_compressed',
             self._on_image, qos_profile_sensor_data)
         self.pub_pose = self.create_publisher(
             PoseStamped, '/platform_pose', 10)
@@ -92,10 +99,13 @@ class PlatformPoseNode(Node):
         with open(path, 'r') as f:
             d = yaml.safe_load(f)
         try:
-            self.K = np.asarray(d['left']['K'], dtype=np.float64).reshape(3, 3)
-            self.dist = np.asarray(d['left']['dist'], dtype=np.float64).ravel()
+            # ArUco runs on the RGB stream (see __init__), so use the
+            # rgb block. Fall back to 'left' for old YAMLs.
+            block = d.get('rgb', d.get('left'))
+            self.K = np.asarray(block['K'], dtype=np.float64).reshape(3, 3)
+            self.dist = np.asarray(block['dist'], dtype=np.float64).ravel()
             self.get_logger().info(
-                f"Loaded left-cam intrinsics from {path}")
+                f"Loaded RGB-cam intrinsics from {path}")
         except Exception as e:
             self.get_logger().error(f"Bad intrinsics yaml: {e}")
             self.K = None
@@ -150,7 +160,7 @@ class PlatformPoseNode(Node):
 
         out = PoseStamped()
         out.header.stamp = msg.header.stamp
-        out.header.frame_id = 'oak_left'
+        out.header.frame_id = 'oak_rgb'
         out.pose.position.x = float(tvec[0])
         out.pose.position.y = float(tvec[1])
         out.pose.position.z = float(tvec[2])

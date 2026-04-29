@@ -135,9 +135,12 @@ class CalibrationNode(Node):
         self._latest_ids = None
         self._captured: List[CapturedFrame] = []
 
-        # ROS interface.
+        # ArUco runs on the RGB stream — same reasoning as
+        # platform_pose_node: IR projector contaminates the mono
+        # image. RGB's IR-cut filter keeps the markers clean.
+        # Stage C extrinsics will live in the RGB camera frame.
         self.create_subscription(
-            CompressedImage, '/oak/left/image_compressed',
+            CompressedImage, '/oak/rgb/image_compressed',
             self._on_image, qos_profile_sensor_data)
 
         self.create_service(
@@ -161,13 +164,16 @@ class CalibrationNode(Node):
         with open(path, 'r') as f:
             d = yaml.safe_load(f)
         try:
+            # ArUco runs on the RGB stream (see __init__).
+            # Fall back to 'left' for old YAMLs.
+            block = d.get('rgb', d.get('left'))
             self.K = np.asarray(
-                d['left']['K'], dtype=np.float64).reshape(3, 3)
+                block['K'], dtype=np.float64).reshape(3, 3)
             self.dist = np.asarray(
-                d['left']['dist'], dtype=np.float64).ravel()
+                block['dist'], dtype=np.float64).ravel()
             src = d.get('source', '?')
             self.get_logger().info(
-                f"Loaded left intrinsics from {path} (source: {src}).")
+                f"Loaded RGB intrinsics from {path} (source: {src}).")
         except Exception as e:
             self.get_logger().error(
                 f"oak_intrinsics.yaml parse error: {e}")

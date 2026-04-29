@@ -22,17 +22,21 @@ V1 hooks are present but no-op until the YOLO model lands.
 Frame conventions:
   RGB camera frame (CAM_A): OpenCV +x right, +y down, +z forward.
   Mono-left frame (CAM_B):  same axes, different origin.
-  Platform frame: from the ArUco-board pose (estimatePoseBoard) that
-                  platform_pose_node publishes. /platform_pose lives in
-                  the mono-left frame because calibration_node runs the
-                  ArUco solve against /oak/left/image_compressed.
+  Platform frame: from the ArUco-board pose that platform_pose_node
+                  publishes. /platform_pose lives in the **RGB**
+                  camera frame as of 2026-04-29 — ArUco was moved
+                  off the mono-left stream to dodge the IR-projector
+                  speckle that was breaking corner detection.
 
 Bridging:
   V0 detects in RGB-frame pixels.
-  /platform_pose lives in mono-left frame.
-  → We transform the RGB-frame ray into mono-left via the
-    cam_a_to_cam_b extrinsics block in oak_intrinsics.yaml, then do
-    the plane intersection in mono-left frame.
+  /platform_pose is also in RGB frame.
+  → No cross-camera transform; the projection collapses to
+    "undistort RGB pixel → ray in RGB → intersect platform plane
+    (in RGB frame) → express in platform frame".
+  T_rgb_to_mono is kept in the code as identity for now so the math
+  paths read uniformly; if Stage C ever moves back to mono (e.g.,
+  IR-strobing solution), this single matrix is the toggle point.
 """
 from __future__ import annotations
 
@@ -134,21 +138,15 @@ class BallLocalizerNode(Node):
             self.dist_rgb = np.asarray(
                 rgb['dist'], dtype=np.float64).ravel()
 
-            # Camera-to-camera extrinsics. Newer YAML schema; fallback
-            # to identity (assumes RGB and mono-left coincide) if the
-            # block is missing.
-            ext_block = d.get('extrinsics', {})
-            ext = ext_block.get('cam_a_to_cam_b')
-            if ext is None:
-                self.get_logger().warn(
-                    "oak_intrinsics.yaml has no 'extrinsics' block; "
-                    "/ball_xy_mono will assume RGB and mono frames "
-                    "coincide (wrong by ~baseline cm). Re-run "
-                    "`calibrate_oak.py --stage factory` to fix.")
-                self.T_rgb_to_mono = np.eye(4, dtype=np.float64)
-            else:
-                self.T_rgb_to_mono = np.asarray(
-                    ext, dtype=np.float64).reshape(4, 4)
+            # /platform_pose now lives in the RGB camera frame, same
+            # frame as V0 detections and SLC output (since 2026-04-29:
+            # ArUco moved off mono left to dodge IR-projector
+            # contamination). The transform between "ball-detection
+            # frame" and "platform_pose frame" is therefore identity
+            # — the cam_a_to_cam_b extrinsics in the YAML are still
+            # the correct factory RGB→mono transform but no longer
+            # part of the projection chain.
+            self.T_rgb_to_mono = np.eye(4, dtype=np.float64)
         except Exception as e:
             self.get_logger().error(f"Bad intrinsics: {e}")
 
