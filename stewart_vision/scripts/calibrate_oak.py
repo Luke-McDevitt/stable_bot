@@ -308,19 +308,25 @@ def stage_factory(out_path: str | None = None,
         # bring-up notes 2026-04-29). The rectified P_left / P_right
         # are still written under `rectification:` for future
         # stereo-triangulation work.
+        #
+        # `dist`: write all 14 coefficients DepthAI returns. OpenCV's
+        # solvePnP / projectPoints / aruco.estimatePoseBoard all accept
+        # 4 / 5 / 8 / 12 / 14 element distortion vectors and pick the
+        # right model accordingly. DepthAI calibrates with the rational
+        # model (k1..k6), so just the first 5 (Brown-Conrady) gives
+        # huge nonsense values — k1=24.7 with no balancing k4/k5/k6
+        # warps reprojection by ~20 px, observed Stage C 2026-04-29.
         'left': {
             'resolution': [MONO_W, MONO_H],
             'rectified': False,
             'K': K_l_raw.flatten().tolist(),
-            'dist': d_l_raw[:5].tolist(),
-            'dist_raw': d_l_raw.tolist(),
+            'dist': d_l_raw.tolist(),
         },
         'right': {
             'resolution': [MONO_W, MONO_H],
             'rectified': False,
             'K': K_r_raw.flatten().tolist(),
-            'dist': d_r_raw[:5].tolist(),
-            'dist_raw': d_r_raw.tolist(),
+            'dist': d_r_raw.tolist(),
         },
         # RGB stream is NOT rectified by oak_driver — it's raw ISP
         # output. So K/dist here are the raw factory values.
@@ -362,7 +368,10 @@ def stage_factory(out_path: str | None = None,
           f"fy={K_r_raw[1, 1]:.2f} "
           f"cx={K_r_raw[0, 2]:.2f} "
           f"cy={K_r_raw[1, 2]:.2f}")
-    print(f"  left dist[:5] (raw):  {[round(float(x), 4) for x in d_l_raw[:5]]}")
+    # Print enough of the dist vector to spot rational-model coefficients.
+    # DepthAI returns 14 coefficients; the first 8 capture the radial
+    # rational model + tangential terms that matter for solvePnP.
+    print(f"  left dist[0:8] (raw): {[round(float(x), 4) for x in d_l_raw[:8]]}")
     print(f"  baseline:             {baseline_mm:.2f} mm")
     print(f"  rgb K:                fx={K_rgb[0, 0]:.2f} "
           f"fy={K_rgb[1, 1]:.2f} "

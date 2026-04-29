@@ -230,9 +230,16 @@ class OakDriverNode(Node):
             f"USB speed: {self.device.getUsbSpeed()} | "
             f"cameras: {[s.name for s in self.device.getConnectedCameras()]}")
 
-        self.q_rgb_jpeg  = self.device.getOutputQueue('rgb_jpeg', 4, False)
-        self.q_rgb_raw   = self.device.getOutputQueue('rgb_raw', 2, False)
-        self.q_left      = self.device.getOutputQueue('left', 2, False)
+        # Cap queues at 1 (latest-only, non-blocking). With size > 1,
+        # any tick the host is late picking up backlogs frames, and
+        # the OAK-side latency we publish on /oak/latency_ms grows by
+        # one frame period per queued frame. With size 1 the queue
+        # always holds the most recent frame; older ones are dropped.
+        # We'd rather skip frames than serve stale ones to the
+        # controller — see oscillating-latency observation 2026-04-29.
+        self.q_rgb_jpeg = self.device.getOutputQueue('rgb_jpeg', 1, False)
+        self.q_rgb_raw  = self.device.getOutputQueue('rgb_raw',  1, False)
+        self.q_left     = self.device.getOutputQueue('left',     1, False)
         # right mono / disparity / stereo rectification all dropped
         # from the Phase-A pipeline. See _build_pipeline docstring.
 
