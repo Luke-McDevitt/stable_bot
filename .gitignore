@@ -11,3 +11,9 @@ stewart_bringup/logs/
 Thumbs.db
 .vscode/
 *.swp
+
+# Generated camera calibration (see oak_intrinsics.yaml.template).
+# Each user runs `calibrate_oak.py --stage factory` (and Stage C from
+# the GUI) on their own hardware; the rendered files don't belong in git.
+stewart_vision/config/oak_intrinsics.yaml
+stewart_vision/config/oak_extrinsics.yaml
