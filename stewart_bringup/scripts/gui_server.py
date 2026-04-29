@@ -75,6 +75,16 @@ _iva_lock = threading.Lock()
 _iva_proc = None
 _iva_path = None
 _iva_started_at = None
+
+# Where IVA bags live on disk. Resolved to the in-repo tuning_data/
+# so a single git commit ships the dataset.
+def _iva_bags_root():
+    for cand in ('~/stable_bot_repo/tuning_data',
+                 '~/ros2_ws/src/stewart_bringup/../tuning_data'):
+        p = os.path.expanduser(cand)
+        if os.path.isdir(os.path.dirname(p)):
+            return p
+    return os.path.expanduser('~/stable_bot_bags')
 IVA_TOPICS = [
     # Pose truth + vision pose (the comparison subjects)
     '/platform_rpy',
@@ -96,16 +106,142 @@ IVA_TOPICS = [
 ]
 # Default bag location: in-repo so a commit is one step.
 def _iva_default_dir():
-    repo_tuning = None
-    for cand in ('~/stable_bot_repo/tuning_data',
-                 '~/ros2_ws/src/stewart_bringup/../tuning_data'):
-        p = os.path.expanduser(cand)
-        if os.path.isdir(os.path.dirname(p)):
-            repo_tuning = p
-            break
-    if repo_tuning is None:
-        repo_tuning = os.path.expanduser('~/stable_bot_bags')
-    return repo_tuning
+    return _iva_bags_root()
+
+
+def _iva_dir_size(path):
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for fn in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, fn))
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return total
+
+
+def _list_iva_bags():
+    """Enumerate IVA sweep bags under the tuning_data/ root.
+    Returns a list of dicts ordered by mtime descending. Each entry
+    flags whether digest.png and digest.summary.json are present
+    so the GUI can show which bags have already been analyzed.
+    """
+    root = _iva_bags_root()
+    out = []
+    if not os.path.isdir(root):
+        return out
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return out
+    for name in entries:
+        # Only IVA bag directories — written under
+        # tuning_data/<UTC>Z_imu_vs_camera/.
+        if 'imu_vs_camera' not in name:
+            continue
+        full = os.path.join(root, name)
+        if not os.path.isdir(full):
+            continue
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        png = os.path.join(full, 'digest.png')
+        summary = os.path.join(full, 'digest.summary.json')
+        entry = {
+            'name': name,
+            'path': full,
+            'mtime': st.st_mtime,
+            'size_bytes': _iva_dir_size(full),
+            'has_png': os.path.isfile(png),
+            'has_summary': os.path.isfile(summary),
+        }
+        # If a digest summary exists, surface the headline residual stats
+        # so the list can render them inline without an extra round-trip.
+        if entry['has_summary']:
+            try:
+                with open(summary) as f:
+                    s = json.load(f)
+                rd = s.get('residual_deg', {})
+                entry['residual'] = {
+                    axis: {
+                        'p95': (rd.get(axis) or {}).get('p95'),
+                        'std': (rd.get(axis) or {}).get('std'),
+                        'max_abs': (rd.get(axis) or {}).get('max_abs'),
+                    } for axis in ('roll', 'pitch', 'yaw')
+                }
+                entry['duration_s'] = s.get('duration_s')
+            except Exception:
+                pass
+        out.append(entry)
+    out.sort(key=lambda e: e['mtime'], reverse=True)
+    return out
+
+
+def _resolve_iva_bag_path(name):
+    """Path-traversal guard. Resolves a basename under the IVA root."""
+    if not name or '/' in name or name in ('.', '..'):
+        return None
+    root = os.path.realpath(_iva_bags_root())
+    full = os.path.realpath(os.path.join(root, name))
+    if not full.startswith(root + os.sep) and full != root:
+        return None
+    if not os.path.isdir(full):
+        return None
+    return full
+
+
+def _digest_iva_bag(name):
+    """Run digest_iva_bag.py against the named bag.
+    Output PNG + JSON land in the bag dir."""
+    full = _resolve_iva_bag_path(name)
+    if full is None:
+        return False, "bad name"
+    analyzer = os.path.join(_BRINGUP_DIR, 'scripts/digest_iva_bag.py')
+    if not os.path.isfile(analyzer):
+        return False, f"analyzer not found at {analyzer}"
+    cmd = (
+        'source /opt/ros/kilted/setup.bash && '
+        'source ~/ros2_ws/install/local_setup.bash && '
+        f'python3 {analyzer!r} {full!r}'
+    )
+    try:
+        r = subprocess.run(['bash', '-c', cmd],
+                           capture_output=True, text=True, timeout=180)
+        ok = (r.returncode == 0)
+        out = (r.stdout or '').strip()
+        err = (r.stderr or '').strip()
+        return ok, (out + ('\n' + err if err else ''))[-4000:]
+    except subprocess.TimeoutExpired:
+        return False, "digest timed out after 180 s"
+    except Exception as e:
+        return False, f"digest failed: {e}"
+
+
+def _delete_iva_bag(name):
+    """Delete a single IVA bag dir. shutil.rmtree under the path-
+    traversal guard."""
+    import shutil
+    full = _resolve_iva_bag_path(name)
+    if full is None:
+        return False, "bad name"
+    try:
+        shutil.rmtree(full)
+        return True, f"deleted {name}"
+    except Exception as e:
+        return False, f"delete failed: {e}"
+
+
+def _iva_bag_png_path(name):
+    """Path to the digest.png inside a named bag, or None."""
+    full = _resolve_iva_bag_path(name)
+    if full is None:
+        return None
+    p = os.path.join(full, 'digest.png')
+    return p if os.path.isfile(p) else None
 
 
 def _iva_start():
@@ -471,6 +607,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == '/iva/status':
             self._send_json(_iva_status())
             return
+        if self.path == '/iva/bags':
+            self._send_json({'iva_dir': _iva_bags_root(),
+                             'entries': _list_iva_bags()})
+            return
+        if self.path.startswith('/iva/bags/png'):
+            # /iva/bags/png?name=<urlencoded bag name>
+            from urllib.parse import urlsplit, parse_qs
+            q = parse_qs(urlsplit(self.path).query)
+            name = (q.get('name') or [''])[0]
+            png = _iva_bag_png_path(name)
+            if not png:
+                self._send_json({'error': 'png not found'}, 404)
+                return
+            try:
+                with open(png, 'rb') as f:
+                    data = f.read()
+            except OSError as e:
+                self._send_json({'error': str(e)}, 500)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(data)
+            return
         return super().do_GET()
 
     def do_POST(self):
@@ -537,6 +699,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json(
                 {'ok': ok, 'message': msg, 'path': path},
                 status=200 if ok else 409)
+            return
+        if self.path == '/iva/bags/digest':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _digest_iva_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 500)
+            return
+        if self.path == '/iva/bags/delete':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _delete_iva_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 400)
             return
         self.send_error(404)
 

@@ -1449,6 +1449,31 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
         </p>
       </div>
 
+      <!-- Recorded sweeps list -->
+      <details class="border-t border-slate-700 pt-3 mt-3"
+               id="iva-bags-details">
+        <summary class="cursor-pointer text-xs uppercase text-slate-400">
+          Recorded sweeps
+          <span id="iva-bags-count" class="text-slate-500">(—)</span>
+        </summary>
+        <div class="mt-2 mb-1 flex gap-2 text-xs">
+          <button id="iva-bags-refresh"
+                  class="bg-slate-700 hover:bg-slate-600 rounded px-2 py-0.5">
+            Refresh
+          </button>
+          <span class="text-slate-500 self-center">
+            stored under <span class="mono">tuning_data/</span>
+          </span>
+        </div>
+        <div id="iva-bags-list"
+             class="text-xs space-y-1 max-h-72 overflow-y-auto pr-1">
+          <div class="text-slate-500">no sweeps yet — run one above</div>
+        </div>
+        <pre id="iva-bags-out"
+             class="hidden text-xs mono mt-2 p-2 bg-slate-900 border rounded
+                    whitespace-pre-wrap max-h-48 overflow-y-auto"></pre>
+      </details>
+
       <!-- Automated grid sweep -->
       <div class="border-t border-slate-700 pt-3 mt-3">
         <div class="text-xs text-slate-400 mb-2">
@@ -3450,6 +3475,19 @@ function initVisionGUI() {
   if (ivaSweepRunBtn)    ivaSweepRunBtn.addEventListener('click', ivaSweepRun);
   if (ivaSweepCancelBtn) ivaSweepCancelBtn.addEventListener('click', ivaSweepCancel);
 
+  // Recorded-sweeps list — refresh on toggle-open + manual button.
+  const ivaBagsRefresh = $('iva-bags-refresh');
+  const ivaBagsDetails = $('iva-bags-details');
+  if (ivaBagsRefresh) ivaBagsRefresh.addEventListener('click', ivaFetchBags);
+  if (ivaBagsDetails) {
+    ivaBagsDetails.addEventListener('toggle', () => {
+      if (ivaBagsDetails.open) ivaFetchBags();
+    });
+  }
+  // Initial population so the count is right even before the
+  // operator expands the panel.
+  ivaFetchBags();
+
   // Sync record-button state to server-side recorder state on load
   // (page reload during a recording shouldn't lose the reference).
   fetch('/iva/status').then(r => r.json()).then(j => {
@@ -3880,11 +3918,137 @@ async function ivaSweepRun() {
       + `commanded back to neutral`
     : `done — ${grid.length} cells, ~${Math.round(grid.length*_ivaSweep.dwellMs/1000)} s`,
     !aborted);
+  // Refresh the recorded-sweeps list so the just-finished bag shows up.
+  // Small delay so the recorder has a moment to flush + close.
+  setTimeout(ivaFetchBags, 1500);
 }
 
 function ivaSweepCancel() {
   if (!_ivaSweep.running) return;
   _ivaSweep.abort = true;
+}
+
+// =====================================================================
+// Recorded-sweeps list (mirrors the level-pi tuning bag list)
+// =====================================================================
+
+function _ivaFmtMtime(s) {
+  try { return new Date(s * 1000).toLocaleString(); }
+  catch { return '—'; }
+}
+function _ivaFmtBytes(b) {
+  if (b == null || isNaN(b)) return '—';
+  if (b < 1e3) return `${b} B`;
+  if (b < 1e6) return `${(b/1e3).toFixed(1)} kB`;
+  if (b < 1e9) return `${(b/1e6).toFixed(1)} MB`;
+  return `${(b/1e9).toFixed(2)} GB`;
+}
+function _ivaEscapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function _ivaResidualColor(p95) {
+  if (p95 == null || isNaN(p95)) return 'text-slate-400';
+  const v = Math.abs(p95);
+  if (v < 0.5) return 'text-emerald-400';
+  if (v < 1.5) return 'text-yellow-400';
+  return 'text-red-400';
+}
+
+function _ivaRenderBag(e) {
+  const name = _ivaEscapeHtml(e.name);
+  let stats = '';
+  if (e.residual) {
+    const cells = ['roll', 'pitch', 'yaw'].map(axis => {
+      const r = e.residual[axis] || {};
+      const p95 = r.p95;
+      const cls = _ivaResidualColor(p95);
+      return p95 == null
+        ? `<span class="${cls}">${axis} —</span>`
+        : `<span class="${cls}">${axis} p95 ${Number(p95).toFixed(2)}°</span>`;
+    });
+    stats = `<div class="text-slate-500 mt-0.5">${cells.join(' · ')}</div>`;
+  }
+  const pngBtn = e.has_png
+    ? `<a class="text-blue-400 hover:text-blue-300"
+          target="_blank" rel="noopener"
+          href="/iva/bags/png?name=${encodeURIComponent(e.name)}">PNG</a>`
+    : `<span class="text-slate-600" title="no digest.png yet">—</span>`;
+  return `
+    <div class="border-l-2 border-slate-700 pl-2 py-1">
+      <div class="flex items-center justify-between gap-2">
+        <div class="mono text-slate-300 truncate"
+             title="${_ivaEscapeHtml(e.path)}">${name}</div>
+        <div class="flex items-center gap-2 shrink-0 text-xs">
+          <button class="text-emerald-400 hover:text-emerald-300"
+                  onclick="ivaDigestBag('${name}')">Digest</button>
+          ${pngBtn}
+          <button class="text-red-400 hover:text-red-300"
+                  onclick="ivaDeleteBag('${name}')">×</button>
+        </div>
+      </div>
+      <div class="text-slate-500">
+        ${_ivaFmtMtime(e.mtime)} · ${_ivaFmtBytes(e.size_bytes)}
+        ${e.duration_s ? ` · ${e.duration_s.toFixed(0)} s` : ''}
+      </div>
+      ${stats}
+    </div>`;
+}
+
+function ivaFetchBags() {
+  const out = document.getElementById('iva-bags-list');
+  const cnt = document.getElementById('iva-bags-count');
+  if (!out) return;
+  fetch('/iva/bags').then(r => r.json()).then(j => {
+    const entries = (j.entries || []);
+    if (cnt) cnt.innerText = `(${entries.length})`;
+    if (!entries.length) {
+      out.innerHTML = '<div class="text-slate-500">no sweeps yet — run one above</div>';
+      return;
+    }
+    out.innerHTML = entries.map(_ivaRenderBag).join('');
+  }).catch(e => {
+    out.innerText = `failed to fetch /iva/bags: ${e}`;
+  });
+}
+
+function _ivaSetBagsOut(text, ok) {
+  const out = document.getElementById('iva-bags-out');
+  if (!out) return;
+  out.classList.remove('hidden');
+  out.innerText = text;
+  out.className = 'text-xs mono mt-2 p-2 bg-slate-900 border rounded ' +
+    'whitespace-pre-wrap max-h-48 overflow-y-auto ' +
+    (ok === true  ? 'border-emerald-700 text-emerald-300'
+     : ok === false ? 'border-red-700 text-red-300'
+     :                'border-slate-700 text-slate-300');
+}
+
+function ivaDigestBag(name) {
+  _ivaSetBagsOut(`running digest on ${name}…`, null);
+  fetch('/iva/bags/digest', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    const head = (j.ok ? '✓ ' : '✗ ') + 'digest ' + name + '\n';
+    _ivaSetBagsOut(head + (j.message || '(no output)'), !!j.ok);
+    if (j.ok) ivaFetchBags();   // refresh so the PNG link lights up
+  }).catch(e => {
+    _ivaSetBagsOut('✗ digest failed: ' + e, false);
+  });
+}
+
+function ivaDeleteBag(name) {
+  if (!confirm(`Delete sweep "${name}"? This removes the entire bag dir.`)) return;
+  fetch('/iva/bags/delete', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    _ivaSetBagsOut(j.message || (j.ok ? 'deleted' : 'failed'), !!j.ok);
+    ivaFetchBags();
+  }).catch(e => {
+    _ivaSetBagsOut('✗ delete failed: ' + e, false);
+  });
 }
 
 // Auto-abort on /odrive_errors. The error topic is already
