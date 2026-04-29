@@ -685,6 +685,11 @@
             <span class="text-slate-400">decay/tick @50Hz</span>
             <input id="lvl-g-integ_decay_per_tick_at_50hz" type="number" step="0.005" min="0" max="1"
                    class="bg-slate-700 rounded px-1 py-0.5 w-24 text-right"></label>
+          <label class="flex items-center justify-between col-span-2"
+                 title="1 = use empirical Jacobian IK from system-id (replaces geometric rotation IK). 0 = original geometric IK. Hot-swap; loop picks up next tick after Save.">
+            <span class="text-slate-400">use empirical IK (0/1)</span>
+            <input id="lvl-g-use_empirical_ik" type="number" step="1" min="0" max="1"
+                   class="bg-slate-700 rounded px-1 py-0.5 w-24 text-right"></label>
         </div>
         <div class="grid grid-cols-3 gap-2 mt-3">
           <button id="lvl-gains-save"
@@ -1911,6 +1916,7 @@ const LVL_GAIN_KEYS = [
   'kp', 'ki', 'deadband_deg', 'filter_alpha',
   'rate_limit_deg_per_iter', 'max_corr_deg',
   'integ_decay_outer_deg', 'integ_decay_per_tick_at_50hz',
+  'use_empirical_ik',
 ];
 const lvlGainDirty = new Set();
 function clearLvlGainDirty() {
