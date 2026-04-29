@@ -65,6 +65,117 @@ BAGS_DIR = os.path.expanduser('~/stable_bot_bags')
 _launch_lock = threading.Lock()
 _launch_proc = None
 
+# IMU-vs-Camera (IVA) bag recorder. Separate from the demo bag_recorder
+# node — that one is wired to demo mode transitions; this one is a
+# manual operator tool for verifying Stage C calibration accuracy by
+# sweeping platform tilt and comparing IMU RPY to the camera-derived
+# pose RPY. Bags land under tuning_data/ in the repo so they're easy
+# to commit + push.
+_iva_lock = threading.Lock()
+_iva_proc = None
+_iva_path = None
+_iva_started_at = None
+IVA_TOPICS = [
+    '/platform_rpy',
+    '/platform_pose',
+    '/platform_pose/markers_visible',
+    '/control_cmd',
+    '/control_result',
+    '/platform/imu/data',
+]
+# Default bag location: in-repo so a commit is one step.
+def _iva_default_dir():
+    repo_tuning = None
+    for cand in ('~/stable_bot_repo/tuning_data',
+                 '~/ros2_ws/src/stewart_bringup/../tuning_data'):
+        p = os.path.expanduser(cand)
+        if os.path.isdir(os.path.dirname(p)):
+            repo_tuning = p
+            break
+    if repo_tuning is None:
+        repo_tuning = os.path.expanduser('~/stable_bot_bags')
+    return repo_tuning
+
+
+def _iva_start():
+    """Spawn `ros2 bag record` as a subprocess. Returns
+    (ok, msg, path).
+    """
+    global _iva_proc, _iva_path, _iva_started_at
+    with _iva_lock:
+        if _iva_proc is not None and _iva_proc.poll() is None:
+            return False, 'already recording', _iva_path
+        ts = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+        out_dir = os.path.join(_iva_default_dir(),
+                               f'{ts}_imu_vs_camera')
+        os.makedirs(os.path.dirname(out_dir), exist_ok=True)
+        # Source ROS so `ros2 bag record` resolves. The systemd
+        # service for stable_bot already sources Kilted; we mirror
+        # that here for robustness when launched outside systemd.
+        cmd = ('source /opt/ros/kilted/setup.bash && '
+               'source /home/sorak/ros2_ws/install/local_setup.bash && '
+               f'exec ros2 bag record -s mcap -o {out_dir} '
+               + ' '.join(IVA_TOPICS))
+        try:
+            _iva_proc = subprocess.Popen(
+                ['/bin/bash', '-c', cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid)
+            _iva_path = out_dir
+            _iva_started_at = time.time()
+            return True, f'recording → {out_dir}', out_dir
+        except Exception as e:
+            _iva_proc = None
+            _iva_path = None
+            _iva_started_at = None
+            return False, f'failed to spawn: {e}', None
+
+
+def _iva_stop():
+    """SIGINT the recorder so rosbag2 flushes cleanly. Returns
+    (ok, msg, path).
+    """
+    global _iva_proc, _iva_path, _iva_started_at
+    with _iva_lock:
+        if _iva_proc is None:
+            return False, 'not recording', _iva_path
+        if _iva_proc.poll() is not None:
+            # Process exited on its own; just clear state.
+            path = _iva_path
+            _iva_proc = None
+            _iva_path = None
+            _iva_started_at = None
+            return True, f'recorder already exited; bag at {path}', path
+        try:
+            os.killpg(os.getpgid(_iva_proc.pid), signal.SIGINT)
+        except Exception as e:
+            return False, f'SIGINT failed: {e}', _iva_path
+        try:
+            _iva_proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(_iva_proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        path = _iva_path
+        _iva_proc = None
+        _iva_path = None
+        _iva_started_at = None
+        return True, f'saved → {path}', path
+
+
+def _iva_status():
+    """Return a dict describing the recorder state."""
+    with _iva_lock:
+        running = (_iva_proc is not None and _iva_proc.poll() is None)
+        elapsed = (time.time() - _iva_started_at) \
+            if (_iva_started_at and running) else None
+        return {
+            'recording': running,
+            'path': _iva_path,
+            'elapsed_s': elapsed,
+        }
+
 
 def _rosbridge_already_running():
     """True if anything is listening on TCP 9090 (rosbridge default port).
@@ -346,6 +457,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == '/bags':
             self._send_json({'bags_dir': BAGS_DIR, 'entries': _list_bags()})
             return
+        if self.path == '/iva/status':
+            self._send_json(_iva_status())
+            return
         return super().do_GET()
 
     def do_POST(self):
@@ -400,6 +514,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ok, msg = _digest_bag(name)
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 500)
+            return
+        if self.path == '/iva/start':
+            ok, msg, path = _iva_start()
+            self._send_json(
+                {'ok': ok, 'message': msg, 'path': path},
+                status=200 if ok else 409)
+            return
+        if self.path == '/iva/stop':
+            ok, msg, path = _iva_stop()
+            self._send_json(
+                {'ok': ok, 'message': msg, 'path': path},
+                status=200 if ok else 409)
             return
         self.send_error(404)
 

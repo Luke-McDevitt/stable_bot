@@ -292,6 +292,21 @@ class OakDriverNode(Node):
             f"USB speed: {self.device.getUsbSpeed()} | "
             f"cameras: {[s.name for s in self.device.getConnectedCameras()]}")
 
+        # Enable the IR dot projector to add texture for stereo
+        # matching on featureless surfaces (the platform top is
+        # mostly smooth black, which gives StereoDepth nothing to
+        # match without projected texture). 800 mA is moderate;
+        # the OAK-D Pro accepts up to 1200 mA. 0 = OFF.
+        # Override via OAK_IR_PROJECTOR_MA env var.
+        ir_proj_ma = float(os.environ.get('OAK_IR_PROJECTOR_MA', '800'))
+        try:
+            self.device.setIrLaserDotProjectorBrightness(ir_proj_ma)
+            self.get_logger().info(
+                f"IR dot projector: {ir_proj_ma:.0f} mA")
+        except Exception as e:
+            self.get_logger().warn(
+                f"IR projector control unavailable: {e}")
+
         # Cap queues at 1 (latest-only, non-blocking). With size > 1,
         # any tick the host is late picking up backlogs frames, and
         # the OAK-side latency we publish on /oak/latency_ms grows by

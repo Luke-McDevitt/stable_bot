@@ -1350,6 +1350,105 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
              class="mono text-xs bg-black border border-slate-700 rounded p-2 mt-2 h-72 overflow-y-auto whitespace-pre-wrap"></pre>
       </div>
     </div>
+
+    <!--
+      IMU vs Camera angle verification.
+      Sweep platform tilt with the sliders, watch IMU and vision-derived
+      RPY in real time, record the comparison to a bag for offline
+      analysis. Bag lands under tuning_data/<UTC>Z_imu_vs_camera/ in the
+      repo, so a single git add+commit ships the dataset. Use this to
+      verify Stage C calibration accuracy across the platform's range
+      of motion.
+    -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">IMU vs Camera Angle</summary>
+
+      <p class="text-xs text-slate-500 mt-2 mb-2">
+        Vision RPY decoded from <span class="mono">/platform_pose</span>
+        (mono-left frame) relative to a captured "level" reference.
+        Static offset between IMU and camera is camera-mount geometry —
+        we want the <i>changes</i> to track each other.
+      </p>
+
+      <!-- Live readouts -->
+      <div class="grid grid-cols-4 gap-1 text-xs mono mb-3">
+        <div class="text-slate-400">Source</div>
+        <div class="text-slate-400">Roll °</div>
+        <div class="text-slate-400">Pitch °</div>
+        <div class="text-slate-400">Yaw °</div>
+
+        <div class="text-emerald-400">IMU</div>
+        <div id="iva-imu-roll">—</div>
+        <div id="iva-imu-pitch">—</div>
+        <div id="iva-imu-yaw">—</div>
+
+        <div class="text-blue-400">Cam</div>
+        <div id="iva-cam-roll">—</div>
+        <div id="iva-cam-pitch">—</div>
+        <div id="iva-cam-yaw">—</div>
+
+        <div class="text-amber-400">Δ (cam − imu)</div>
+        <div id="iva-d-roll">—</div>
+        <div id="iva-d-pitch">—</div>
+        <div id="iva-d-yaw">—</div>
+      </div>
+
+      <button id="iva-zero-ref"
+              class="w-full mb-3 bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs"
+              title="Capture the current /platform_pose quaternion as the &quot;level&quot; reference. All vision RPY shown above is relative to this. Re-zero whenever the camera arm moves.">
+        Capture level reference
+      </button>
+
+      <!-- Tilt sliders -->
+      <div class="text-xs space-y-2 mb-3">
+        <label class="flex items-center gap-2">
+          Roll&nbsp;<span class="mono w-10 text-right">
+            <span id="iva-roll-val">0</span>°</span>
+          <input id="iva-roll-slider" type="range"
+                 min="-15" max="15" step="0.5" value="0"
+                 class="flex-1">
+        </label>
+        <label class="flex items-center gap-2">
+          Pitch <span class="mono w-10 text-right">
+            <span id="iva-pitch-val">0</span>°</span>
+          <input id="iva-pitch-slider" type="range"
+                 min="-15" max="15" step="0.5" value="0"
+                 class="flex-1">
+        </label>
+        <div class="flex gap-1">
+          <button id="iva-apply"
+                  class="flex-1 bg-blue-600 hover:bg-blue-500 rounded py-1 text-xs">
+            Apply tilt
+          </button>
+          <button id="iva-zero"
+                  class="flex-1 bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">
+            Zero (Roll = Pitch = 0)
+          </button>
+        </div>
+      </div>
+
+      <!-- Recording -->
+      <div class="border-t border-slate-700 pt-3">
+        <div class="flex gap-1 mb-2">
+          <button id="iva-rec-start"
+                  class="flex-1 bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">
+            Start recording
+          </button>
+          <button id="iva-rec-stop"
+                  class="flex-1 bg-red-600 hover:bg-red-500 rounded py-1 text-xs"
+                  disabled>
+            Stop &amp; save
+          </button>
+        </div>
+        <div id="iva-rec-status"
+             class="text-xs text-slate-400 mono whitespace-pre-wrap min-h-4">idle</div>
+        <p class="text-xs text-slate-500 mt-2">
+          Bag goes to <span class="mono">~/stable_bot_repo/tuning_data/&lt;UTC&gt;Z_imu_vs_camera/</span>.
+          Commit + push from the Pi:
+          <span class="mono whitespace-nowrap">cd ~/stable_bot_repo &amp;&amp; git add tuning_data &amp;&amp; git commit -m "iva sweep" &amp;&amp; git push</span>
+        </p>
+      </div>
+    </details>
   </section>
 
 </main>
@@ -1483,6 +1582,14 @@ function setupROSInterface() {
   topic.markers_n.subscribe(m => {
     if ($('vis-aruco-n')) $('vis-aruco-n').innerText = m.data;
   });
+
+  // Camera-derived platform pose (mono-left frame). Used by the IMU
+  // vs Camera Angle panel in the right column to display vision RPY
+  // alongside IMU RPY for Stage C verification.
+  topic.platform_pose = new ROSLIB.Topic({
+    ros, name: '/platform_pose',
+    messageType: 'geometry_msgs/msg/PoseStamped' });
+  topic.platform_pose.subscribe(onPlatformPose);
 
   // V0 ball detection (HSV-threshold on the OAK RGB stream).
   // PointStamped: x=cx, y=cy, z=radius_px in 960x540 pixel space.
@@ -1672,6 +1779,8 @@ function setupROSInterface() {
     $('imu-roll').innerText = m.data[0].toFixed(2);
     $('imu-pitch').innerText = m.data[1].toFixed(2);
     $('imu-yaw').innerText = m.data[2].toFixed(2);
+    // IVA panel (right column) — same data, different display IDs.
+    onImuRpy(m.data[0], m.data[1], m.data[2]);
   });
   topic.status.subscribe(m => {
     lastStatusMs = Date.now();
@@ -3261,6 +3370,40 @@ function initVisionGUI() {
   const routeCb = $('vis-show-route');
   if (routeCb) routeCb.addEventListener('change', renderRouteOverlay);
 
+  // --- IMU vs Camera Angle panel (right column) ---
+  const ivaRoll  = $('iva-roll-slider');
+  const ivaPitch = $('iva-pitch-slider');
+  if (ivaRoll) {
+    ivaRoll.addEventListener('input', () => {
+      $('iva-roll-val').innerText = parseFloat(ivaRoll.value).toFixed(1);
+    });
+  }
+  if (ivaPitch) {
+    ivaPitch.addEventListener('input', () => {
+      $('iva-pitch-val').innerText = parseFloat(ivaPitch.value).toFixed(1);
+    });
+  }
+  const ivaApply  = $('iva-apply');
+  const ivaZero   = $('iva-zero');
+  const ivaZeroRef = $('iva-zero-ref');
+  const ivaRecStartBtn = $('iva-rec-start');
+  const ivaRecStopBtn  = $('iva-rec-stop');
+  if (ivaApply) ivaApply.addEventListener('click', ivaApplyTilt);
+  if (ivaZero)  ivaZero.addEventListener('click',  ivaZeroTilt);
+  if (ivaZeroRef) ivaZeroRef.addEventListener('click', ivaCaptureLevelRef);
+  if (ivaRecStartBtn) ivaRecStartBtn.addEventListener('click', ivaRecStart);
+  if (ivaRecStopBtn)  ivaRecStopBtn.addEventListener('click',  ivaRecStop);
+
+  // Sync record-button state to server-side recorder state on load
+  // (page reload during a recording shouldn't lose the reference).
+  fetch('/iva/status').then(r => r.json()).then(j => {
+    if (j.recording) {
+      $('iva-rec-start').disabled = true;
+      $('iva-rec-stop').disabled = false;
+      _ivaSetRecStatus(`already recording → ${j.path}`, true);
+    }
+  }).catch(() => {});
+
   // --- Highlight active demo ---
   setActiveDemo(0);
 }
@@ -3317,6 +3460,184 @@ function onRgbFrame(m) {
     $('vision-feed-fps').innerText = `${fps} fps`;
     _fpsCount = 0; _fpsT0 = now;
   }
+}
+
+// =====================================================================
+// IMU vs Camera Angle panel (right column)
+// =====================================================================
+//
+// Displays IMU RPY (from /platform_rpy) and camera-derived RPY (from
+// /platform_pose). Camera RPY is shown relative to a captured "level"
+// reference quaternion, so the static camera-mount offset is removed
+// and the user sees just the platform tilt — which should track the
+// IMU 1:1 if Stage C is good.
+//
+// Bag recording is server-side via /iva/start, /iva/stop, /iva/status
+// in gui_server.py. Bag lands under tuning_data/<UTC>Z_imu_vs_camera/
+// for easy git commit + push.
+
+let _ivaImu = { roll: null, pitch: null, yaw: null };
+let _ivaCam = { roll: null, pitch: null, yaw: null };
+// Reference quaternion captured when the user clicks "Capture level
+// reference". Subsequent /platform_pose quaternions are multiplied by
+// the conjugate of this to get tilt-from-level.
+let _ivaRefQuat = null;
+
+function onImuRpy(roll, pitch, yaw) {
+  _ivaImu.roll = roll;
+  _ivaImu.pitch = pitch;
+  _ivaImu.yaw = yaw;
+  const set = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.innerText = (v === null) ? '—' : Number(v).toFixed(2);
+  };
+  set('iva-imu-roll',  roll);
+  set('iva-imu-pitch', pitch);
+  set('iva-imu-yaw',   yaw);
+  _ivaUpdateDeltas();
+}
+
+function onPlatformPose(m) {
+  const q = m.pose.orientation;
+  // q = (x, y, z, w). Compute relative quaternion to reference if set.
+  let qx = q.x, qy = q.y, qz = q.z, qw = q.w;
+  if (_ivaRefQuat) {
+    // q_rel = q_now * conj(q_ref)
+    const r = _ivaRefQuat;
+    const cx = -r.x, cy = -r.y, cz = -r.z, cw = r.w;
+    // Hamilton product (w, x, y, z): q_now * conj(r):
+    const nw = qw * cw - qx * cx - qy * cy - qz * cz;
+    const nx = qw * cx + qx * cw + qy * cz - qz * cy;
+    const ny = qw * cy - qx * cz + qy * cw + qz * cx;
+    const nz = qw * cz + qx * cy - qy * cx + qz * cw;
+    qx = nx; qy = ny; qz = nz; qw = nw;
+  }
+  // ZYX Euler from quaternion (radians → degrees).
+  const sinr_cosp = 2 * (qw * qx + qy * qz);
+  const cosr_cosp = 1 - 2 * (qx * qx + qy * qy);
+  const roll = Math.atan2(sinr_cosp, cosr_cosp);
+  const sinp = Math.max(-1, Math.min(1, 2 * (qw * qy - qz * qx)));
+  const pitch = Math.asin(sinp);
+  const siny_cosp = 2 * (qw * qz + qx * qy);
+  const cosy_cosp = 1 - 2 * (qy * qy + qz * qz);
+  const yaw = Math.atan2(siny_cosp, cosy_cosp);
+
+  const RAD = 180 / Math.PI;
+  _ivaCam.roll = roll * RAD;
+  _ivaCam.pitch = pitch * RAD;
+  _ivaCam.yaw = yaw * RAD;
+
+  const set = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.innerText = (v === null) ? '—' : v.toFixed(2);
+  };
+  set('iva-cam-roll',  _ivaCam.roll);
+  set('iva-cam-pitch', _ivaCam.pitch);
+  set('iva-cam-yaw',   _ivaCam.yaw);
+  _ivaUpdateDeltas();
+  // Stash latest raw quaternion for the "Capture level reference"
+  // button to grab.
+  _ivaCam._lastQuat = { x: m.pose.orientation.x,
+                        y: m.pose.orientation.y,
+                        z: m.pose.orientation.z,
+                        w: m.pose.orientation.w };
+}
+
+function _ivaUpdateDeltas() {
+  const set = (id, v) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (v === null) { el.innerText = '—'; el.className = ''; return; }
+    el.innerText = v.toFixed(2);
+    const a = Math.abs(v);
+    el.className = a < 0.5  ? 'text-emerald-400'
+                 : a < 1.5  ? 'text-yellow-400'
+                 : 'text-red-400';
+  };
+  const dr = (_ivaImu.roll  !== null && _ivaCam.roll  !== null)
+           ? (_ivaCam.roll  - _ivaImu.roll)  : null;
+  const dp = (_ivaImu.pitch !== null && _ivaCam.pitch !== null)
+           ? (_ivaCam.pitch - _ivaImu.pitch) : null;
+  const dy = (_ivaImu.yaw   !== null && _ivaCam.yaw   !== null)
+           ? (_ivaCam.yaw   - _ivaImu.yaw)   : null;
+  set('iva-d-roll',  dr);
+  set('iva-d-pitch', dp);
+  set('iva-d-yaw',   dy);
+}
+
+function ivaCaptureLevelRef() {
+  if (!_ivaCam._lastQuat) {
+    _ivaSetRecStatus('no /platform_pose received yet — wait for live feed', false);
+    return;
+  }
+  _ivaRefQuat = { ..._ivaCam._lastQuat };
+  _ivaSetRecStatus('level reference captured', true);
+}
+
+function ivaApplyTilt() {
+  const r = parseFloat(document.getElementById('iva-roll-slider').value);
+  const p = parseFloat(document.getElementById('iva-pitch-slider').value);
+  publishCmd({
+    cmd: 'set_pose',
+    x: 0, y: 0, z: 50,   // hold neutral height while sweeping tilt
+    roll: r, pitch: p, yaw: 0,
+  });
+  _ivaSetRecStatus(`commanded roll=${r.toFixed(1)}° pitch=${p.toFixed(1)}°`, true);
+}
+
+function ivaZeroTilt() {
+  document.getElementById('iva-roll-slider').value = 0;
+  document.getElementById('iva-pitch-slider').value = 0;
+  document.getElementById('iva-roll-val').innerText = '0';
+  document.getElementById('iva-pitch-val').innerText = '0';
+  publishCmd({
+    cmd: 'set_pose',
+    x: 0, y: 0, z: 50,
+    roll: 0, pitch: 0, yaw: 0,
+  });
+  _ivaSetRecStatus('commanded roll=0 pitch=0', true);
+}
+
+async function ivaRecStart() {
+  _ivaSetRecStatus('starting recorder...', null);
+  try {
+    const r = await fetch('/iva/start', { method: 'POST' });
+    const j = await r.json();
+    _ivaSetRecStatus(j.message || (j.ok ? 'recording' : 'failed'),
+                     j.ok ? true : false);
+    if (j.ok) {
+      document.getElementById('iva-rec-start').disabled = true;
+      document.getElementById('iva-rec-stop').disabled = false;
+    }
+  } catch (e) {
+    _ivaSetRecStatus('error: ' + e, false);
+  }
+}
+
+async function ivaRecStop() {
+  _ivaSetRecStatus('stopping recorder...', null);
+  try {
+    const r = await fetch('/iva/stop', { method: 'POST' });
+    const j = await r.json();
+    _ivaSetRecStatus(j.message || (j.ok ? 'saved' : 'failed'),
+                     j.ok ? true : false);
+    if (j.ok) {
+      document.getElementById('iva-rec-start').disabled = false;
+      document.getElementById('iva-rec-stop').disabled = true;
+    }
+  } catch (e) {
+    _ivaSetRecStatus('error: ' + e, false);
+  }
+}
+
+function _ivaSetRecStatus(msg, ok) {
+  const el = document.getElementById('iva-rec-status');
+  if (!el) return;
+  el.innerText = msg;
+  el.className = 'text-xs mono whitespace-pre-wrap min-h-4 ' +
+    (ok === false ? 'text-red-400'
+     : ok === true ? 'text-emerald-400'
+     : 'text-slate-400');
 }
 
 function visionHeartbeat() {
