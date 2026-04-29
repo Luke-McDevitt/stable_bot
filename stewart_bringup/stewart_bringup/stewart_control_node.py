@@ -1166,6 +1166,32 @@ class StewartControlNode(Node):
                     _send_cmd(self.bus, n, CMD_CLEAR_ERRORS, b'\x00')
                 except Exception:
                     pass
+            # Sync self.leg_current_a from what's actually in flash on
+            # the drives, so the GUI slider seeds with the real value
+            # instead of the hard-coded 6.0 default. Avoids the bug
+            # where the slider would ALWAYS land at 6 on GUI start
+            # regardless of what was persisted via the configurator.
+            time.sleep(0.05)   # small delay so writes drain
+            try:
+                soft_max_per_node = []
+                for n in range(6):
+                    v = self.listener.read_sdo(
+                        self.bus_lock, n, 315, 'float32', timeout=0.3)
+                    if v is not None and 1.0 <= v <= 90.0:
+                        soft_max_per_node.append(v)
+                if soft_max_per_node:
+                    # Use min so we don't lie about the cap — driving
+                    # at higher than any one drive's flash setting
+                    # would saturate that drive first.
+                    flash_min = min(soft_max_per_node)
+                    self.leg_current_a = float(flash_min)
+                    self.get_logger().info(
+                        f"leg_current_a synced from flash: "
+                        f"{flash_min:.1f} A (per-node: {soft_max_per_node})")
+            except Exception as e:
+                self.get_logger().warn(
+                    f"flash current_soft_max read failed; "
+                    f"keeping self.leg_current_a={self.leg_current_a}: {e}")
             return True
 
     def _close_bus_and_stop_threads(self):
