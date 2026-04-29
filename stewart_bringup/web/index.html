@@ -1773,6 +1773,17 @@ function setupROSInterface() {
         }
         return;
       }
+      if (r.cmd === 'prep_pos_ff') {
+        // Surface the prep result in the IVA sweep status line — the
+        // operator is looking right at it during preflight.
+        const sw = document.getElementById('iva-sweep-status');
+        if (sw) {
+          sw.innerText = (r.success ? '✓ ' : '✗ ') + r.cmd + ': ' + r.message;
+          sw.className = 'text-xs mono whitespace-pre-wrap min-h-4 ' +
+            (r.success ? 'text-emerald-400' : 'text-red-400');
+        }
+        return;
+      }
       if (r.cmd === 'sysid_start' || r.cmd === 'sysid_abort') {
         const sr = $('sysid-result');
         if (sr) {
@@ -3941,6 +3952,21 @@ async function ivaSweepRun() {
   const sweepZ = sweepZEl
     ? parseFloat(sweepZEl.value)
     : (_ivaZ() /* fallback to tilt-section Z */);
+
+  // Force motors into POSITION + PASSTHROUGH + wL_FF (velocity
+  // feedforward) before commanding any tilts. Same multi-stage prep
+  // the level loop uses on engage. Without this, set_pose can be
+  // silently ignored if a leg's runtime control_mode happens to be
+  // VELOCITY (left over from manual jogging or flash-cached config),
+  // which then causes legs to never settle to their commanded
+  // targets — exactly the symptom that motivates this preflight.
+  // Phase 1 is CAN-frame fast (~6 ms total); Phase 2 is six SDO
+  // writes with 50 ms timeouts each (~300 ms worst case). 500 ms
+  // is a safe budget.
+  _ivaSetSweepStatus(
+    'preparing motors (POSITION + PASSTHROUGH + wL_FF)…', null);
+  publishCmd({ cmd: 'prep_pos_ff' });
+  await new Promise(res => setTimeout(res, 500));
 
   // Run cells sequentially.
   for (let i = 0; i < grid.length; i++) {

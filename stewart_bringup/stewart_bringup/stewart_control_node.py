@@ -2130,6 +2130,19 @@ class StewartControlNode(Node):
                     float(d.get('x', 0)), float(d.get('y', 0)),
                     float(d.get('z', 0)), float(d.get('roll', 0)),
                     float(d.get('pitch', 0)), float(d.get('yaw', 0)))
+            elif cmd == 'prep_pos_ff':
+                # Force every leg into POSITION + PASSTHROUGH and enable
+                # wL_FF (velocity feedforward). Same multi-stage path the
+                # level loop uses on engage — exposed here so headless
+                # consumers (e.g. the IVA sweep preflight) can guarantee
+                # FF is on before commanding precision tilts. Without
+                # this, set_pose can be silently ignored if a leg's
+                # runtime mode happens to be VELOCITY (e.g. left over
+                # from manual jogging or a flash-cached config).
+                if not self.armed:
+                    ok, reply_msg = False, "arm first"
+                else:
+                    ok, reply_msg = self._prepare_for_level()
             elif cmd == 'go_to_rest':
                 # Always stop the level loop first so it can't keep re-
                 # adding tilt correction while we're trying to park.
