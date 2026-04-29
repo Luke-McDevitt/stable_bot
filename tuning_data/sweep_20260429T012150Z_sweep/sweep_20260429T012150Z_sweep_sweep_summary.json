@@ -1,0 +1,240 @@
+{
+  "sweep_dir": "/home/sorak/stable_bot_bags/sweep_20260429T012150Z_sweep",
+  "name": "sweep_20260429T012150Z_sweep",
+  "manifest": {
+    "sweep_dir": "/home/sorak/stable_bot_bags/sweep_20260429T012150Z_sweep",
+    "started_utc": "2026-04-29T01:21:50.079293Z",
+    "ended_utc": "2026-04-29T01:25:17.446923Z",
+    "aborted": false,
+    "abort_reason": null,
+    "params": {
+      "z_values": [
+        40.0,
+        45.0,
+        50.0,
+        55.0
+      ],
+      "step_count": 1,
+      "step_amp_deg": 1.0,
+      "step_hold_s": 3.0,
+      "baseline_s": 30.0,
+      "prefix": "sweep",
+      "estimated_total_s": 204.0
+    },
+    "gains": {
+      "kp": 1.0,
+      "ki": 0.3,
+      "deadband_deg": 0.02,
+      "rate_limit_deg_per_iter": 0.25,
+      "max_corr_deg": 5.0,
+      "filter_alpha": 0.3,
+      "integ_decay_outer_deg": 0.1,
+      "integ_decay_per_tick_at_50hz": 0.99
+    },
+    "git_sha": "bbec583",
+    "bags": [
+      {
+        "z_mm": 40.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260429T012150Z_sweep/012205Z_z0400"
+      },
+      {
+        "z_mm": 45.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260429T012150Z_sweep/012257Z_z0450"
+      },
+      {
+        "z_mm": 50.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260429T012150Z_sweep/012348Z_z0500"
+      },
+      {
+        "z_mm": 55.0,
+        "bag_dir": "/home/sorak/stable_bot_bags/sweep_20260429T012150Z_sweep/012440Z_z0550"
+      }
+    ],
+    "z_settle_status": [
+      {
+        "z_mm": 40.0,
+        "settled": false
+      },
+      {
+        "z_mm": 45.0,
+        "settled": false
+      },
+      {
+        "z_mm": 50.0,
+        "settled": false
+      },
+      {
+        "z_mm": 55.0,
+        "settled": false
+      }
+    ]
+  },
+  "children": [
+    {
+      "z_mm": 40.0,
+      "bag": "012205Z_z0400",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012205Z_z0400_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012205Z_z0400_timeseries.csv",
+      "plot_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012205Z_z0400_plots.png",
+      "n_samples": 6302,
+      "n_step_trials": 1
+    },
+    {
+      "z_mm": 45.0,
+      "bag": "012257Z_z0450",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012257Z_z0450_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012257Z_z0450_timeseries.csv",
+      "plot_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012257Z_z0450_plots.png",
+      "n_samples": 6430,
+      "n_step_trials": 1
+    },
+    {
+      "z_mm": 50.0,
+      "bag": "012348Z_z0500",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012348Z_z0500_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012348Z_z0500_timeseries.csv",
+      "plot_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012348Z_z0500_plots.png",
+      "n_samples": 5912,
+      "n_step_trials": 1
+    },
+    {
+      "z_mm": 55.0,
+      "bag": "012440Z_z0550",
+      "summary_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012440Z_z0550_summary.json",
+      "csv_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012440Z_z0550_timeseries.csv",
+      "plot_path": "/home/sorak/stable_bot_repo/tuning_data/sweep_20260429T012150Z_sweep/012440Z_z0550_plots.png",
+      "n_samples": 6076,
+      "n_step_trials": 1
+    }
+  ],
+  "per_z": [
+    {
+      "z_mm": 40.0,
+      "bag": "012205Z_z0400",
+      "baseline_rms_roll_deg": 2.5844610171465194,
+      "baseline_rms_pitch_deg": 0.94775790832634,
+      "baseline_p2p_roll_deg": 0.06253957748413086,
+      "fft_peak_freq_hz": 0.07999749077084403,
+      "fft_peak_amp_deg": 0.013171915880148615,
+      "saturation_pct_any": 100.0,
+      "rise_time_s": null,
+      "overshoot_pct": -98.25103373631188,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9910873161709828,
+      "any_leg_dropped_out": false,
+      "any_leg_active_error": false,
+      "any_leg_not_in_pos": false,
+      "yaw_range_deg": 0.16808319091796875,
+      "inner_loop_config_asymmetric": true,
+      "settling_time_roll_s": null,
+      "settling_time_pitch_s": null,
+      "time_in_band_005_pct": 0.0,
+      "time_in_band_010_pct": 0.0,
+      "time_in_band_020_pct": 0.0,
+      "ss_mean_roll_deg": -2.995951015799916,
+      "ss_mean_pitch_deg": -0.9028592672255332,
+      "ss_std_roll_deg": 0.48629341586151054,
+      "ss_std_pitch_deg": 0.05830074043111572,
+      "integrator_drift_p2p_roll_deg": 1.014815092086792,
+      "integrator_drift_p2p_pitch_deg": 0.14679479598999023,
+      "dominant_osc_hz": 0.09298438786899295,
+      "dominant_osc_period_s": 10.754493554433186
+    },
+    {
+      "z_mm": 45.0,
+      "bag": "012257Z_z0450",
+      "baseline_rms_roll_deg": 1.49065607302375,
+      "baseline_rms_pitch_deg": 2.1530296958298853,
+      "baseline_p2p_roll_deg": 0.06953930854797363,
+      "fft_peak_freq_hz": 0.11998777323382373,
+      "fft_peak_amp_deg": 0.019380188939227272,
+      "saturation_pct_any": 100.0,
+      "rise_time_s": null,
+      "overshoot_pct": -98.56314786615219,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9973218493216011,
+      "any_leg_dropped_out": false,
+      "any_leg_active_error": false,
+      "any_leg_not_in_pos": false,
+      "yaw_range_deg": 0.3496665954589844,
+      "inner_loop_config_asymmetric": true,
+      "settling_time_roll_s": null,
+      "settling_time_pitch_s": null,
+      "time_in_band_005_pct": 0.0,
+      "time_in_band_010_pct": 0.0,
+      "time_in_band_020_pct": 0.0,
+      "ss_mean_roll_deg": -1.8845299445172792,
+      "ss_mean_pitch_deg": -2.023126374521563,
+      "ss_std_roll_deg": 0.4958234021357359,
+      "ss_std_pitch_deg": 0.1715310976240468,
+      "integrator_drift_p2p_roll_deg": 1.0442607402801514,
+      "integrator_drift_p2p_pitch_deg": 0.3813631534576416,
+      "dominant_osc_hz": 0.09113337672634425,
+      "dominant_osc_period_s": 10.972928206125895
+    },
+    {
+      "z_mm": 50.0,
+      "bag": "012348Z_z0500",
+      "baseline_rms_roll_deg": 1.9017033840162048,
+      "baseline_rms_pitch_deg": 2.0503806005673826,
+      "baseline_p2p_roll_deg": 0.07965433597564697,
+      "fft_peak_freq_hz": 0.08306824694235473,
+      "fft_peak_amp_deg": 0.008395281719953934,
+      "saturation_pct_any": 100.0,
+      "rise_time_s": null,
+      "overshoot_pct": -97.94227083524068,
+      "settling_time_s": null,
+      "ss_offset_deg": -1.0014307915523488,
+      "any_leg_dropped_out": false,
+      "any_leg_active_error": false,
+      "any_leg_not_in_pos": false,
+      "yaw_range_deg": 0.37432861328125,
+      "inner_loop_config_asymmetric": true,
+      "settling_time_roll_s": null,
+      "settling_time_pitch_s": null,
+      "time_in_band_005_pct": 0.0,
+      "time_in_band_010_pct": 0.0,
+      "time_in_band_020_pct": 0.0,
+      "ss_mean_roll_deg": -2.292859361889542,
+      "ss_mean_pitch_deg": -1.8481481679024234,
+      "ss_std_roll_deg": 0.48595000668510524,
+      "ss_std_pitch_deg": 0.17849139217993637,
+      "integrator_drift_p2p_roll_deg": 1.0229458808898926,
+      "integrator_drift_p2p_pitch_deg": 0.435030460357666,
+      "dominant_osc_hz": 0.06608504696109911,
+      "dominant_osc_period_s": 15.132016181945803
+    },
+    {
+      "z_mm": 55.0,
+      "bag": "012440Z_z0550",
+      "baseline_rms_roll_deg": 2.3870588152898162,
+      "baseline_rms_pitch_deg": 1.7289111547398184,
+      "baseline_p2p_roll_deg": 0.04975271224975586,
+      "fft_peak_freq_hz": 0.08048889255589373,
+      "fft_peak_amp_deg": 0.007023038096106864,
+      "saturation_pct_any": 100.0,
+      "rise_time_s": null,
+      "overshoot_pct": -92.18742039895828,
+      "settling_time_s": null,
+      "ss_offset_deg": -0.9286737091016019,
+      "any_leg_dropped_out": false,
+      "any_leg_active_error": false,
+      "any_leg_not_in_pos": false,
+      "yaw_range_deg": 0.1203155517578125,
+      "inner_loop_config_asymmetric": true,
+      "settling_time_roll_s": null,
+      "settling_time_pitch_s": null,
+      "time_in_band_005_pct": 0.0,
+      "time_in_band_010_pct": 0.0,
+      "time_in_band_020_pct": 0.0,
+      "ss_mean_roll_deg": -2.7739279990794192,
+      "ss_mean_pitch_deg": -1.6234988209263432,
+      "ss_std_roll_deg": 0.5169709488890386,
+      "ss_std_pitch_deg": 0.09780877941939568,
+      "integrator_drift_p2p_roll_deg": 1.083014965057373,
+      "integrator_drift_p2p_pitch_deg": 0.22711467742919922,
+      "dominant_osc_hz": 0.06437627350338775,
+      "dominant_osc_period_s": 15.53367328643799
+    }
+  ]
+}
