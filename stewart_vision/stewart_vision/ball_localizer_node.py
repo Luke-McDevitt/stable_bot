@@ -4,16 +4,35 @@ pose to produce ball position in the platform frame.
 
 Two parallel paths (spec §7):
   /ball_xy_mono   = ray-plane intersection from RGB pixel + platform pose
-  /ball_xy_stereo = DLT triangulation of (uL, uR) — TODO, needs V1 detections
+  /ball_xy_oak    = SpatialLocationCalculator depth at RGB ROI, then
+                    transform to platform frame. Truth signal that the
+                    controller closes on. (oak_driver_node publishes the
+                    raw 3D point on /oak/ball/spatial; we transform.)
+  /ball_xy_stereo = DLT triangulation of (uL, uR) — TODO, needs V1
+                    detections in both monos.
 
 Detector selection rule (spec §8):
   1. Both V0 & V1 within 5 px AND conf >= 0.8 each → average.
   2. Exactly one with conf >= 0.8                  → use it.
-  3. Both with low conf but agree within 10 px      → average (consensus).
-  4. Otherwise                                       → no publication.
+  3. Both with low conf but agree within 10 px     → average (consensus).
+  4. Otherwise                                     → no publication.
 
-This scaffold implements the mono path with V0 only. V1 hooks are
-present but no-op until the YOLO model lands.
+V1 hooks are present but no-op until the YOLO model lands.
+
+Frame conventions:
+  RGB camera frame (CAM_A): OpenCV +x right, +y down, +z forward.
+  Mono-left frame (CAM_B):  same axes, different origin.
+  Platform frame: from the ArUco-board pose (estimatePoseBoard) that
+                  platform_pose_node publishes. /platform_pose lives in
+                  the mono-left frame because calibration_node runs the
+                  ArUco solve against /oak/left/image_compressed.
+
+Bridging:
+  V0 detects in RGB-frame pixels.
+  /platform_pose lives in mono-left frame.
+  → We transform the RGB-frame ray into mono-left via the
+    cam_a_to_cam_b extrinsics block in oak_intrinsics.yaml, then do
+    the plane intersection in mono-left frame.
 """
 from __future__ import annotations
 
@@ -30,6 +49,11 @@ from sensor_msgs.msg import CompressedImage  # noqa: F401  (future use)
 from geometry_msgs.msg import PointStamped, PoseStamped
 from std_msgs.msg import Float32MultiArray
 
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 
 def _share_dir() -> str:
     from ament_index_python.packages import get_package_share_directory
@@ -40,10 +64,20 @@ class BallLocalizerNode(Node):
     def __init__(self):
         super().__init__('ball_localizer')
 
+        if cv2 is None:
+            self.get_logger().fatal(
+                "opencv-contrib-python required (cv2.undistortPoints).")
+            raise SystemExit(2)
+
         share = _share_dir()
         intr_path = os.path.join(share, 'config', 'oak_intrinsics.yaml')
+        # RGB intrinsics for the V0/V1 ball-pixel detector inputs.
         self.K_rgb: Optional[np.ndarray] = None
         self.dist_rgb: Optional[np.ndarray] = None
+        # 4x4 transform that takes a point in RGB camera frame and
+        # returns it in mono-left camera frame. /platform_pose is in
+        # mono-left frame, so we have to bridge.
+        self.T_rgb_to_mono: Optional[np.ndarray] = None
         if os.path.isfile(intr_path):
             self._load_intrinsics(intr_path)
         else:
@@ -61,27 +95,60 @@ class BallLocalizerNode(Node):
             PointStamped, '/oak/ball/v1/rgb_pixel', self._on_v1, 10)
         self.create_subscription(
             PoseStamped, '/platform_pose', self._on_pose, 10)
+        # Depth-based 3D ball position in RGB-camera frame, from
+        # oak_driver_node's SpatialLocationCalculator. Spec §7 truth.
+        self.create_subscription(
+            PointStamped, '/oak/ball/spatial', self._on_spatial, 10)
 
         self.pub_xy_mono = self.create_publisher(
             PointStamped, '/ball_xy_mono', 10)
+        self.pub_xy_oak = self.create_publisher(
+            PointStamped, '/ball_xy_oak', 10)
         self.pub_xy_stereo = self.create_publisher(
             PointStamped, '/ball_xy_stereo', 10)
         self.pub_diag = self.create_publisher(
             Float32MultiArray, '/oak/ball/diagnostic', 10)
 
-        # Tick at 60 Hz; frames may not arrive at that rate but it's the
-        # ceiling. Latest-wins.
+        # Tick at 60 Hz for the V0-derived /ball_xy_mono path; frames
+        # may not arrive at that rate but it's the ceiling. /ball_xy_oak
+        # is published synchronously on each /oak/ball/spatial message.
         self.create_timer(1.0 / 60.0, self._tick)
 
     def _load_intrinsics(self, path: str):
         with open(path, 'r') as f:
             d = yaml.safe_load(f)
-        # Reuse "left" intrinsics as a placeholder for the RGB cam until
-        # the calibrate script supports a separate RGB block. RGB ↔
-        # rectified-left mapping is one of the open TODOs.
         try:
-            self.K_rgb = np.asarray(d['left']['K'], dtype=np.float64).reshape(3, 3)
-            self.dist_rgb = np.asarray(d['left']['dist'], dtype=np.float64).ravel()
+            # Use the RGB block — V0 detects in RGB-frame pixels.
+            rgb = d.get('rgb')
+            if rgb is None:
+                # Older YAML schema fallback (Phase A bring-up era):
+                # treat 'left' as RGB. Not strictly correct (different
+                # sensor + lens) but better than nothing.
+                self.get_logger().warn(
+                    "oak_intrinsics.yaml has no 'rgb' block; falling "
+                    "back to 'left' intrinsics. Re-run "
+                    "`calibrate_oak.py --stage factory` to fix.")
+                rgb = d['left']
+            self.K_rgb = np.asarray(
+                rgb['K'], dtype=np.float64).reshape(3, 3)
+            self.dist_rgb = np.asarray(
+                rgb['dist'], dtype=np.float64).ravel()
+
+            # Camera-to-camera extrinsics. Newer YAML schema; fallback
+            # to identity (assumes RGB and mono-left coincide) if the
+            # block is missing.
+            ext_block = d.get('extrinsics', {})
+            ext = ext_block.get('cam_a_to_cam_b')
+            if ext is None:
+                self.get_logger().warn(
+                    "oak_intrinsics.yaml has no 'extrinsics' block; "
+                    "/ball_xy_mono will assume RGB and mono frames "
+                    "coincide (wrong by ~baseline cm). Re-run "
+                    "`calibrate_oak.py --stage factory` to fix.")
+                self.T_rgb_to_mono = np.eye(4, dtype=np.float64)
+            else:
+                self.T_rgb_to_mono = np.asarray(
+                    ext, dtype=np.float64).reshape(4, 4)
         except Exception as e:
             self.get_logger().error(f"Bad intrinsics: {e}")
 
@@ -123,52 +190,124 @@ class BallLocalizerNode(Node):
         return float(v0.point.x), float(v0.point.y), 'v0'
 
     def _project_to_platform(self, cx: float, cy: float) -> Optional[tuple]:
-        """Mono ray-plane intersection: pixel → 3-D ball center on the
-        platform plane. Returns (px, py, pz) in the platform frame, or
-        None if the inputs are missing.
+        """Mono ray-plane intersection: RGB pixel → 3-D ball position
+        on the platform plane. Returns (px_m, py_m, pz_m) in the
+        platform frame (METRES), or None if inputs are missing.
 
         Method:
-          1. Undistort + back-project the pixel to a unit ray in the
-             camera frame: r_cam = K^-1 [u, v, 1].
-          2. Transform the ray and the platform-plane normal/origin from
-             the camera frame using the platform pose.
-          3. Solve t * r_cam = origin + s*ex + t*ey. Equivalently:
-             s = -(n · cam_origin) / (n · r_cam)  for the plane through
-             platform origin with normal n.
+          1. Undistort the RGB pixel via cv2.undistortPoints (handles
+             the 14-coeff rational model DepthAI calibrates with).
+             Result is a 2-D point in normalized camera coordinates
+             (z=1 plane, no distortion).
+          2. Build the corresponding unit ray in RGB camera frame.
+          3. Transform the ray (direction + origin) into mono-left
+             camera frame via the cam_a_to_cam_b extrinsics.
+          4. Intersect that ray with the platform plane, which is
+             defined in mono-left frame by /platform_pose:
+                plane normal n = R_pose[:, 2]
+                plane point  p = pose.position
+          5. Express the hit point in platform frame.
 
-        The platform plane in the camera frame is given by the
-        platform_pose's rotation: plane normal = R_cam_plat[:, 2] (z-axis
-        of the platform expressed in the camera frame), plane point =
-        translation column.
-
-        TODO: account for ball radius — the visible ball center in image
-        is the projection of the ball's surface, not its 3-D center. For
-        a 40 mm ball at ~700 mm range the offset is ~1 mm and ignorable
-        at v0.1; revisit for v1.
+        TODO: account for ball radius — the visible ball center in
+        image is the projection of the ball's surface centroid, not
+        its 3-D centre. For a 40 mm ball at ~700 mm range the offset
+        is ~1 mm and ignorable; revisit if it shows up in residuals.
         """
         if self.K_rgb is None or self.last_pose is None:
             return None
-        K_inv = np.linalg.inv(self.K_rgb)
-        ray = K_inv @ np.array([cx, cy, 1.0])
-        ray = ray / np.linalg.norm(ray)
+        if self.T_rgb_to_mono is None:
+            return None
 
+        # Undistort the pixel to normalized camera coordinates. The
+        # output is in z=1 plane of the RGB camera frame, distortion
+        # already removed. Pass the full 14-coeff dist vector so
+        # cv2 uses the rational model (matches DepthAI calibration).
+        pts_in = np.array([[[cx, cy]]], dtype=np.float64)
+        pts_norm = cv2.undistortPoints(
+            pts_in, self.K_rgb, self.dist_rgb).reshape(2)
+        # Unit ray in RGB camera frame.
+        ray_rgb = np.array([pts_norm[0], pts_norm[1], 1.0])
+        ray_rgb = ray_rgb / np.linalg.norm(ray_rgb)
+
+        # Transform ray direction into mono-left frame. Translation
+        # affects the ORIGIN, not the direction, so apply only the
+        # rotation block. Origin in mono-left = the RGB camera's
+        # origin expressed in mono-left = T_rgb_to_mono.translation.
+        R_a_to_b = self.T_rgb_to_mono[:3, :3]
+        t_a_to_b = self.T_rgb_to_mono[:3, 3]
+        ray_mono = R_a_to_b @ ray_rgb
+        origin_mono = t_a_to_b.copy()
+
+        # Platform plane in mono-left frame from /platform_pose.
         p = self.last_pose.pose
-        # Camera->platform translation (camera frame, meters)
-        t = np.array([p.position.x, p.position.y, p.position.z])
+        t_pose = np.array(
+            [p.position.x, p.position.y, p.position.z])
         qx, qy, qz, qw = (p.orientation.x, p.orientation.y,
                           p.orientation.z, p.orientation.w)
-        R = _quat_to_rot(qw, qx, qy, qz)
-        n = R[:, 2]  # platform z-axis in camera frame
+        R_pose = _quat_to_rot(qw, qx, qy, qz)
+        n = R_pose[:, 2]
 
-        denom = float(n @ ray)
+        # Plane: n^T (P - t_pose) = 0
+        # Ray:   P = origin_mono + s * ray_mono
+        # Solve: s = n^T (t_pose - origin_mono) / (n^T ray_mono)
+        denom = float(n @ ray_mono)
         if abs(denom) < 1e-6:
             return None
-        s = float(n @ t) / denom  # ray scale to plane
-        hit_cam = s * ray
-        # Express hit in platform frame:
-        delta_cam = hit_cam - t
-        px_plat = R.T @ delta_cam
-        return float(px_plat[0]), float(px_plat[1]), float(px_plat[2])
+        s = float(n @ (t_pose - origin_mono)) / denom
+        if s <= 0:
+            # Plane is behind the camera — bad pose or pixel.
+            return None
+        hit_mono = origin_mono + s * ray_mono
+
+        # Express hit in platform frame.
+        delta = hit_mono - t_pose
+        p_plat = R_pose.T @ delta
+        return float(p_plat[0]), float(p_plat[1]), float(p_plat[2])
+
+    def _project_spatial_to_platform(
+            self, P_rgb_m: np.ndarray) -> Optional[tuple]:
+        """Transform a 3-D point from RGB-camera frame (metres) to
+        platform frame (metres). Used for /ball_xy_oak (the SLC
+        truth signal) — no ray-plane intersection needed because we
+        already have a 3-D point.
+        """
+        if self.last_pose is None or self.T_rgb_to_mono is None:
+            return None
+
+        # RGB → mono-left (4x4 homogeneous transform).
+        P_h = np.append(P_rgb_m, 1.0)
+        P_mono = (self.T_rgb_to_mono @ P_h)[:3]
+
+        # mono-left → platform.
+        p = self.last_pose.pose
+        t_pose = np.array(
+            [p.position.x, p.position.y, p.position.z])
+        qx, qy, qz, qw = (p.orientation.x, p.orientation.y,
+                          p.orientation.z, p.orientation.w)
+        R_pose = _quat_to_rot(qw, qx, qy, qz)
+        delta = P_mono - t_pose
+        p_plat = R_pose.T @ delta
+        return float(p_plat[0]), float(p_plat[1]), float(p_plat[2])
+
+    def _on_spatial(self, msg: PointStamped):
+        """SLC point in RGB-camera frame (metres) → publish
+        /ball_xy_oak in platform-frame mm.
+        """
+        P_rgb = np.array([msg.point.x, msg.point.y, msg.point.z])
+        # Discard zero-depth (SLC reports 0 when no valid disparity).
+        if abs(P_rgb[2]) < 1e-3:
+            return
+        result = self._project_spatial_to_platform(P_rgb)
+        if result is None:
+            return
+        x_m, y_m, z_m = result
+        out = PointStamped()
+        out.header.stamp = msg.header.stamp
+        out.header.frame_id = 'platform'
+        out.point.x = x_m * 1000.0
+        out.point.y = y_m * 1000.0
+        out.point.z = z_m * 1000.0
+        self.pub_xy_oak.publish(out)
 
     def _tick(self):
         cx, cy, src = self._select_pixel()

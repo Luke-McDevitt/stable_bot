@@ -288,6 +288,16 @@ def stage_factory(out_path: str | None = None,
             cal.getDistortionCoefficients(dai.CameraBoardSocket.CAM_A),
             dtype=np.float64).ravel()
 
+        # RGB → left-mono extrinsics. Needed to project an RGB-frame
+        # ball-detection ray into the mono-left frame where Stage C's
+        # platform_pose lives. Translation in cm → metres.
+        ext_rgb_to_mono = np.asarray(
+            cal.getCameraExtrinsics(
+                dai.CameraBoardSocket.CAM_A,
+                dai.CameraBoardSocket.CAM_B),
+            dtype=np.float64).reshape(4, 4)
+        ext_rgb_to_mono[:3, 3] /= 100.0   # cm → m
+
         baseline_mm = float(np.linalg.norm(t_lr_m) * 1000.0)
     finally:
         device.close()
@@ -329,18 +339,25 @@ def stage_factory(out_path: str | None = None,
             'dist': d_r_raw.tolist(),
         },
         # RGB stream is NOT rectified by oak_driver — it's raw ISP
-        # output. So K/dist here are the raw factory values.
+        # output. K + the full 14-coeff dist (rational model) for the
+        # ray-plane projection in ball_localizer_node.
         'rgb': {
             'resolution': [RGB_W, RGB_H],
             'rectified': False,
             'K': K_rgb.flatten().tolist(),
-            'dist': d_rgb[:5].tolist(),
-            'dist_raw': d_rgb.tolist(),
+            'dist': d_rgb.tolist(),
         },
         'stereo': {
             'R': R_lr.flatten().tolist(),
             't_m': t_lr_m.tolist(),
             'baseline_mm': baseline_mm,
+        },
+        # Camera-to-camera extrinsics for downstream frame conversions.
+        # 4x4 row-major; translation in metres. ball_localizer_node
+        # uses cam_a_to_cam_b to take an RGB-frame ball ray into the
+        # mono-left frame where /platform_pose lives.
+        'extrinsics': {
+            'cam_a_to_cam_b': ext_rgb_to_mono.flatten().tolist(),
         },
         'rectification': {
             'R_left': R_l_rect.flatten().tolist(),
