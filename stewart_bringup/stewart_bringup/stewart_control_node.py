@@ -3979,9 +3979,37 @@ class StewartControlNode(Node):
         settle_s = params['settle_s']
         n_samples = params['samples_per_step']
 
+        # Total perturbation count for ETA / progress %.
+        # Each (Z, δ, leg) does +δ, return, -δ, return = 4 settle
+        # waits + 2 IMU averages. Plus moving_to_z + capture rest at
+        # each Z (~1.5 s). The leg counter advances at the start of
+        # each (Z, δ, leg) triplet.
+        total_legs_to_perturb = len(z_list) * len(d_list) * 6
+        per_perturb_s = 4 * settle_s + 0.2  # ~settle + small overhead
+        total_s_estimate = (
+            len(z_list) * (per_perturb_s * 6 * len(d_list) + 4.0))
+        t_start_mono = time.monotonic()
+
         stamp = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
         sysid_dir = os.path.join(BAGS_DIR, f"system_id_{stamp}")
         os.makedirs(sysid_dir, exist_ok=True)
+        # Mirror the result into the repo's tuning_data/ so jacobian.json
+        # is committable. The bags themselves stay in BAGS_DIR (they're
+        # gitignored anyway). _sysid_dump writes to BOTH locations now.
+        repo_sysid_dir = os.path.join(_BRINGUP_DIR, '..', 'tuning_data',
+                                      f"system_id_{stamp}")
+        repo_sysid_dir = os.path.abspath(repo_sysid_dir)
+        os.makedirs(repo_sysid_dir, exist_ok=True)
+        legs_done = 0
+        # Stash for use later by the dump helper + state updates.
+        self._sysid_progress = {
+            't_start_mono': t_start_mono,
+            'total_perturbs': total_legs_to_perturb,
+            'estimate_s': total_s_estimate,
+            'legs_done': 0,
+            'sysid_dir': sysid_dir,
+            'repo_sysid_dir': repo_sysid_dir,
+        }
 
         # Same FF runtime self-heal as level — write
         # control_mode=POSITION, input_mode=PASSTHROUGH, wL_FF=True
@@ -4081,11 +4109,26 @@ class StewartControlNode(Node):
                 for leg in range(6):
                     if self._sweep_stop.is_set():
                         break
+                    elapsed = time.monotonic() - t_start_mono
+                    legs_done = self._sysid_progress['legs_done']
+                    pct = (legs_done / max(1, total_legs_to_perturb)) * 100
+                    # Remaining estimate: assume current rate, fall
+                    # back to original estimate when we have <2 done.
+                    if legs_done >= 2:
+                        s_per_leg = elapsed / legs_done
+                        remaining_s = (total_legs_to_perturb - legs_done) * s_per_leg
+                    else:
+                        remaining_s = max(0.0, total_s_estimate - elapsed)
                     self._lr_set_state(
                         'sysid_running', phase='perturbing',
                         z=z, z_idx=z_idx + 1, z_total=len(z_list),
                         leg=leg, delta=d, delta_idx=d_list.index(d) + 1,
-                        delta_total=len(d_list))
+                        delta_total=len(d_list),
+                        legs_done=legs_done,
+                        legs_total=total_legs_to_perturb,
+                        elapsed_s=round(elapsed, 1),
+                        remaining_s=round(remaining_s, 1),
+                        percent=round(pct, 1))
 
                     # +δ
                     self.feeder.set_pos_target_one(
@@ -4115,6 +4158,7 @@ class StewartControlNode(Node):
                         'rpy_pos': rpy_pos,
                         'rpy_neg': rpy_neg,
                     }
+                    self._sysid_progress['legs_done'] += 1
                 per_z_data['measurements'][f"{d:.4f}"] = per_d
 
             master['per_z'][f"{z:.1f}"] = per_z_data
@@ -4271,13 +4315,21 @@ class StewartControlNode(Node):
         return out
 
     def _sysid_dump(self, sysid_dir, master):
-        path = os.path.join(sysid_dir, 'jacobian.json')
-        try:
-            with open(path, 'w') as f:
-                json.dump(self._scrub_non_finite(master), f, indent=2,
-                          allow_nan=False)
-        except Exception as e:
-            self.get_logger().warn(f"sysid dump failed: {e}")
+        # Write to BOTH the bag dir (for review alongside the rosbags)
+        # AND the repo's tuning_data dir (so jacobian.json is committable
+        # and can be loaded by future code as the empirical IK reference).
+        targets = [os.path.join(sysid_dir, 'jacobian.json')]
+        repo_dir = (getattr(self, '_sysid_progress', None) or {}).get('repo_sysid_dir')
+        if repo_dir:
+            targets.append(os.path.join(repo_dir, 'jacobian.json'))
+        scrubbed = self._scrub_non_finite(master)
+        for path in targets:
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, 'w') as f:
+                    json.dump(scrubbed, f, indent=2, allow_nan=False)
+            except Exception as e:
+                self.get_logger().warn(f"sysid dump to {path} failed: {e}")
 
     def _lr_wait_z_reached(self, z, abort_event):
         """Wait until leg encoders match the live commanded targets AND

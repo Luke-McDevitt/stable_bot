@@ -1705,13 +1705,29 @@ function renderLevelRecordState(s) {
       parts.push(`leg ${s.leg} δ=${s.delta}`);
     if (s.delta_idx && s.delta_total)
       parts.push(`δ ${s.delta_idx}/${s.delta_total}`);
-    const txt = parts.join(' · ');
-    prog.innerText = txt;
-    prog.className = 'text-xs mono text-cyan-400 mt-2 min-h-4';
+    if (s.legs_done !== undefined && s.legs_total !== undefined)
+      parts.push(`(${s.legs_done}/${s.legs_total})`);
+    const top = parts.join(' · ');
+    // Countdown line — separate so the time stays put even when the
+    // top line changes per-perturb. Format mm:ss.
+    function fmtMmSs(sec) {
+      sec = Math.max(0, Math.round(sec || 0));
+      const m = Math.floor(sec / 60);
+      const s = sec - m * 60;
+      return `${m}m ${s.toString().padStart(2, '0')}s`;
+    }
+    let bottom = '';
+    if (s.elapsed_s !== undefined && s.remaining_s !== undefined) {
+      const pct = (s.percent ?? 0).toFixed(1);
+      bottom = `${pct}%  ·  elapsed ${fmtMmSs(s.elapsed_s)}` +
+               `  ·  remaining ~${fmtMmSs(s.remaining_s)}`;
+    }
+    prog.innerText = top + (bottom ? '\n' + bottom : '');
+    prog.className = 'text-xs mono text-cyan-400 mt-2 min-h-4 whitespace-pre';
     const sp = $('sysid-progress');
     if (sp) {
-      sp.innerText = txt;
-      sp.className = 'text-xs mono text-cyan-400 min-h-4';
+      sp.innerText = top + (bottom ? '\n' + bottom : '');
+      sp.className = 'text-xs mono text-cyan-400 min-h-4 whitespace-pre';
     }
   } else if (s.state === 'sysid_done') {
     const sp = $('sysid-progress');
