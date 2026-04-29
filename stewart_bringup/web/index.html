@@ -1485,15 +1485,15 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
           <label>Grid:&nbsp;
             <select id="iva-sweep-grid"
                     class="mono bg-slate-900 border border-slate-700 rounded px-1">
-              <option value="3">3 × 3 = 9 cells</option>
-              <option value="5" selected>5 × 5 = 25 cells</option>
+              <option value="3" selected>3 × 3 = 9 cells</option>
+              <option value="5">5 × 5 = 25 cells</option>
               <option value="7">7 × 7 = 49 cells</option>
               <option value="9">9 × 9 = 81 cells</option>
             </select>
           </label>
           <label>Amp:&nbsp;
             <input id="iva-sweep-amp" type="number"
-                   min="2" max="15" step="0.5" value="8"
+                   min="0.5" max="15" step="0.25" value="1.5"
                    class="mono w-14 bg-slate-900 border border-slate-700 rounded px-1">
             °
           </label>
@@ -1508,6 +1508,14 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
             <input id="iva-sweep-auto-rec" type="checkbox" checked> auto-record
           </label>
         </div>
+        <p class="text-xs text-slate-500 mb-2">
+          Defaults are conservative (3×3 grid, 1.5° amp) — Stable-Bot's
+          tilt envelope is small and large amplitudes stress both the
+          legs and the Pi's CPU. Crank as needed, but if the Pi drops
+          off the network mid-sweep that's the BEC→Pi rail browning
+          out under load; plug a wall USB-C into the Pi's input
+          alongside the BEC.
+        </p>
         <div class="flex gap-1 mb-2">
           <button id="iva-sweep-run"
                   class="flex-1 bg-blue-600 hover:bg-blue-500 rounded py-1 text-xs">
