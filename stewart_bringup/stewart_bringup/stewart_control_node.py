@@ -2537,13 +2537,20 @@ class StewartControlNode(Node):
                 self.current_xyz = [float(v) for v in xyz]
                 self.current_rpy = [float(v) for v in rpy]
                 self.get_logger().info(
-                    f"restored last-commanded pose from {POSE_STATE_FILE}: "
+                    f"[pose-state] restored from {POSE_STATE_FILE}: "
                     f"xyz={self.current_xyz} rpy={self.current_rpy}")
+            else:
+                self.get_logger().info(
+                    f"[pose-state] {POSE_STATE_FILE} had no usable "
+                    f"current_xyz/current_rpy; keeping defaults")
         except FileNotFoundError:
-            pass
+            self.get_logger().info(
+                f"[pose-state] {POSE_STATE_FILE} not found "
+                f"(first run on this Pi or last session never set a "
+                f"pose); keeping defaults [0, 0, 0]")
         except Exception as e:
             self.get_logger().info(
-                f"could not load {POSE_STATE_FILE} ({e}); "
+                f"[pose-state] could not load {POSE_STATE_FILE} ({e}); "
                 f"using default pose")
 
     def _save_persisted_pose(self):

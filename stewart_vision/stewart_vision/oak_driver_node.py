@@ -599,6 +599,15 @@ class OakDriverNode(Node):
         self._mask_pose_stamp: Optional[float] = None
         self._platform_mask: Optional[np.ndarray] = None
         self._expected_depth: Optional[np.ndarray] = None
+        # Diagnostic counters — published every 5 s so we can tell at
+        # a glance where the V0 / depth-blob pipeline is dying when
+        # it does. All increment in their respective handlers.
+        self._n_pose = 0
+        self._n_depth_frame = 0
+        self._n_v0 = 0
+        self._n_depth_blob = 0
+        self._diag_t0 = time.monotonic()
+        self.create_timer(5.0, self._log_pipeline_health)
 
         # Toggle for V0 platform masking. Default on. Set
         # OAK_MASK_V0_TO_PLATFORM=0 to fall back to the old greedy V0
@@ -635,6 +644,23 @@ class OakDriverNode(Node):
         are recomputed lazily on the next _tick that needs them — see
         _refresh_mask_if_stale."""
         self._last_pose = msg
+        self._n_pose += 1
+
+    def _log_pipeline_health(self):
+        """Periodic snapshot so we can tell which stage of the V0 /
+        depth-blob pipeline is silent without ros2 topic hz."""
+        mask_state = ('computed' if self._platform_mask is not None
+                      else 'NONE')
+        intrinsics_state = ('loaded' if self.K_rgb is not None
+                            else 'NONE')
+        depth_q = (self.q_depth is not None)
+        self.get_logger().info(
+            f"[health] poses={self._n_pose} v0_pub={self._n_v0} "
+            f"depth_frames={self._n_depth_frame} "
+            f"depth_blob_pub={self._n_depth_blob} "
+            f"mask={mask_state} intrinsics={intrinsics_state} "
+            f"depth_queue={'YES' if depth_q else 'NO'} "
+            f"mask_v0={self.mask_v0_to_platform}")
 
     def _refresh_mask_if_stale(self):
         """Project the platform disk into image pixels and refresh the
@@ -725,6 +751,7 @@ class OakDriverNode(Node):
                 p.point.y = cy
                 p.point.z = r           # radius in pixels piggy-backed in z
                 self.pub_v0.publish(p)
+                self._n_v0 += 1
                 # diagnostic with confidence + radius for debug strip
                 d = Float32MultiArray()
                 d.data = [float(cx), float(cy), float(r), float(conf)]
@@ -776,31 +803,34 @@ class OakDriverNode(Node):
         # depth is 5..80 mm closer to the camera than the platform
         # plane's expected depth at that pixel. Requires the same
         # platform mask V0 uses.
-        if (self.q_depth is not None
-                and self._platform_mask is not None
-                and self._expected_depth is not None):
+        if self.q_depth is not None:
             depth_msg = self.q_depth.tryGet()
             if depth_msg is not None:
-                depth_frame = depth_msg.getFrame()  # uint16 mm, (H, W)
-                det = detect_ball_depth_blob(
-                    depth_frame, self._platform_mask, self._expected_depth)
-                if det is not None:
-                    cx, cy, area_px, conf = det
-                    p = PointStamped()
-                    p.header.stamp = self.get_clock().now().to_msg()
-                    p.header.frame_id = 'oak_rgb'
-                    p.point.x = cx
-                    p.point.y = cy
-                    # piggy-back blob-area-derived radius proxy in z
-                    # (sqrt(area / pi)) so the GUI overlay can size
-                    # the cyan circle from a single PointStamped, the
-                    # same way the V0 stream piggy-backs radius.
-                    p.point.z = float(np.sqrt(max(area_px, 1.0) / np.pi))
-                    self.pub_depth_pixel.publish(p)
-                    d = Float32MultiArray()
-                    d.data = [float(cx), float(cy),
-                              float(area_px), float(conf)]
-                    self.pub_depth_diag.publish(d)
+                self._n_depth_frame += 1
+                if (self._platform_mask is not None
+                        and self._expected_depth is not None):
+                    depth_frame = depth_msg.getFrame()  # uint16 mm, (H, W)
+                    det = detect_ball_depth_blob(
+                        depth_frame, self._platform_mask,
+                        self._expected_depth)
+                    if det is not None:
+                        cx, cy, area_px, conf = det
+                        p = PointStamped()
+                        p.header.stamp = self.get_clock().now().to_msg()
+                        p.header.frame_id = 'oak_rgb'
+                        p.point.x = cx
+                        p.point.y = cy
+                        # piggy-back blob-area-derived radius proxy in
+                        # z (sqrt(area / pi)) so the GUI overlay can
+                        # size the cyan circle from a single
+                        # PointStamped, like V0's radius piggy-back.
+                        p.point.z = float(np.sqrt(max(area_px, 1.0) / np.pi))
+                        self.pub_depth_pixel.publish(p)
+                        self._n_depth_blob += 1
+                        d = Float32MultiArray()
+                        d.data = [float(cx), float(cy),
+                                  float(area_px), float(conf)]
+                        self.pub_depth_diag.publish(d)
 
         # Raw mono left — Stage C ArUco solve consumes this.
         # estimatePoseBoard takes (K, dist) and handles distortion
