@@ -1122,6 +1122,50 @@ class StewartControlNode(Node):
         self.create_subscription(
             String, 'control_cmd', self._control_cmd_cb, 10)
 
+        # --- Closed-loop ball-tracking (spec §9, milestone #10) ---
+        # /ball_state from ball_kf_node carries (px, py) in pose.position
+        # and (vx, vy) hacked into pose.orientation.x / .y (per the KF
+        # node's docstring — "Stuffing velocity into orientation.{x,y}
+        # as a scaffold hack"). Platform-frame, mm and mm/s.
+        from geometry_msgs.msg import PointStamped, PoseStamped as _PoseStamped
+        self.last_ball_state = None      # (px, py, vx, vy) mm, mm/s
+        self.last_ball_state_t = 0.0     # monotonic time of last update
+        self.last_ball_ref = None        # (rx, ry) mm
+        self.last_ball_ref_t = 0.0
+        self.create_subscription(
+            _PoseStamped, '/ball_state', self._ball_state_cb, 10)
+        self.create_subscription(
+            PointStamped, '/ball_ref', self._ball_ref_cb, 10)
+
+        # Ball-tracking PID gains. Conservative starting values — first
+        # iteration of milestone #10. P+D only; no integrator, no
+        # acceleration feedforward (ref is constant for the centering
+        # sanity test).
+        #   Kp 0.03 deg/mm: a 100 mm offset commands 3° of tilt, well
+        #     inside the platform's envelope but with enough authority
+        #     to drive the ball back.
+        #   Kd 0.005 deg per (mm/s): light damping; tighten if ball
+        #     overshoots, slacken if response is sluggish.
+        # Sign convention: ball at +x ⇒ command +pitch (rotate +x edge UP)
+        # so the ball rolls "downhill" toward x=0. Per spec §9 ẍ_ball =
+        # -g·sin(θ)·α: positive θ_pitch yields negative ẍ_x, i.e. ball
+        # decelerates from +x → 0. Stable closed-loop with Kp > 0.
+        self.ball_track_gains = {
+            'kp': float(os.environ.get('BALL_TRACK_KP', '0.03')),
+            'kd': float(os.environ.get('BALL_TRACK_KD', '0.005')),
+            'ki': float(os.environ.get('BALL_TRACK_KI', '0.0')),
+            'max_tilt_deg': float(os.environ.get('BALL_TRACK_MAX_TILT', '6.0')),
+            'pitch_sign': float(os.environ.get('BALL_TRACK_PITCH_SIGN', '+1.0')),
+            'roll_sign':  float(os.environ.get('BALL_TRACK_ROLL_SIGN',  '+1.0')),
+            'state_stale_s': 0.5,
+            'ref_stale_s':   2.0,
+        }
+        self.ball_track_enabled = False
+        self.ball_track_thread = None
+        self.ball_track_stop = threading.Event()
+        # Last commanded tilts (for /status surfacing).
+        self.ball_track_corr = [0.0, 0.0]   # [roll_deg, pitch_deg]
+
         # --- Timers ---
         self.create_timer(0.05, self._tick_state)      # 20 Hz encoders/rpy
         self.create_timer(0.5, self._tick_status)       # 2 Hz status
@@ -1692,6 +1736,10 @@ class StewartControlNode(Node):
                     pass
         self.leg_armed = [False] * 6
         self._stop_level_loop()
+        # Ball-tracking PID also stops on disarm — its tilt commands
+        # would no-op against IDLE legs anyway, but stopping the
+        # thread keeps /status's ball_track_enabled honest.
+        self._stop_ball_track_loop()
 
     # ---- Feeder safety hook (last line of defense) ----
     def _feeder_safety_check(self, modes, vel, pos_targets):
@@ -1870,6 +1918,9 @@ class StewartControlNode(Node):
             'level_err_pitch_deg': float(err_p),
             'level_corr_roll_deg': float(self.level_corr[0]),
             'level_corr_pitch_deg': float(self.level_corr[1]),
+            'ball_track_enabled': bool(self.ball_track_enabled),
+            'ball_track_corr_roll_deg':  float(self.ball_track_corr[0]),
+            'ball_track_corr_pitch_deg': float(self.ball_track_corr[1]),
             'imu_yaw_deg': float(cur_rpy[2]) if cur_rpy is not None else float('nan'),
             'recording': self.recording_t0 is not None,
             'recording_keyframe_count': len(self.recording_keyframes),
@@ -1914,6 +1965,24 @@ class StewartControlNode(Node):
         res.message = msg
         return res
 
+    def _ball_state_cb(self, msg):
+        """KF posterior in platform frame. Position in pose.position
+        (mm); velocity in pose.orientation.x / .y (mm/s — see
+        ball_kf_node's "scaffold hack" comment)."""
+        self.last_ball_state = (
+            float(msg.pose.position.x),
+            float(msg.pose.position.y),
+            float(msg.pose.orientation.x),
+            float(msg.pose.orientation.y),
+        )
+        self.last_ball_state_t = time.monotonic()
+
+    def _ball_ref_cb(self, msg):
+        """Target ball position from ref_generator_node. Platform-
+        frame mm. ref_generator dead-zone-clamps before publishing."""
+        self.last_ball_ref = (float(msg.point.x), float(msg.point.y))
+        self.last_ball_ref_t = time.monotonic()
+
     def _jog_vel_cmd_cb(self, msg):
         """Dead-man velocity input. The GUI publishes this continuously while
         the slider is being dragged, and sends 0 on release."""
@@ -1939,8 +2008,20 @@ class StewartControlNode(Node):
         us — silently ignore rather than spamming the journal at 5 Hz.
         """
         text = (msg.data or '').strip()
-        if not text or not text.startswith('{'):
-            # Not our protocol; let the other nodes handle it.
+        if not text:
+            return
+        # Two protocols co-exist on /control_cmd:
+        #  • JSON {"cmd": "...", ...}       — handled here
+        #  • key:value (mode:..., ball_config:...) — handled by
+        #    ref_generator_node + others, BUT we also need to react to
+        #    mode changes to start/stop the BALL_TRACK loop on the
+        #    controller side. So intercept the colon protocol when
+        #    key == 'mode'; everything else just passes through.
+        if not text.startswith('{'):
+            if ':' in text:
+                key, _, payload = text.partition(':')
+                if key.strip() == 'mode':
+                    self._handle_mode_change(payload.strip())
             return
         try:
             d = json.loads(text)
@@ -3569,6 +3650,179 @@ class StewartControlNode(Node):
         if t is not None:
             t.join(timeout=1.0)
         self.level_thread = None
+
+    # ---- ball-tracking loop (closed-loop ball-on-plate, milestone #10) ----
+    def _handle_mode_change(self, payload):
+        """Dispatcher for `mode:VALUE …json…` payloads on /control_cmd.
+        Starts/stops the BALL_TRACK loop as the operator switches modes.
+        ref_generator_node owns publishing /ball_ref for each mode; we
+        consume /ball_ref + /ball_state and command tilt.
+        """
+        parts = payload.split(maxsplit=1)
+        mode = parts[0].upper() if parts else ''
+        params_text = parts[1] if len(parts) > 1 else ''
+        try:
+            _ = json.loads(params_text) if params_text else {}
+        except json.JSONDecodeError:
+            self.get_logger().warn(
+                f"mode {mode}: bad JSON params {params_text!r}; ignoring")
+            return
+        if mode == 'LEVEL_HOLD':
+            # Stop ball-tracking; leave level loop OFF (operator can
+            # re-enable Level via the Stabilization panel as needed).
+            if self.ball_track_enabled:
+                self._stop_ball_track_loop()
+                self.get_logger().info(
+                    "ball_track stopped (mode:LEVEL_HOLD)")
+            return
+        if mode in ('BALL_TRACK_GOTO', 'BALL_TRACK_TRAJECTORY',
+                    'BALL_TRACK_PATH'):
+            if not self.armed:
+                self.get_logger().warn(
+                    f"mode {mode}: not armed, refusing to start ball_track")
+                return
+            if self.ball_track_enabled:
+                # Already running — staying in BALL_TRACK_*; ref_generator
+                # will swap the /ball_ref source and our PID will follow.
+                return
+            self._start_ball_track_loop()
+            self.get_logger().info(
+                f"ball_track started (mode:{mode}); "
+                f"gains kp={self.ball_track_gains['kp']:.4f} "
+                f"kd={self.ball_track_gains['kd']:.4f} "
+                f"ki={self.ball_track_gains['ki']:.4f}")
+            return
+        if mode == 'BALL_HOLD':
+            # v10 active-stabilization: not yet implemented in the
+            # controller. Just log so the operator knows.
+            self.get_logger().info(
+                "mode:BALL_HOLD received — controller-side feedforward "
+                "not implemented yet (spec §11.7, v10)")
+            return
+        # Unknown mode — log once.
+        self.get_logger().warn(f"unknown mode '{mode}' on /control_cmd")
+
+    def _start_ball_track_loop(self):
+        """Start the ball-tracking PID thread. Stops the level loop
+        first because they're mutually exclusive: both want exclusive
+        write access to the tilt commands. The level loop's IMU
+        feedback isn't useful when the controller is intentionally
+        tilting to drive the ball."""
+        if self.level_enabled:
+            self._stop_level_loop()
+        self._stop_ball_track_loop()
+        self.ball_track_corr = [0.0, 0.0]
+        self.ball_track_stop.clear()
+        self.ball_track_enabled = True
+        self.ball_track_thread = threading.Thread(
+            target=self._ball_track_run, daemon=True)
+        self.ball_track_thread.start()
+
+    def _stop_ball_track_loop(self):
+        self.ball_track_enabled = False
+        self.ball_track_stop.set()
+        t = self.ball_track_thread
+        if t is not None:
+            t.join(timeout=1.0)
+        self.ball_track_thread = None
+        self.ball_track_corr = [0.0, 0.0]
+
+    def _ball_track_run(self):
+        """Closed-loop ball-position controller — spec §9, milestone #10.
+        Reads /ball_state (KF posterior) and /ball_ref (target),
+        computes 2-axis PD on tilt, commands via _do_set_pose at 50 Hz.
+
+        Sign convention (BALL_TRACK_PITCH_SIGN / _ROLL_SIGN env vars
+        flip if needed): ball at +x platform commands +pitch
+        (rotates +x edge UP); ball-on-plate dynamics ẍ_ball =
+        -g·sin(θ_pitch)·α then drive ball toward x=0. If on the
+        first milestone-10 test the ball flies AWAY from center,
+        flip the sign env var and restart — that's the only knob
+        we expect to need on first hardware contact.
+
+        Saturation: hard ±max_tilt_deg cap (default 6°) to keep the
+        platform inside its envelope even with a wild gain choice.
+
+        Fail-safes:
+          - /ball_state stale (>0.5s): command flat (roll=pitch=0).
+            Vision feed dropped or KF not running yet — better to
+            sit level than command a stale tilt.
+          - /ball_ref stale (>2s): same. Operator must mode:* again.
+        """
+        period = self.ctrl_period_s
+        integ_x = 0.0
+        integ_y = 0.0
+        z_hold = float(self.current_xyz[2]) if self.current_xyz else 50.0
+        while not self.ball_track_stop.is_set():
+            t0 = time.monotonic()
+            g = self.ball_track_gains
+            kp = float(g['kp'])
+            kd = float(g['kd'])
+            ki = float(g.get('ki', 0.0))
+            max_tilt = float(g.get('max_tilt_deg', 6.0))
+            ps = float(g.get('pitch_sign', 1.0))
+            rs = float(g.get('roll_sign', 1.0))
+            stale_state = float(g.get('state_stale_s', 0.5))
+            stale_ref = float(g.get('ref_stale_s', 2.0))
+
+            now = time.monotonic()
+            state = self.last_ball_state
+            ref = self.last_ball_ref
+            state_age = now - self.last_ball_state_t
+            ref_age = now - self.last_ball_ref_t
+
+            if (state is None or ref is None
+                    or state_age > stale_state
+                    or ref_age > stale_ref):
+                # Sit level + reset integrator. Don't let stale data
+                # drive surprise tilts.
+                tilt_pitch = 0.0
+                tilt_roll = 0.0
+                integ_x = 0.0
+                integ_y = 0.0
+            else:
+                px, py, vx, vy = state
+                rx, ry = ref
+                # Error: ball needs to move from current pos toward ref.
+                # x_ball = px; for ref=0 we want ẍ < 0 when px > 0.
+                # tilt_pitch = +Kp · px gives the right sign with the
+                # spec's ball-on-plate model. Use (px - rx) so a non-
+                # zero ref also works (BALL_TRACK_GOTO with offset).
+                ex = px - rx
+                ey = py - ry
+                # Velocity damping: positive vx (ball moving toward +x)
+                # demands more positive pitch to brake. Same convention.
+                edot_x = vx
+                edot_y = vy
+
+                integ_x = max(-max_tilt, min(max_tilt,
+                                             integ_x + ex * period))
+                integ_y = max(-max_tilt, min(max_tilt,
+                                             integ_y + ey * period))
+
+                tilt_pitch = ps * (kp * ex + kd * edot_x + ki * integ_x)
+                tilt_roll  = rs * (kp * ey + kd * edot_y + ki * integ_y)
+
+                # Saturate.
+                tilt_pitch = max(-max_tilt, min(max_tilt, tilt_pitch))
+                tilt_roll  = max(-max_tilt, min(max_tilt, tilt_roll))
+
+            self.ball_track_corr = [tilt_roll, tilt_pitch]
+
+            # Command. allow_large=True so the small soft-limit guard
+            # in _do_set_pose doesn't reject these tilts (spec §9 hard
+            # cap is what we trust here).
+            try:
+                self._do_set_pose(0.0, 0.0, z_hold,
+                                  tilt_roll, tilt_pitch, 0.0,
+                                  allow_large=True)
+            except Exception as e:
+                self.get_logger().warn(f"ball_track set_pose failed: {e}")
+
+            elapsed = time.monotonic() - t0
+            sleep_s = max(0.0, period - elapsed)
+            if sleep_s > 0:
+                self.ball_track_stop.wait(sleep_s)
 
     def _level_run(self):
         # Level-loop body. Gains are read from self.level_gains at the
