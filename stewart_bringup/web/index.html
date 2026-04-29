@@ -1558,6 +1558,10 @@ let topic = {};     // name -> ROSLIB.Topic
 let velCapInitialized = false;  // seeded from /status or /get_speed_cap
 let lastStatusMs = 0;           // last /status reception (ms epoch, 0 = never)
 let lastStatus = null;          // last parsed /status JSON (or null)
+// Last time the Stabilization-panel Z slider received user input.
+// Used by syncStabZFromStatus to avoid yanking the slider while the
+// user is actively dragging it.
+let _stabZUserEditMs = 0;
 const lastRxMs = { status: 0, encoders: 0, rpy: 0, currents: 0 };
 
 const $ = (id) => document.getElementById(id);
@@ -1901,6 +1905,13 @@ function setupROSInterface() {
       const s = JSON.parse(m.data);
       lastStatus = s;     // stash parsed JSON for non-rendering consumers
                           // (e.g. _ivaIsArmed in the sweep preflight)
+      // Keep the Stabilization Z slider in sync with whatever Z the
+      // controller is actually holding. Source of truth: status's
+      // current_xyz, updated by every set_pose in stewart_control_node.
+      // This makes the slider correct whether Z was changed by the
+      // stab panel itself, the IVA panel's Apply tilt, the IVA
+      // sweep, or any other consumer of /control_cmd.
+      syncStabZFromStatus(s);
       $('status-box').innerText = Object.entries(s).map(([k,v])=>
         `${k.padEnd(28)} ${JSON.stringify(v)}`).join('\n');
       updateLevelButtons(!!s.level_enabled);
@@ -3053,6 +3064,10 @@ window.addEventListener('DOMContentLoaded', () => {
   const stabZr = $('stab-z-readout');
   stabZ.addEventListener('input', () => {
     stabZr.innerText = stabZ.value + ' mm';
+    // Mark a "user is touching this" timestamp so the /status echo
+    // path (syncStabZFromStatus) doesn't yank the slider while the
+    // user is mid-drag.
+    _stabZUserEditMs = Date.now();
   });
   // Debounce so a long drag doesn't flood the bus.
   let stabZTimer = null;
@@ -3720,6 +3735,36 @@ function ivaCaptureLevelRef() {
   }
   _ivaRefQuat = { ..._ivaCam._lastQuat };
   _ivaSetRecStatus('level reference captured', true);
+}
+
+// Pull current Z from /status.current_xyz and update the
+// Stabilization-panel Z slider so it never goes stale. Called from
+// the /status subscription handler at ~2 Hz.
+//
+// Skips programmatic updates while the user is actively dragging
+// (touched the slider in the last 1 s) so a long drag isn't yanked
+// by stale echoes. Threshold of 0.5 mm avoids jittering the slider
+// when the controller's reported Z and the slider's value are
+// already in agreement.
+function syncStabZFromStatus(s) {
+  if (!s || !Array.isArray(s.current_xyz) || s.current_xyz.length < 3) return;
+  const newZ = Number(s.current_xyz[2]);
+  if (!isFinite(newZ)) return;
+  // Don't fight the user mid-drag.
+  if (Date.now() - _stabZUserEditMs < 1000) return;
+  const stabZ = document.getElementById('stab-z-slider');
+  const stabZr = document.getElementById('stab-z-readout');
+  if (!stabZ) return;
+  const cur = parseFloat(stabZ.value);
+  const rounded = Math.round(newZ);
+  if (Math.abs(cur - rounded) < 0.5) return;
+  // Clamp to slider's declared range so .value still parses cleanly
+  // even if some upstream commanded a Z outside [min, max].
+  const lo = Number(stabZ.min);
+  const hi = Number(stabZ.max);
+  const clamped = Math.max(lo, Math.min(hi, rounded));
+  stabZ.value = String(clamped);
+  if (stabZr) stabZr.innerText = stabZ.value + ' mm';
 }
 
 // Read the IVA panel's Z slider. Returns the height in mm above the
