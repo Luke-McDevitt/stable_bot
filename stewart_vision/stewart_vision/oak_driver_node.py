@@ -96,26 +96,29 @@ def detect_ball_v0(rgb_bgr: np.ndarray) -> Optional[tuple]:
 def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
-    Phase-A pipeline (kept lean to fit Myriad X memory headroom):
-      RGB: 1080p ISP scaled to 540p, MJPEG-encoded
-      Mono left: 800p, rectified by StereoDepth
-      Mono right: 800p, rectified by StereoDepth (no output yet)
-      StereoDepth: rectification only — LR-check OFF, subpixel OFF,
-                   no disparity output. The two flags + the disparity
-                   queue ~double the stereo memory footprint and we
-                   don't need them until the stereo-triangulation
-                   comparison estimator (spec §7) lands.
+    Phase-A pipeline (lean — RGB + raw mono left only):
+      RGB:       1080p ISP scaled to 540p, MJPEG-encoded
+      Mono left: 800p, RAW (not rectified)
 
-    Why so trim:
-      The combination LR-check=ON + subpixel=ON + disparity output +
-      both rectified outputs + RGB encoder + raw RGB queue overflowed
-      the Myriad X's working RAM and the device firmware crashed
-      mid-stream ("Device crashed, but no crash dump could be
-      extracted" → X_LINK_ERROR on the next tryGet). Trimming the
-      pipeline restores stability. Add the disparity / right_rect /
-      LR-check / subpixel bits back when wiring `/ball_xy_stereo` —
-      at that point the Myriad X has a real reason to be doing the
-      work.
+    Why raw mono, not rectified:
+      ArUco's cv2.aruco.estimatePoseBoard takes (K, dist) and handles
+      distortion internally during solvePnP. Pre-rectifying the image
+      and then handing the solver a "rectified K" only works if the
+      rectified K we hand it matches the K of the actual rectified
+      pixels. DepthAI's StereoDepth uses its own internal
+      rectification with parameters that differ from a naive
+      cv2.stereoRectify(alpha=0) call — empirically observed during
+      Stage C bring-up where the rectified-K approach gave a 13 px
+      reprojection error on a clean leveled-platform image.
+
+      Solving directly against the raw mono image with the raw factory
+      K + factory dist sidesteps the entire rectification-mismatch
+      class of bugs.
+
+      StereoDepth + the right mono are dropped from the Phase-A
+      pipeline entirely — also frees Myriad X memory and lowers USB
+      power draw, which compounded the earlier mid-stream crashes.
+      Both come back when wiring `/ball_xy_stereo` (spec §7).
     """
     pipeline = dai.Pipeline()
 
@@ -129,28 +132,11 @@ def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30):
     cam_rgb.initialControl.setAutoFocusMode(
         dai.RawCameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
 
-    # Mono left
+    # Mono left — raw output for ArUco pose recovery
     mono_l = pipeline.create(dai.node.MonoCamera)
     mono_l.setBoardSocket(dai.CameraBoardSocket.CAM_B)
     mono_l.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
     mono_l.setFps(mono_fps)
-
-    # Mono right (still needed as input to StereoDepth — without both
-    # eyes the rectification of the left eye doesn't run).
-    mono_r = pipeline.create(dai.node.MonoCamera)
-    mono_r.setBoardSocket(dai.CameraBoardSocket.CAM_C)
-    mono_r.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
-    mono_r.setFps(mono_fps)
-
-    # Stereo depth, configured for *rectification only* in Phase A.
-    stereo = pipeline.create(dai.node.StereoDepth)
-    stereo.setDefaultProfilePreset(
-        dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
-    stereo.setLeftRightCheck(False)        # off: not used yet, frees memory
-    stereo.setExtendedDisparity(False)
-    stereo.setSubpixel(False)              # off: not used yet, frees memory
-    mono_l.out.link(stereo.left)
-    mono_r.out.link(stereo.right)
 
     # JPEG encoder for RGB stream
     enc_rgb = pipeline.create(dai.node.VideoEncoder)
@@ -165,12 +151,9 @@ def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 30):
         src.link(out.input)
         return out
 
-    add_out('rgb_jpeg',  enc_rgb.bitstream)
-    add_out('rgb_raw',   cam_rgb.video)        # uncompressed for V0 detector
-    add_out('left_rect', stereo.rectifiedLeft)
-    # right_rect + disparity intentionally NOT exposed in Phase A.
-    # Add them back when wiring `/ball_xy_stereo` (spec §7) and the
-    # disparity debug pane.
+    add_out('rgb_jpeg', enc_rgb.bitstream)
+    add_out('rgb_raw',  cam_rgb.video)         # uncompressed for V0 detector
+    add_out('left',     mono_l.out)            # raw mono left for ArUco
 
     return pipeline
 
@@ -244,9 +227,9 @@ class OakDriverNode(Node):
 
         self.q_rgb_jpeg  = self.device.getOutputQueue('rgb_jpeg', 4, False)
         self.q_rgb_raw   = self.device.getOutputQueue('rgb_raw', 2, False)
-        self.q_left      = self.device.getOutputQueue('left_rect', 2, False)
-        # q_right / q_disparity intentionally absent in Phase A — see
-        # _build_pipeline docstring.
+        self.q_left      = self.device.getOutputQueue('left', 2, False)
+        # right mono / disparity / stereo rectification all dropped
+        # from the Phase-A pipeline. See _build_pipeline docstring.
 
         # Drive everything from a single timer; DepthAI queues are
         # already producer-buffered, so we just drain them.
@@ -293,15 +276,16 @@ class OakDriverNode(Node):
                 d.data = [float(cx), float(cy), float(r), float(conf)]
                 self.pub_v0_diag.publish(d)
 
-        # Rectified left mono — Stage C ArUco solve consumes this.
+        # Raw mono left — Stage C ArUco solve consumes this.
+        # estimatePoseBoard takes (K, dist) and handles distortion
+        # internally; no pre-rectification needed.
         left = self.q_left.tryGet()
         if left is not None:
             self._encode_and_publish_mono(self.pub_left, left.getCvFrame())
 
-        # Right rectified + disparity outputs intentionally not pulled
-        # in Phase A. pub_right / pub_disp publishers stay declared so
-        # subscribers see the topic names; they just never fire until
-        # _build_pipeline adds the corresponding XLinkOuts back.
+        # right + disparity outputs not exposed in Phase A. The
+        # pub_right / pub_disp publishers stay declared so the topic
+        # names exist for any subscriber that probes for them.
 
     def destroy_node(self):
         try:

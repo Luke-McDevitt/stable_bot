@@ -298,23 +298,28 @@ def stage_factory(out_path: str | None = None,
         'captured_at': datetime.datetime.utcnow().isoformat(timespec='seconds'),
         'usb_speed': usb_speed,
         'cameras_present': cameras,
-        # Consumed by platform_pose_node + calibration_node — these
-        # MUST be rectified intrinsics because the streams those nodes
-        # subscribe to are rectified.
+        # Consumed by platform_pose_node + calibration_node. RAW K +
+        # RAW dist, paired with the RAW (non-rectified) mono streams
+        # oak_driver_node now publishes. cv2.aruco.estimatePoseBoard
+        # un-distorts each detected marker corner internally during
+        # solvePnP, so a pre-rectified image is not required and
+        # actually hurts (the cv2.stereoRectify-derived rectified K
+        # diverges from DepthAI's internal rectification — see Stage C
+        # bring-up notes 2026-04-29). The rectified P_left / P_right
+        # are still written under `rectification:` for future
+        # stereo-triangulation work.
         'left': {
             'resolution': [MONO_W, MONO_H],
-            'rectified': True,
-            'K': K_l_rect.flatten().tolist(),
-            'dist': [0.0] * 5,
-            'K_raw': K_l_raw.flatten().tolist(),
+            'rectified': False,
+            'K': K_l_raw.flatten().tolist(),
+            'dist': d_l_raw[:5].tolist(),
             'dist_raw': d_l_raw.tolist(),
         },
         'right': {
             'resolution': [MONO_W, MONO_H],
-            'rectified': True,
-            'K': K_r_rect.flatten().tolist(),
-            'dist': [0.0] * 5,
-            'K_raw': K_r_raw.flatten().tolist(),
+            'rectified': False,
+            'K': K_r_raw.flatten().tolist(),
+            'dist': d_r_raw[:5].tolist(),
             'dist_raw': d_r_raw.tolist(),
         },
         # RGB stream is NOT rectified by oak_driver — it's raw ISP
@@ -349,14 +354,15 @@ def stage_factory(out_path: str | None = None,
     print(f"[stage factory] Wrote {out_path}")
     print(f"  device:               {device_name} (USB {usb_speed})")
     print(f"  cameras:              {cameras}")
-    print(f"  left  K (rectified):  fx={K_l_rect[0, 0]:.2f} "
-          f"fy={K_l_rect[1, 1]:.2f} "
-          f"cx={K_l_rect[0, 2]:.2f} "
-          f"cy={K_l_rect[1, 2]:.2f}")
-    print(f"  right K (rectified):  fx={K_r_rect[0, 0]:.2f} "
-          f"fy={K_r_rect[1, 1]:.2f} "
-          f"cx={K_r_rect[0, 2]:.2f} "
-          f"cy={K_r_rect[1, 2]:.2f}")
+    print(f"  left  K (raw):        fx={K_l_raw[0, 0]:.2f} "
+          f"fy={K_l_raw[1, 1]:.2f} "
+          f"cx={K_l_raw[0, 2]:.2f} "
+          f"cy={K_l_raw[1, 2]:.2f}")
+    print(f"  right K (raw):        fx={K_r_raw[0, 0]:.2f} "
+          f"fy={K_r_raw[1, 1]:.2f} "
+          f"cx={K_r_raw[0, 2]:.2f} "
+          f"cy={K_r_raw[1, 2]:.2f}")
+    print(f"  left dist[:5] (raw):  {[round(float(x), 4) for x in d_l_raw[:5]]}")
     print(f"  baseline:             {baseline_mm:.2f} mm")
     print(f"  rgb K:                fx={K_rgb[0, 0]:.2f} "
           f"fy={K_rgb[1, 1]:.2f} "
