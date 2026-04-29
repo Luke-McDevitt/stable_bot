@@ -283,12 +283,22 @@ def _load_level_cal():
 
 def _load_level_gains():
     """Returns dict with kp, ki, deadband_deg, rate_limit_deg_per_iter,
-    max_corr_deg, filter_alpha. Falls back to historical hardcoded
-    values if the YAML is missing so the node still starts."""
+    max_corr_deg, filter_alpha, plus the inner-deadband integrator-decay
+    knob. Falls back to historical hardcoded values if the YAML is
+    missing so the node still starts."""
     defaults = {
         'kp': 0.7, 'ki': 0.2, 'deadband_deg': 0.05,
         'rate_limit_deg_per_iter': 0.2, 'max_corr_deg': 5.0,
         'filter_alpha': 0.3,
+        # When |err_filt| < deadband_deg, the integrator decays toward
+        # zero by this factor PER TICK at the reference rate (50 Hz).
+        # 0.99 ⇒ ~50-tick (1 second) time constant at 50 Hz; scaled
+        # automatically to whatever loop rate is actually running.
+        # 1.0 disables decay (legacy behavior — wind-up causes the
+        # 5.9-second limit cycle observed in 2026-04-28 sweeps). 0.0
+        # zeros the integrator immediately when in deadband (most
+        # aggressive). 0.99 is a good default starting point.
+        'integ_decay_per_tick_at_50hz': 0.99,
     }
     if not os.path.exists(LEVEL_GAINS_PATH):
         return defaults
@@ -3168,6 +3178,12 @@ class StewartControlNode(Node):
             rate_limit = rate_limit_ref * rate_scale
             alpha_clip = min(max(alpha_ref, 1e-6), 0.999999)
             alpha = 1.0 - (1.0 - alpha_clip) ** rate_scale
+            # Integrator decay (when in deadband) scaled the same way:
+            # decay_at_dt = decay_at_ref ** (dt / ref_dt) preserves the
+            # exponential time constant.
+            decay_ref = g.get('integ_decay_per_tick_at_50hz', 0.99)
+            decay_clip = min(max(decay_ref, 0.0), 1.0)
+            integ_decay = decay_clip ** rate_scale
             if self._level_zero_integ_request.is_set():
                 integ_r = 0.0
                 integ_p = 0.0
@@ -3191,13 +3207,20 @@ class StewartControlNode(Node):
             err_r_f = alpha * err_r + (1 - alpha) * err_r_f
             err_p_f = alpha * err_p + (1 - alpha) * err_p_f
             clip_flags = 0
+            # Outside deadband: standard PI integrator action.
+            # Inside deadband: decay toward zero so historical wind-up
+            # doesn't keep producing corrections after the error has
+            # essentially settled (the cause of the slow 0.17 Hz limit
+            # cycle observed in 2026-04-28 sweeps).
             if abs(err_r_f) > deadband:
                 integ_r += -err_r_f * ki * dt
             else:
+                integ_r *= integ_decay
                 clip_flags |= (1 << 4)   # deadband_r
             if abs(err_p_f) > deadband:
                 integ_p += -err_p_f * ki * dt
             else:
+                integ_p *= integ_decay
                 clip_flags |= (1 << 5)   # deadband_p
             if integ_r > max_corr or integ_r < -max_corr:
                 clip_flags |= (1 << 6)   # integ_clamp_r

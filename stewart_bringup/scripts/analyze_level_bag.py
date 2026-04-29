@@ -33,6 +33,16 @@ try:
 except ImportError:
     yaml = None
 
+# Plotting is optional — if matplotlib isn't available the digest still
+# writes JSON + CSV, just without the diagnostic PNG.
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    _HAVE_MPL = True
+except ImportError:
+    _HAVE_MPL = False
+
 try:
     import rclpy.serialization
     import rosbag2_py
@@ -391,7 +401,11 @@ def aggregate_steps(trials):
     return out
 
 
-def downsample(samples, target_hz=10.0):
+def downsample(samples, target_hz):
+    """Stride-decimate samples to approximately target_hz. If target_hz
+    is None or <= 0, return samples unchanged (full native rate)."""
+    if target_hz is None or target_hz <= 0:
+        return list(samples)
     if len(samples) < 2:
         return list(samples)
     t0 = samples[0][0]
@@ -545,8 +559,203 @@ def _summarize_inner_loop_config(sidecar):
     }
 
 
-def analyze_bag(bag_dir, out_dir, name=None):
-    """Single-bag analysis. Writes <out_dir>/<name>_summary.json + _timeseries.csv."""
+def _settling_metrics(samples, threshold_deg=0.1, hold_s=1.0):
+    """First time |err_filt| stays below threshold for `hold_s` continuously,
+    measured from the start of the bag. Returns dict per-axis with the
+    settling time (or None if never settled), the steady-state mean and
+    std over the LAST 5 seconds, and time-in-band fractions for several
+    thresholds combined across both axes."""
+    if len(samples) < 5:
+        return None
+    t = np.array([s[0] for s in samples]) - samples[0][0]
+    err_r = np.array([m.err_r_filt for _t, m in samples])
+    err_p = np.array([m.err_p_filt for _t, m in samples])
+    dt = float(np.median(np.diff(t))) if len(t) > 1 else 0.02
+    hold_n = max(1, int(round(hold_s / dt)))
+
+    def _first_sustained(err, thr, n):
+        for i in range(len(err) - n):
+            if np.all(np.abs(err[i:i + n]) < thr):
+                return float(t[i])
+        return None
+
+    out = {
+        'threshold_deg': float(threshold_deg),
+        'hold_s': float(hold_s),
+        'settling_time_roll_s': _first_sustained(err_r, threshold_deg, hold_n),
+        'settling_time_pitch_s': _first_sustained(err_p, threshold_deg, hold_n),
+    }
+    # Steady-state stats over the last 5 seconds (or last 25% if shorter).
+    ss_window = min(5.0, max(1.0, t[-1] * 0.25))
+    ss_mask = t >= (t[-1] - ss_window)
+    if ss_mask.any():
+        out['ss_window_s'] = float(ss_window)
+        out['ss_mean_roll_deg']  = float(err_r[ss_mask].mean())
+        out['ss_mean_pitch_deg'] = float(err_p[ss_mask].mean())
+        out['ss_std_roll_deg']   = float(err_r[ss_mask].std())
+        out['ss_std_pitch_deg']  = float(err_p[ss_mask].std())
+        out['ss_p2p_roll_deg']   = float(np.ptp(err_r[ss_mask]))
+        out['ss_p2p_pitch_deg']  = float(np.ptp(err_p[ss_mask]))
+    # Time in band — both axes simultaneously inside the band.
+    for thr in (0.05, 0.10, 0.20):
+        inband = (np.abs(err_r) < thr) & (np.abs(err_p) < thr)
+        out[f'time_in_band_{int(thr*100):03d}_pct'] = (
+            float(inband.sum() / len(inband) * 100))
+    # Integrator drift over the steady-state window (= peak-to-peak of
+    # the integrator state, which directly diagnoses wind-up oscillation).
+    integ_r = np.array([m.integ_r for _t, m in samples])
+    integ_p = np.array([m.integ_p for _t, m in samples])
+    if ss_mask.any():
+        out['integrator_drift_p2p_roll_deg']  = float(np.ptp(integ_r[ss_mask]))
+        out['integrator_drift_p2p_pitch_deg'] = float(np.ptp(integ_p[ss_mask]))
+    # Dominant oscillation frequency in err_r (Hann-windowed FFT).
+    if len(err_r) >= 16:
+        sr = 1.0 / dt
+        sig = err_r - err_r.mean()
+        F = np.fft.rfft(sig * np.hanning(len(sig)))
+        freqs = np.fft.rfftfreq(len(sig), 1.0 / sr)
+        mag = np.abs(F)
+        valid = freqs > 0.05
+        if valid.any():
+            i = int(np.argmax(mag[valid]))
+            f_peak = float(freqs[valid][i])
+            a_peak = float(mag[valid][i] * 2.0 / np.sum(np.hanning(len(sig))))
+            out['dominant_osc_hz'] = f_peak
+            out['dominant_osc_period_s'] = (1.0 / f_peak) if f_peak > 0 else None
+            out['dominant_osc_amp_deg'] = a_peak
+    return out
+
+
+def _make_diagnostic_plots(samples, out_path, gains=None):
+    """Single multi-panel PNG that visually separates: (1) error vs the
+    target band, (2) corrections vs saturation, (3) integrator state
+    (the wind-up smoking gun), (4) per-leg commanded vs actual position,
+    (5) FFT of error showing the limit-cycle frequency, (6) histogram
+    of error magnitudes vs target thresholds.
+
+    Returns the output path on success, None if matplotlib is missing."""
+    if not _HAVE_MPL:
+        return None
+    if len(samples) < 5:
+        return None
+    t = np.array([s[0] for s in samples]) - samples[0][0]
+    err_r = np.array([m.err_r_filt for _t, m in samples])
+    err_p = np.array([m.err_p_filt for _t, m in samples])
+    corr_r = np.array([m.corr_r for _t, m in samples])
+    corr_p = np.array([m.corr_p for _t, m in samples])
+    integ_r = np.array([m.integ_r for _t, m in samples])
+    integ_p = np.array([m.integ_p for _t, m in samples])
+    mt = np.array([list(m.motor_targets) for _t, m in samples])
+    enc = np.array([list(m.leg_enc) for _t, m in samples])
+    dt = float(np.median(np.diff(t))) if len(t) > 1 else 0.02
+    sr = 1.0 / dt
+
+    fig = plt.figure(figsize=(14, 18), constrained_layout=True)
+    gs = fig.add_gridspec(6, 1, height_ratios=[2, 2, 2, 3, 1.5, 1.5])
+
+    deadband = (gains or {}).get('deadband_deg', 0.05)
+    max_corr = (gains or {}).get('max_corr_deg', 5.0)
+
+    # 1. Error over time, with deadband / 0.1° / 0.2° bands shaded.
+    ax = fig.add_subplot(gs[0])
+    for thr, alpha, color in [(0.20, 0.06, 'orange'),
+                              (0.10, 0.10, 'gold'),
+                              (deadband, 0.18, 'lightgreen')]:
+        ax.axhspan(-thr, thr, alpha=alpha, color=color)
+    ax.plot(t, err_r, label='err_r (roll)', linewidth=0.9)
+    ax.plot(t, err_p, label='err_p (pitch)', linewidth=0.9, alpha=0.85)
+    ax.axhline(0, color='black', linewidth=0.3)
+    ax.set_ylabel('error (°)')
+    ax.set_title('1) Error vs target band — green=deadband, gold=±0.1°, '
+                 'orange=±0.2°. Settled = stays in green.')
+    ax.legend(loc='upper right', fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # 2. Corrections over time, with saturation lines.
+    ax = fig.add_subplot(gs[1])
+    ax.axhline(+max_corr, color='red', linewidth=0.5, linestyle='--', alpha=0.5)
+    ax.axhline(-max_corr, color='red', linewidth=0.5, linestyle='--', alpha=0.5)
+    ax.axhline(0, color='black', linewidth=0.3)
+    ax.plot(t, corr_r, label='corr_r', linewidth=0.9)
+    ax.plot(t, corr_p, label='corr_p', linewidth=0.9, alpha=0.85)
+    ax.set_ylabel('correction (°)')
+    ax.set_title('2) Commanded tilt correction — red dashed = MAX_CORR. '
+                 'Spending time near ±MAX_CORR = loop saturated.')
+    ax.legend(loc='upper right', fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # 3. Integrator state — the wind-up smoking gun.
+    ax = fig.add_subplot(gs[2])
+    ax.axhline(0, color='black', linewidth=0.3)
+    ax.plot(t, integ_r, label='integ_r', linewidth=0.9)
+    ax.plot(t, integ_p, label='integ_p', linewidth=0.9, alpha=0.85)
+    ax.set_ylabel('integrator (°)')
+    ax.set_title('3) Integrator state. Slow drift over many seconds = '
+                 'wind-up. Should decay into a tight band when in deadband.')
+    ax.legend(loc='upper right', fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # 4. Per-leg motor target (solid) vs actual encoder (dashed).
+    ax = fig.add_subplot(gs[3])
+    cmap = plt.get_cmap('tab10')
+    for n in range(6):
+        c = cmap(n)
+        ax.plot(t, mt[:, n], color=c, linewidth=0.8,
+                label=f'mt_{n}')
+        ax.plot(t, enc[:, n], color=c, linewidth=0.7,
+                linestyle='--', alpha=0.7)
+    ax.set_xlabel('t (s)')
+    ax.set_ylabel('leg position (turns)')
+    ax.set_title('4) Per-leg motor_target (solid) vs encoder (dashed). '
+                 'Same color = same leg. Big gap = leg not following.')
+    ax.legend(loc='upper right', fontsize=7, ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    # 5. FFT of error — surface the limit-cycle frequency.
+    ax = fig.add_subplot(gs[4])
+    if len(err_r) >= 16:
+        for sig, lab, ls in [(err_r, 'err_r', '-'), (err_p, 'err_p', '--')]:
+            sig0 = sig - sig.mean()
+            F = np.fft.rfft(sig0 * np.hanning(len(sig0)))
+            freqs = np.fft.rfftfreq(len(sig0), 1.0 / sr)
+            mag = np.abs(F) * 2.0 / np.sum(np.hanning(len(sig0)))
+            ax.semilogy(freqs[freqs > 0], mag[freqs > 0],
+                        linestyle=ls, label=lab, linewidth=0.9)
+    ax.set_xlim(0, min(10.0, sr / 2))
+    ax.set_xlabel('frequency (Hz)')
+    ax.set_ylabel('amplitude (°)')
+    ax.set_title('5) Error spectrum — peak frequency = limit cycle. '
+                 'Slow peak (<1 Hz) = integrator wind-up.')
+    ax.legend(loc='upper right', fontsize=8)
+    ax.grid(True, which='both', alpha=0.3)
+
+    # 6. Histogram of |error| vs target thresholds.
+    ax = fig.add_subplot(gs[5])
+    bins = np.linspace(0, max(0.5, max(np.abs(err_r).max(), np.abs(err_p).max())),
+                       60)
+    ax.hist(np.abs(err_r), bins=bins, alpha=0.6, label='|err_r|')
+    ax.hist(np.abs(err_p), bins=bins, alpha=0.6, label='|err_p|')
+    for thr, color in [(deadband, 'green'), (0.10, 'gold'), (0.20, 'orange')]:
+        ax.axvline(thr, color=color, linestyle='--', linewidth=0.8,
+                   label=f'±{thr:.2f}°')
+    ax.set_xlabel('|error| (°)')
+    ax.set_ylabel('# samples')
+    ax.set_title('6) Error magnitude histogram. Mass near 0 = settling well. '
+                 'Mass past target lines = where time is being spent.')
+    ax.legend(loc='upper right', fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    fig.suptitle(out_path.stem, fontsize=11, y=0.995)
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+    return str(out_path)
+
+
+def analyze_bag(bag_dir, out_dir, name=None, downsample_hz=None):
+    """Single-bag analysis. Writes <out_dir>/<name>_summary.json,
+    _timeseries.csv, and _plots.png. `downsample_hz=None` keeps the
+    timeseries CSV at native rate (recommended for tuning); pass an
+    int to decimate."""
     bag_dir = Path(bag_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -592,6 +801,7 @@ def analyze_bag(bag_dir, out_dir, name=None):
         'health': _compute_health(samples),
         'inner_loop_config': _summarize_inner_loop_config(sidecar),
         'baseline': baseline,
+        'settling': _settling_metrics(samples),
         'steps_per_trial': trial_results,
         'steps_aggregated': aggregate_steps(pos_trials),
         'sidecar': sidecar,
@@ -603,17 +813,88 @@ def analyze_bag(bag_dir, out_dir, name=None):
             float(o) if hasattr(o, 'item') else None)
 
     csv_path = out_dir / f"{name}_timeseries.csv"
-    write_timeseries_csv(downsample(samples, target_hz=10.0), csv_path)
+    write_timeseries_csv(downsample(samples, target_hz=downsample_hz), csv_path)
+
+    plot_path = out_dir / f"{name}_plots.png"
+    plot_path_str = _make_diagnostic_plots(
+        samples, plot_path,
+        gains=(sidecar.get('gains') if isinstance(sidecar, dict) else None))
 
     return {
         'summary_path': str(summary_path),
         'csv_path': str(csv_path),
+        'plot_path': plot_path_str,
         'n_samples': len(samples),
         'n_step_trials': len(trial_results),
     }
 
 
-def analyze_sweep(sweep_dir, out_base):
+def _make_sweep_overview_plot(per_z, out_path):
+    """One PNG comparing key metrics across Z heights for the sweep.
+    Surfaces trends that the per-Z table can't (e.g., is settling time
+    monotonic in Z? does the limit-cycle frequency shift?)."""
+    if not _HAVE_MPL or not per_z:
+        return None
+    rows = sorted(
+        [r for r in per_z if r.get('z_mm') is not None],
+        key=lambda r: r['z_mm'])
+    if not rows:
+        return None
+    z = np.array([r['z_mm'] for r in rows])
+
+    def col(k):
+        return np.array([
+            (r.get(k) if r.get(k) is not None else np.nan) for r in rows],
+            dtype=float)
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9), constrained_layout=True)
+    fig.suptitle(f'Sweep overview — {out_path.stem}', fontsize=11)
+
+    ax = axes[0, 0]
+    ax.plot(z, col('baseline_rms_roll_deg'), 'o-', label='RMS roll')
+    ax.plot(z, col('baseline_rms_pitch_deg'), 's--', label='RMS pitch')
+    ax.set_xlabel('Z (mm)')
+    ax.set_ylabel('error RMS (°)')
+    ax.set_title('Tracking RMS vs Z')
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+
+    ax = axes[0, 1]
+    for k, lab, fmt in [
+        ('time_in_band_005_pct', '±0.05°', 'o-'),
+        ('time_in_band_010_pct', '±0.10°', 's--'),
+        ('time_in_band_020_pct', '±0.20°', '^:')]:
+        ax.plot(z, col(k), fmt, label=lab)
+    ax.set_xlabel('Z (mm)')
+    ax.set_ylabel('% of bag in band (both axes)')
+    ax.set_title('Time inside target band vs Z')
+    ax.set_ylim(0, 100)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+
+    ax = axes[1, 0]
+    ax.plot(z, col('settling_time_roll_s'), 'o-', label='roll')
+    ax.plot(z, col('settling_time_pitch_s'), 's--', label='pitch')
+    ax.set_xlabel('Z (mm)')
+    ax.set_ylabel('first sustained ±0.1° (s)')
+    ax.set_title('Settling time vs Z')
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+
+    ax = axes[1, 1]
+    ax.plot(z, col('saturation_pct_any'), 'o-')
+    ax.set_xlabel('Z (mm)')
+    ax.set_ylabel('saturation %')
+    ax.set_title('Loop saturation vs Z')
+    ax.set_ylim(0, 105)
+    ax.grid(True, alpha=0.3)
+
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+    return str(out_path)
+
+
+def analyze_sweep(sweep_dir, out_base, downsample_hz=None):
     """Walk a sweep_*/ dir's manifest.json, analyze each child bag,
     emit a combined sweep_summary.json with the per-Z metrics rollup."""
     sweep_dir = Path(sweep_dir)
@@ -634,7 +915,8 @@ def analyze_sweep(sweep_dir, out_base):
             children.append({'z_mm': entry.get('z_mm'), 'error': 'bag missing'})
             continue
         bag_name = bag_path.name
-        result = analyze_bag(bag_path, out_dir, name=bag_name)
+        result = analyze_bag(bag_path, out_dir, name=bag_name,
+                             downsample_hz=downsample_hz)
         children.append({'z_mm': entry.get('z_mm'), 'bag': bag_name, **result})
         # Pull the per-z rollup row from the just-written summary.
         try:
@@ -644,6 +926,7 @@ def analyze_sweep(sweep_dir, out_base):
             agg = s.get('steps_aggregated') or {}
             health = s.get('health') or {}
             ilc = s.get('inner_loop_config') or {}
+            sett = s.get('settling') or {}
             per_z.append({
                 'z_mm': entry.get('z_mm'),
                 'bag': bag_name,
@@ -657,18 +940,30 @@ def analyze_sweep(sweep_dir, out_base):
                 'overshoot_pct': agg.get('overshoot_pct_mean'),
                 'settling_time_s': agg.get('settling_time_s_mean'),
                 'ss_offset_deg': agg.get('ss_offset_deg_mean'),
-                # Health rollup (these jump out at the top of the sweep
-                # if any Z had a silent drop / error / mode mismatch).
+                # Health rollup.
                 'any_leg_dropped_out': health.get('any_leg_dropped_out'),
                 'any_leg_active_error': health.get('any_leg_active_error'),
                 'any_leg_not_in_pos': health.get('any_leg_not_in_pos'),
                 'yaw_range_deg': health.get('yaw_range_deg'),
-                # Inner-loop config asymmetry — if any drive's
-                # config differs from the others on any endpoint,
-                # this is the smoking gun (see wL_FF=False regression
-                # 2026-04-28).
+                # Inner-loop config asymmetry.
                 'inner_loop_config_asymmetric': ilc.get(
                     'any_differ_across_drives'),
+                # New settling/in-band/limit-cycle metrics.
+                'settling_time_roll_s': sett.get('settling_time_roll_s'),
+                'settling_time_pitch_s': sett.get('settling_time_pitch_s'),
+                'time_in_band_005_pct': sett.get('time_in_band_005_pct'),
+                'time_in_band_010_pct': sett.get('time_in_band_010_pct'),
+                'time_in_band_020_pct': sett.get('time_in_band_020_pct'),
+                'ss_mean_roll_deg':  sett.get('ss_mean_roll_deg'),
+                'ss_mean_pitch_deg': sett.get('ss_mean_pitch_deg'),
+                'ss_std_roll_deg':   sett.get('ss_std_roll_deg'),
+                'ss_std_pitch_deg':  sett.get('ss_std_pitch_deg'),
+                'integrator_drift_p2p_roll_deg':
+                    sett.get('integrator_drift_p2p_roll_deg'),
+                'integrator_drift_p2p_pitch_deg':
+                    sett.get('integrator_drift_p2p_pitch_deg'),
+                'dominant_osc_hz':       sett.get('dominant_osc_hz'),
+                'dominant_osc_period_s': sett.get('dominant_osc_period_s'),
             })
         except Exception:
             pass
@@ -684,8 +979,12 @@ def analyze_sweep(sweep_dir, out_base):
     with open(summary_path, 'w') as f:
         json.dump(sweep_summary, f, indent=2)
 
+    overview_plot = _make_sweep_overview_plot(
+        per_z, out_dir / f"{sweep_dir.name}_overview.png")
+
     return {
         'sweep_summary_path': str(summary_path),
+        'sweep_overview_plot': overview_plot,
         'per_z_rows': len(per_z),
         'children_processed': len(children),
     }
@@ -708,6 +1007,11 @@ def main():
     p.add_argument('input', help='Path to a bag dir OR a sweep_*/ dir')
     p.add_argument('--out', default=None,
                    help='Output base dir (default: <repo>/tuning_data/)')
+    p.add_argument('--downsample-hz', type=float, default=None,
+                   help='Decimate timeseries CSV to approx this rate. '
+                        'Default: native rate (no decimation). Pass 10 '
+                        'or 50 for smaller CSVs at the cost of fidelity '
+                        'on the high-frequency analysis.')
     args = p.parse_args()
 
     inp = Path(args.input).expanduser().resolve()
@@ -715,10 +1019,11 @@ def main():
     out_base.mkdir(parents=True, exist_ok=True)
 
     if (inp / 'manifest.json').exists():
-        result = analyze_sweep(inp, out_base)
+        result = analyze_sweep(inp, out_base, downsample_hz=args.downsample_hz)
     else:
         # Single bag — write into a per-bag subfolder.
-        result = analyze_bag(inp, out_base / inp.name, name=inp.name)
+        result = analyze_bag(inp, out_base / inp.name, name=inp.name,
+                             downsample_hz=args.downsample_hz)
 
     print(json.dumps(result, indent=2))
     return 0 if 'error' not in result else 1
