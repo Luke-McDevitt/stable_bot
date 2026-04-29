@@ -2038,6 +2038,14 @@ class StewartControlNode(Node):
                 extra['gains'] = dict(self.level_gains)
                 extra['gains_file_path'] = LEVEL_GAINS_PATH
                 ok, reply_msg = True, "gains dumped"
+            elif cmd == 'level_save_gains':
+                # Edit gains directly from the GUI: validate, write the
+                # YAML, reload in-memory. Body is `gains: {<key>: <val>, ...}`
+                # with any subset of the known knobs. Unknown keys are
+                # rejected so a typo can't silently drop a gain.
+                ok, reply_msg = self._do_level_save_gains(d.get('gains', {}))
+                extra['gains'] = dict(self.level_gains)
+                extra['gains_file_path'] = LEVEL_GAINS_PATH
             else:
                 ok, reply_msg = False, f"unknown cmd '{cmd}'"
         except Exception as e:
@@ -2896,6 +2904,75 @@ class StewartControlNode(Node):
         # Stop recording (if active). Safe to call even if nothing is running.
         if self.rlog_dir is not None:
             self._stop_recording_log()
+
+    # Range-validation table for level gains. Each entry is
+    # (lower_bound, upper_bound). Values outside the range are clamped
+    # *and* a warning goes to the reply message. Bounds are deliberately
+    # generous — the GUI's input fields enforce sensible ranges; this
+    # is the last-line defense against catastrophic typos
+    # (e.g. KP=10000 from a slipped decimal).
+    _LEVEL_GAIN_BOUNDS = {
+        'kp':                            (0.0, 5.0),
+        'ki':                            (0.0, 2.0),
+        'deadband_deg':                  (0.0, 1.0),
+        'rate_limit_deg_per_iter':       (0.001, 5.0),
+        'max_corr_deg':                  (0.1, 15.0),
+        'filter_alpha':                  (0.0, 1.0),
+        'integ_decay_outer_deg':         (0.0, 5.0),
+        'integ_decay_per_tick_at_50hz':  (0.0, 1.0),
+    }
+
+    def _do_level_save_gains(self, gains_dict):
+        """Save a partial gains dict into level_gains.yaml + reload.
+        Body shape: {'kp': 1.0, 'ki': 0.3, ...}. Only known keys
+        accepted; unknown keys → error (typo guard). Validated against
+        _LEVEL_GAIN_BOUNDS before write."""
+        if not isinstance(gains_dict, dict) or not gains_dict:
+            return False, "gains: empty or not a dict"
+        unknown = [k for k in gains_dict if k not in self._LEVEL_GAIN_BOUNDS]
+        if unknown:
+            return False, f"unknown gain keys: {unknown}. Known: {list(self._LEVEL_GAIN_BOUNDS.keys())}"
+        clamped_msgs = []
+        clean = {}
+        for k, v in gains_dict.items():
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return False, f"gain '{k}' is not a number: {v!r}"
+            lo, hi = self._LEVEL_GAIN_BOUNDS[k]
+            if v < lo or v > hi:
+                v_clamped = max(lo, min(v, hi))
+                clamped_msgs.append(f"{k}={v} clamped to {v_clamped} (range [{lo}, {hi}])")
+                v = v_clamped
+            clean[k] = v
+        # Merge into existing on-disk gains so we preserve any keys not
+        # being edited (e.g. if a future field is added but the GUI
+        # doesn't know about it yet).
+        try:
+            on_disk = {}
+            if os.path.isfile(LEVEL_GAINS_PATH):
+                with open(LEVEL_GAINS_PATH) as f:
+                    on_disk = yaml.safe_load(f) or {}
+            on_disk.update(clean)
+            os.makedirs(os.path.dirname(LEVEL_GAINS_PATH), exist_ok=True)
+            tmp = LEVEL_GAINS_PATH + '.tmp'
+            with open(tmp, 'w') as f:
+                yaml.safe_dump(on_disk, f, sort_keys=True,
+                               default_flow_style=False)
+            os.replace(tmp, LEVEL_GAINS_PATH)
+        except Exception as e:
+            return False, f"failed to write {LEVEL_GAINS_PATH}: {e}"
+        # Reload in-memory so the level loop picks up the new values
+        # within one tick.
+        try:
+            self.level_gains = _load_level_gains()
+        except Exception as e:
+            return True, (f"wrote YAML but reload failed: {e}; "
+                          f"call level_reload_gains manually")
+        msg = f"saved {len(clean)} gain(s) to {os.path.basename(LEVEL_GAINS_PATH)}"
+        if clamped_msgs:
+            msg += "; " + "; ".join(clamped_msgs)
+        return True, msg
 
     def _do_set_leg_current(self, current_a):
         """Update SET_LIMITS on every leg to the new current cap. Keeps
