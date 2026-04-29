@@ -996,11 +996,20 @@ class StewartControlNode(Node):
                 self.bus = None
 
     # ---- arm / disarm ----
-    def _arm_leg_internal(self, n, mode, current=6.0, vel_limit=None,
+    def _arm_leg_internal(self, n, mode, current=None, vel_limit=None,
                           force_no_limits=False):
         """Arm a single leg in the given mode ('pos' or 'vel'), or disarm
         (mode='idle'). Feeder modes are updated BEFORE the ODrive state
         transition so watchdog stays fed through the transition.
+
+        `current` defaults to self.leg_current_a (the value last set
+        via the GUI's set_leg_current slider) when not specified. Pre-
+        2026-04-29 the default was hardcoded 6.0 A — every arm wiped
+        the runtime current_soft_max regardless of what the slider had
+        been moved to, so a slider set to 11 A had no effect after the
+        next arm click. Confirmed via the inner_loop_config snapshot
+        showing 6.0 A on all 6 drives despite the user reporting the
+        slider was at 11.
 
         force_no_limits=True bypasses the leg_limits.yaml check for pos
         mode. Only safe when the caller is going to hold the leg at its
@@ -1010,6 +1019,8 @@ class StewartControlNode(Node):
         'safe arm' path for pre-homing lock-in-place (spec: closed-loop
         ball demos discussion 2026-04-26)."""
         assert mode in ('pos', 'vel', 'idle')
+        if current is None:
+            current = float(self.leg_current_a)
         if self.bus is None:
             if not self._open_bus_and_start_threads():
                 return False, "can't open can0"
@@ -1121,8 +1132,13 @@ class StewartControlNode(Node):
         self.leg_armed[n] = True
         return True, f"leg {n} armed ({mode})"
 
-    def _arm_all_in_pos_mode(self, current=6.0, vel_limit=None,
+    def _arm_all_in_pos_mode(self, current=None, vel_limit=None,
                              force_no_limits=False):
+        # `current=None` means "use the slider value" (self.leg_current_a).
+        # Pass an explicit value only when the caller is doing a special
+        # arm path (e.g. _safe_arm_in_place pre-homing).
+        if current is None:
+            current = float(self.leg_current_a)
         # Acceptance gate: need EITHER homing-derived limits, OR a captured
         # rest snapshot (set via "Capture rest from current encoders" in
         # the GUI), OR an explicit force_no_limits override.
@@ -1384,11 +1400,15 @@ class StewartControlNode(Node):
         msg_parts.append("Limits reloaded — pose / jog / arm now work normally.")
         return True, " ".join(msg_parts)
 
-    def _safe_arm_in_place(self, current=6.0, vel_limit=None):
+    def _safe_arm_in_place(self, current=None, vel_limit=None):
         """Arm all 6 legs at their current encoder positions, bypassing
         the leg_limits.yaml requirement. Use BEFORE homing to prevent
         legs from dropping under gravity during ODrive bench tests or
         partial homing attempts.
+
+        `current=None` falls back to self.leg_current_a (the GUI
+        slider's value). Pass an explicit value only if you have a
+        specific reason to override.
 
         Pre-flight checks added because this skips the limits guard:
           - bus must be open
@@ -1622,6 +1642,7 @@ class StewartControlNode(Node):
             'homing_running': bool(homing_alive),
             'soft_max_vel_turns_per_sec': float(self.soft_max_vel),
             'hard_max_vel_turns_per_sec': float(self.hard_max_vel),
+            'leg_current_a': float(self.leg_current_a),
             'current_xyz': self.current_xyz,
             'current_rpy': self.current_rpy,
             'level_err_roll_deg': float(err_r),
