@@ -83,6 +83,23 @@ def _quat_to_zyx_deg(qx: float, qy: float, qz: float, qw: float):
     return roll * rad, pitch * rad, yaw * rad
 
 
+def _quat_mul(a, b):
+    """Hamilton product of two quaternions in (x, y, z, w) form."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw*bx + ax*bw + ay*bz - az*by,
+        aw*by - ax*bz + ay*bw + az*bx,
+        aw*bz + ax*by - ay*bx + az*bw,
+        aw*bw - ax*bx - ay*by - az*bz,
+    )
+
+
+def _quat_conj(q):
+    """Quaternion conjugate (xyzw)."""
+    return (-q[0], -q[1], -q[2], q[3])
+
+
 def _read_bag(bag_dir: str):
     """Walk the bag once, deserialize the topics we care about.
     Returns dicts of stamps + decoded values per topic.
@@ -155,29 +172,53 @@ def _read_bag(bag_dir: str):
     }
 
 
-def _decode_pose_rpy(pose_quat: np.ndarray):
-    """ZYX Euler in degrees from an Nx4 quaternion array."""
+def _level_reference_quat(pose_t: np.ndarray, pose_quat: np.ndarray,
+                          window_s: float = 1.0):
+    """Pick a level-reference quaternion from the first `window_s` of
+    /platform_pose. Uses the FIRST sample whose timestamp lies in the
+    window — averaging quaternions properly requires SLERP / Karcher
+    mean which is overkill when the platform is near-static during
+    the window. Returns (qx, qy, qz, qw)."""
+    if pose_t.size == 0:
+        return (0.0, 0.0, 0.0, 1.0)
+    return tuple(pose_quat[0])
+
+
+def _relative_rpy(pose_quat: np.ndarray, q_ref):
+    """For each pose quaternion, compute the platform's tilt IN THE
+    PLATFORM FRAME relative to q_ref, decode to ZYX Euler degrees.
+
+    /platform_pose's quaternion is R_platform_to_camera. To express
+    the platform's rotation from rest in the platform frame we need
+    R_pose_ref⁻¹ · R_pose_now, i.e. q_tilt = conj(q_ref) * q_now.
+    Subtracting Euler angles directly (the previous approach) is
+    illegal because Euler angles are non-additive — that's why the
+    2026-04-29 sweep showed roll p95 ≈ 4° even on a calm bag where
+    IMU and camera should have agreed within tenths of a degree.
+    """
     out = np.zeros((pose_quat.shape[0], 3), dtype=np.float64)
+    cq = _quat_conj(q_ref)
     for i, q in enumerate(pose_quat):
-        out[i] = _quat_to_zyx_deg(q[0], q[1], q[2], q[3])
+        q_now = (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+        q_rel = _quat_mul(cq, q_now)
+        out[i] = _quat_to_zyx_deg(q_rel[0], q_rel[1], q_rel[2], q_rel[3])
     return out
 
 
-def _level_reference(pose_t: np.ndarray, pose_rpy: np.ndarray,
-                     window_s: float = 1.0):
-    """Compute the level reference RPY as the median of the first
-    `window_s` of /platform_pose. Returns (ref_roll, ref_pitch,
-    ref_yaw) in degrees. If the bag is shorter than window_s, uses
-    the whole thing.
-    """
-    if pose_t.size == 0:
+def _level_reference_imu(imu_t: np.ndarray, imu_rpy: np.ndarray,
+                         window_s: float = 1.0):
+    """Median IMU RPY over the first `window_s` — used as the
+    rest-time IMU offset so the residuals (camera_tilt - imu_tilt)
+    aren't dominated by, e.g., the IMU's magnetometer-anchored yaw
+    bias."""
+    if imu_t.size == 0:
         return 0.0, 0.0, 0.0
-    t0 = pose_t[0]
+    t0 = imu_t[0]
     cutoff = t0 + int(window_s * 1e9)
-    mask = pose_t <= cutoff
+    mask = imu_t <= cutoff
     if not mask.any():
-        mask = np.ones_like(pose_t, dtype=bool)
-    sub = pose_rpy[mask]
+        mask = np.ones_like(imu_t, dtype=bool)
+    sub = imu_rpy[mask]
     return float(np.median(sub[:, 0])), \
            float(np.median(sub[:, 1])), \
            float(np.median(sub[:, 2]))
@@ -205,14 +246,24 @@ def digest(bag_dir: str):
     print(f"[iva-digest] reading {bag_dir}")
     data = _read_bag(bag_dir)
 
-    imu_t, imu_rpy = data['imu']
+    imu_t, imu_rpy_abs = data['imu']
     pose_t, pose_quat = data['pose']
     mark_t, mark_n = data['mark']
 
-    # Decode camera RPY relative to the level reference.
-    pose_rpy_abs = _decode_pose_rpy(pose_quat)
-    ref_r, ref_p, ref_y = _level_reference(pose_t, pose_rpy_abs)
-    pose_rpy = pose_rpy_abs - np.array([ref_r, ref_p, ref_y])
+    # Camera RPY: compute the platform's tilt IN PLATFORM FRAME
+    # relative to a captured rest quaternion. Math is quaternion
+    # composition, NOT Euler-angle subtraction (illegal — see
+    # _relative_rpy docstring).
+    q_ref = _level_reference_quat(pose_t, pose_quat)
+    pose_rpy = _relative_rpy(pose_quat, q_ref)
+    ref_r_q, ref_p_q, ref_y_q = _quat_to_zyx_deg(*q_ref)
+
+    # IMU RPY: subtract its rest-time median so the residuals aren't
+    # dominated by the magnetometer-anchored yaw bias and any small
+    # static offset. (The IMU IS in the platform frame already; this
+    # just normalizes "level = 0".)
+    imu_ref_r, imu_ref_p, imu_ref_y = _level_reference_imu(imu_t, imu_rpy_abs)
+    imu_rpy = imu_rpy_abs - np.array([imu_ref_r, imu_ref_p, imu_ref_y])
 
     # Bag-relative time axes (seconds).
     t0 = min(int(imu_t[0]), int(pose_t[0]))
@@ -245,8 +296,18 @@ def digest(bag_dir: str):
             if pose_t_s.size > 1 else 0.0,
         'imu_n':  int(imu_t.size),
         'pose_n': int(pose_t.size),
-        'level_reference_deg': {
-            'roll':  ref_r, 'pitch': ref_p, 'yaw': ref_y,
+        # Cam: ZYX Euler decoded from q_ref (raw camera-frame, for
+        # reference / debug). Cam tilt shown in plots is RELATIVE
+        # to q_ref via quaternion composition, expressed in PLATFORM
+        # frame (see _relative_rpy).
+        'level_reference': {
+            'cam_quat_xyzw': list(q_ref),
+            'cam_zyx_deg': {
+                'roll': ref_r_q, 'pitch': ref_p_q, 'yaw': ref_y_q,
+            },
+            'imu_rpy_deg': {
+                'roll': imu_ref_r, 'pitch': imu_ref_p, 'yaw': imu_ref_y,
+            },
         },
         'residual_deg': {
             'roll':  _stats(residual_v[:, 0]),

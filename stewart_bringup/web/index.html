@@ -3604,14 +3604,25 @@ function onPlatformPose(m) {
   // q = (x, y, z, w). Compute relative quaternion to reference if set.
   let qx = q.x, qy = q.y, qz = q.z, qw = q.w;
   if (_ivaRefQuat) {
-    // q_rel = q_now * conj(q_ref)
+    // We want the platform's tilt expressed IN PLATFORM FRAME so it
+    // matches IMU semantics (the IMU lives on the platform). The
+    // /platform_pose quaternion takes platform-frame vectors to
+    // camera-frame vectors (R_pose = R_platform_to_camera). Then:
+    //   R_tilt_in_platform = R_pose_ref⁻¹ · R_pose_now
+    //                      = q_tilt = conj(q_ref) * q_now
+    // The previous q_now * conj(q_ref) gave the rotation expressed
+    // in CAMERA frame, which gets axis-flipped by the camera mount
+    // (an overhead camera typically inverts +X relative to the
+    // platform, anti-correlating roll with IMU). Observed
+    // 2026-04-29: digest showed roll p95 ≈ 3.9° solely from the
+    // axis flip. Computing in platform frame fixes this.
     const r = _ivaRefQuat;
     const cx = -r.x, cy = -r.y, cz = -r.z, cw = r.w;
-    // Hamilton product (w, x, y, z): q_now * conj(r):
-    const nw = qw * cw - qx * cx - qy * cy - qz * cz;
-    const nx = qw * cx + qx * cw + qy * cz - qz * cy;
-    const ny = qw * cy - qx * cz + qy * cw + qz * cx;
-    const nz = qw * cz + qx * cy - qy * cx + qz * cw;
+    // Hamilton product conj(q_ref) * q_now:
+    const nw = cw * qw - cx * qx - cy * qy - cz * qz;
+    const nx = cw * qx + cx * qw + cy * qz - cz * qy;
+    const ny = cw * qy - cx * qz + cy * qw + cz * qx;
+    const nz = cw * qz + cx * qy - cy * qx + cz * qw;
     qx = nx; qy = ny; qz = nz; qw = nw;
   }
   // ZYX Euler from quaternion (radians → degrees).
@@ -3991,6 +4002,9 @@ function _ivaRenderBag(e) {
           <button class="text-emerald-400 hover:text-emerald-300"
                   onclick="ivaDigestBag('${name}')">Digest</button>
           ${pngBtn}
+          <button class="text-purple-400 hover:text-purple-300"
+                  title="git add + commit + push this bag to origin"
+                  onclick="ivaPushBag('${name}')">Push</button>
           <button class="text-red-400 hover:text-red-300"
                   onclick="ivaDeleteBag('${name}')">×</button>
         </div>
@@ -4056,6 +4070,19 @@ function ivaDeleteBag(name) {
     ivaFetchBags();
   }).catch(e => {
     _ivaSetBagsOut('✗ delete failed: ' + e, false);
+  });
+}
+
+function ivaPushBag(name) {
+  _ivaSetBagsOut(`pushing ${name} to origin…`, null);
+  fetch('/iva/bags/push', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    const head = (j.ok ? '✓ ' : '✗ ') + 'push ' + name + '\n';
+    _ivaSetBagsOut(head + (j.message || '(no output)'), !!j.ok);
+  }).catch(e => {
+    _ivaSetBagsOut('✗ push failed: ' + e, false);
   });
 }
 

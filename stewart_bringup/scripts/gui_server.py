@@ -244,6 +244,86 @@ def _iva_bag_png_path(name):
     return p if os.path.isfile(p) else None
 
 
+def _git_push_iva_bag(name):
+    """git add tuning_data/<name> && git commit && git push, with the
+    auto-generated commit message embedding the digest summary's
+    headline residual stats if a digest has been run.
+
+    Path-traversal guarded via _resolve_iva_bag_path. Runs from the
+    repo root, fails (without partial commits) if any step errors.
+    """
+    full = _resolve_iva_bag_path(name)
+    if full is None:
+        return False, "bad name"
+
+    # Best-effort: try to find the repo. _iva_bags_root resolves to
+    # tuning_data/ inside the repo, so the parent of that is the repo.
+    repo_dir = os.path.dirname(_iva_bags_root())
+    if not os.path.isdir(os.path.join(repo_dir, '.git')):
+        return False, (
+            f"not a git repo: {repo_dir}. Configure ~/stable_bot_repo "
+            f"as the repo root or use the CLI workflow.")
+
+    # Build a default commit message. If a digest summary is on disk,
+    # embed the per-axis p95 residuals so the GitHub feed is grep-able
+    # at a glance.
+    msg = f"IVA sweep {name}"
+    summary_path = os.path.join(full, 'digest.summary.json')
+    if os.path.isfile(summary_path):
+        try:
+            with open(summary_path) as f:
+                s = json.load(f)
+            rd = s.get('residual_deg') or {}
+            parts = []
+            for axis in ('roll', 'pitch', 'yaw'):
+                p95 = (rd.get(axis) or {}).get('p95')
+                if p95 is not None:
+                    parts.append(f"{axis} p95 {p95:.2f}°")
+            if parts:
+                msg += " — Δ " + ', '.join(parts)
+        except Exception:
+            pass
+
+    rel_bag = os.path.relpath(full, repo_dir)
+    out_lines = []
+
+    def _run(cmd):
+        try:
+            r = subprocess.run(cmd, cwd=repo_dir,
+                               capture_output=True, text=True,
+                               timeout=120)
+            out_lines.append(f"$ {' '.join(cmd)}")
+            if r.stdout.strip():
+                out_lines.append(r.stdout.strip())
+            if r.stderr.strip():
+                out_lines.append(r.stderr.strip())
+            return r.returncode == 0
+        except Exception as e:
+            out_lines.append(f"FAILED: {' '.join(cmd)}: {e}")
+            return False
+
+    if not _run(['git', 'add', rel_bag]):
+        return False, '\n'.join(out_lines)
+
+    # Skip commit if nothing was actually staged (re-pushing same bag).
+    diff = subprocess.run(['git', 'diff', '--cached', '--quiet'],
+                          cwd=repo_dir)
+    if diff.returncode == 0:
+        out_lines.append('(nothing to commit — bag already in HEAD)')
+        # Still attempt push in case earlier commit didn't reach origin.
+        if _run(['git', 'push']):
+            out_lines.append('✓ pushed')
+            return True, '\n'.join(out_lines)
+        return False, '\n'.join(out_lines)
+
+    if not _run(['git', 'commit', '-m', msg]):
+        return False, '\n'.join(out_lines)
+    if not _run(['git', 'push']):
+        return False, '\n'.join(out_lines)
+    out_lines.append('✓ pushed to origin')
+    return True, '\n'.join(out_lines)
+
+
 def _iva_start():
     """Spawn `ros2 bag record` as a subprocess. Returns
     (ok, msg, path).
@@ -723,6 +803,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ok, msg = _delete_iva_bag(name)
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 400)
+            return
+        if self.path == '/iva/bags/push':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _git_push_iva_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 500)
             return
         self.send_error(404)
 
