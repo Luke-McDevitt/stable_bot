@@ -1,0 +1,89 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T035445Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": "BALL_TRACK_GOTO",
+  "demo_params": {
+    "x_mm": 45.51726150512695,
+    "y_mm": -9.103448867797852
+  },
+  "duration_s": 19.289823799,
+  "topic_counts": {
+    "/ball_ref": 720,
+    "/ball_state": 1496,
+    "/ball_xy_depth": 117,
+    "/ball_xy_mono": 1019,
+    "/control_cmd": 9,
+    "/control_result": 0,
+    "/leg_currents": 375,
+    "/leg_encoders": 375,
+    "/oak/ball/depth/diagnostic": 163,
+    "/oak/ball/depth/rgb_pixel": 117,
+    "/oak/ball/v0/diagnostic": 164,
+    "/oak/ball/v0/rgb_pixel": 164,
+    "/odrive_errors": 39,
+    "/platform/imu/data": 5594,
+    "/platform_pose": 165,
+    "/platform_pose/markers_visible": 166,
+    "/platform_rpy": 377,
+    "/status": 38
+  },
+  "gains_at_record": {
+    "kp": 0.03,
+    "kd": 0.02,
+    "ki": 0.0,
+    "max_tilt_deg": 5.0,
+    "pitch_sign": 1.0,
+    "roll_sign": -1.0
+  },
+  "ball_state_n": 1496,
+  "ball_ref_n": 720,
+  "mono_n": 1019,
+  "depth_n": 117,
+  "error_mm": {
+    "n": 958,
+    "mean": 104.5092407158146,
+    "std": 77.54123869225506,
+    "rms": 130.1338737336492,
+    "p50": 72.7727448350611,
+    "p95": 233.06403550079895,
+    "min": 8.904103119635012,
+    "max": 363.1288916575413
+  },
+  "error_x_mm": {
+    "n": 958,
+    "mean": -22.752691199258084,
+    "std": 76.1855425612156,
+    "rms": 79.51051409817188,
+    "p50": 1.124253345856058,
+    "p95": 81.10677733176645,
+    "min": -158.74026930681117,
+    "max": 94.13567006573658
+  },
+  "error_y_mm": {
+    "n": 958,
+    "mean": -24.627421501975093,
+    "std": 100.0319616469347,
+    "rms": 103.01894602824164,
+    "p50": -17.380662599576187,
+    "p95": 169.04640696848872,
+    "min": -327.2969845900074,
+    "max": 355.20947908608497
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 165,
+    "mean": 817.9680687247226,
+    "std": 4.453226716819525,
+    "rms": 817.980190885723,
+    "p50": 818.594292012678,
+    "p95": 826.2870810357248,
+    "min": 811.1962531313114,
+    "max": 828.3573012124217
+  },
+  "markers_visible": {
+    "n": 166,
+    "mean": 7.686746987951807,
+    "min": 6,
+    "max": 9
+  }
+}
