@@ -1,0 +1,75 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T063227Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 3.552985925,
+  "topic_counts": {
+    "/ball_ref": 176,
+    "/ball_state": 0,
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 0,
+    "/control_cmd": 1,
+    "/control_result": 0,
+    "/leg_currents": 68,
+    "/leg_encoders": 68,
+    "/oak/ball/depth/diagnostic": 37,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/v0/diagnostic": 0,
+    "/oak/ball/v0/rgb_pixel": 0,
+    "/odrive_errors": 7,
+    "/platform/imu/data": 933,
+    "/platform_pose": 34,
+    "/platform_pose/markers_visible": 34,
+    "/platform_rpy": 70,
+    "/status": 6
+  },
+  "gains_at_record": {
+    "kp": 0.01,
+    "kd": 0.015,
+    "ki": 0.005,
+    "max_tilt_deg": 4.0,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 60.0,
+    "stiction_v_threshold_mm_s": 20.0,
+    "stiction_break_s": 0.6,
+    "brake_tilt_deg": 6.0,
+    "control_latency_s": 0.1,
+    "algorithm": "bangbang"
+  },
+  "ball_state_n": 0,
+  "ball_ref_n": 176,
+  "mono_n": 0,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 0
+  },
+  "error_x_mm": {
+    "n": 0
+  },
+  "error_y_mm": {
+    "n": 0
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 34,
+    "mean": 811.5392175115037,
+    "std": 0.32823857509882537,
+    "rms": 811.5392838918801,
+    "p50": 811.4931539394705,
+    "p95": 812.0585025279312,
+    "min": 810.8447752960315,
+    "max": 812.1900003640658
+  },
+  "markers_visible": {
+    "n": 34,
+    "mean": 8.0,
+    "min": 8,
+    "max": 8
+  }
+}
