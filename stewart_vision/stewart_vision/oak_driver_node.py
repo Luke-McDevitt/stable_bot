@@ -847,8 +847,12 @@ class OakDriverNode(Node):
         # it does. All increment in their respective handlers.
         self._n_pose = 0
         self._n_depth_frame = 0
-        self._n_v0 = 0
+        self._n_v0 = 0          # V0 detector publish (success only)
+        self._n_v0_attempts = 0 # V0 detector ATTEMPTS (every RGB raw frame)
+        self._n_rgb_jpeg = 0    # frames pulled off the JPEG queue
         self._n_depth_blob = 0
+        # Last-log timestamp so health prints true Hz, not cumulative.
+        self._health_last_t = time.time()
         self._diag_t0 = time.monotonic()
         # Per-frame depth detector stats from the last detection
         # attempt. Surfaced in the [probe] log so we can see which
@@ -896,18 +900,50 @@ class OakDriverNode(Node):
 
     def _log_pipeline_health(self):
         """Periodic snapshot so we can tell which stage of the V0 /
-        depth-blob pipeline is silent without ros2 topic hz."""
+        depth-blob pipeline is silent without ros2 topic hz. Reports
+        per-stream Hz over the last interval so we can see whether the
+        OAK is actually delivering frames at the requested FPS.
+
+        v0_arr  = RGB raw frames the host pulled off the queue
+        v0_pub  = V0 detector successes (subset of v0_arr)
+        jpeg    = MJPEG frames the host pulled off the queue
+        depth   = depth frames the host pulled off the queue
+        depth_pub = depth-blob detector successes (subset of depth)
+
+        If v0_arr is far below the configured RGB FPS, the OAK isn't
+        producing frames at the rate we asked for (USB / pipeline
+        scheduling problem). If v0_arr ≈ FPS but v0_pub is much lower,
+        detection itself is failing (HSV / mask / lighting)."""
+        now = time.time()
+        dt = max(now - self._health_last_t, 1e-3)
+        self._health_last_t = now
+        v0_arr_hz = self._n_v0_attempts / dt
+        v0_pub_hz = self._n_v0 / dt
+        jpeg_hz   = self._n_rgb_jpeg / dt
+        depth_hz  = self._n_depth_frame / dt
+        depth_pub_hz = self._n_depth_blob / dt
+        pose_hz   = self._n_pose / dt
+        # Reset counters for the next interval.
+        self._n_v0_attempts = 0
+        self._n_v0 = 0
+        self._n_rgb_jpeg = 0
+        self._n_depth_frame = 0
+        self._n_depth_blob = 0
+        self._n_pose = 0
         mask_state = ('computed' if self._platform_mask is not None
                       else 'NONE')
         intrinsics_state = ('loaded' if self.K_rgb is not None
                             else 'NONE')
         depth_q = (self.q_depth is not None)
         self.get_logger().info(
-            f"[health] poses={self._n_pose} v0_pub={self._n_v0} "
-            f"depth_frames={self._n_depth_frame} "
-            f"depth_blob_pub={self._n_depth_blob} "
-            f"mask={mask_state} intrinsics={intrinsics_state} "
-            f"depth_queue={'YES' if depth_q else 'NO'} "
+            f"[health] v0_arr={v0_arr_hz:.1f}Hz "
+            f"v0_pub={v0_pub_hz:.1f}Hz "
+            f"jpeg={jpeg_hz:.1f}Hz "
+            f"depth={depth_hz:.1f}Hz "
+            f"depth_pub={depth_pub_hz:.1f}Hz "
+            f"pose={pose_hz:.1f}Hz "
+            f"mask={mask_state} intr={intrinsics_state} "
+            f"depthQ={'Y' if depth_q else 'N'} "
             f"mask_v0={self.mask_v0_to_platform}")
         # Sanity-probe the depth math: at the principal point, what's
         # the ArUco-derived expected depth vs. what stereo measured?
@@ -1053,6 +1089,7 @@ class OakDriverNode(Node):
         # RGB JPEG stream
         rgb_jpeg = self.q_rgb_jpeg.tryGet()
         if rgb_jpeg is not None:
+            self._n_rgb_jpeg += 1
             self._publish_compressed(
                 self.pub_rgb, rgb_jpeg.getData().tobytes(), 'jpeg')
             # OAK-capture-to-Pi-receipt latency. Both timestamps come
@@ -1076,6 +1113,7 @@ class OakDriverNode(Node):
         # CPU at all. See docs/oak_phase2b_on_device_v0.md.
         rgb_raw = self.q_rgb_raw.tryGet()
         if rgb_raw is not None:
+            self._n_v0_attempts += 1
             frame = rgb_raw.getCvFrame()  # BGR uint8
             self._last_rgb_bgr = frame
             # Translate the OAK frame timestamp into ROS-clock space
