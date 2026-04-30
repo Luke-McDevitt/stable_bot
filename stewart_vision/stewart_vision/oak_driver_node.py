@@ -529,6 +529,20 @@ def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 15,
     enc_rgb = pipeline.create(dai.node.VideoEncoder)
     enc_rgb.setDefaultProfilePreset(
         rgb_fps, dai.VideoEncoderProperties.Profile.MJPEG)
+    # Lower JPEG quality dramatically reduces per-frame size, which
+    # is amplified ~7× on the wire because rosbridge inflates the
+    # bytes to a JSON array of integers. Quality 70 (default) gives
+    # roughly 70-90 KB per 540p frame instead of 200+ KB at quality
+    # 95. Visual quality is still fine for diagnostic use; raw RGB
+    # for V0 is unaffected (V0 reads cam_rgb.video, not the JPEG
+    # output).  Override via OAK_RGB_JPEG_QUALITY=NN if you want
+    # crisper screenshots from the GUI feed.
+    try:
+        rgb_quality = int(os.environ.get('OAK_RGB_JPEG_QUALITY', '70'))
+        rgb_quality = max(20, min(100, rgb_quality))
+        enc_rgb.setQuality(rgb_quality)
+    except Exception:
+        pass
     cam_rgb.video.link(enc_rgb.input)
 
     # Outputs
