@@ -10,7 +10,11 @@
 # restarting BOTH services — has cost a 4-hour debug round at least
 # once. Bake the recipe in.
 
-set -euo pipefail
+# `set -u` would be nice for catching typos, but ROS setup scripts
+# (/opt/ros/*/setup.bash and the workspace's local_setup.bash) reference
+# vars like AMENT_TRACE_SETUP_FILES that aren't always defined — sourcing
+# them with -u kills the deploy. Use -e and -o pipefail only.
+set -eo pipefail
 
 REPO=${REPO:-$HOME/stable_bot_repo}
 WS=${WS:-$HOME/ros2_ws}
