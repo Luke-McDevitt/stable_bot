@@ -185,7 +185,8 @@
           <span id="vbag-status" class="text-xs text-slate-400 mono"></span>
         </div>
         <div id="vbag-bags-list"
-             class="text-xs text-slate-400 mono mt-2 space-y-1"></div>
+             class="text-xs text-slate-400 mono mt-2 space-y-1
+                    max-h-64 overflow-y-auto pr-1"></div>
       </div>
     </details>
 
@@ -423,6 +424,10 @@
         <label class="col-span-2 flex items-center gap-2 text-slate-400">
           <input id="d1-rec-images" type="checkbox"> record images in bag (large; off for routine runs)
         </label>
+        <label class="col-span-2 flex items-center gap-2 text-slate-400">
+          <input id="d1-auto-bag" type="checkbox" checked>
+          auto-record + digest demo bag (uses Demo Run Bag panel)
+        </label>
       </div>
       <div class="grid grid-cols-3 gap-2">
         <button id="d1-start-btn"
@@ -452,6 +457,10 @@
         </label>
         <label class="flex items-center gap-2"><input id="d2-pred-path" type="checkbox"> show predicted path</label>
         <label class="flex items-center gap-2 text-slate-400"><input id="d2-rec-images" type="checkbox"> record images</label>
+        <label class="col-span-2 flex items-center gap-2 text-slate-400">
+          <input id="d2-auto-bag" type="checkbox" checked>
+          auto-record + digest demo bag (uses Demo Run Bag panel)
+        </label>
       </div>
       <div class="grid grid-cols-3 gap-2">
         <button id="d2-start-btn"
@@ -681,7 +690,8 @@
         <span id="dbag-status" class="text-xs text-slate-400 mono"></span>
       </div>
       <div id="dbag-bags-list"
-           class="text-xs text-slate-400 mono mt-2 space-y-1"></div>
+           class="text-xs text-slate-400 mono mt-2 space-y-1
+                  max-h-64 overflow-y-auto pr-1"></div>
     </details>
 
     <!-- 3D Viewer (scaffold for v9; spec v9 §11.6) — hidden -->
@@ -5218,6 +5228,51 @@ function dbagDigestBag(name) {
   }).catch(e => dbagSetStatus('digest failed: ' + e, false));
 }
 
+// --- Auto-bag plumbing (Demo 1 / Demo 2 checkbox) ---
+// When the d?-auto-bag checkbox is on, starting a demo also kicks
+// off a /demo/start with the matching label, and stopping the demo
+// stops the bag and queues a digest. Skips entirely if a recording
+// is already in progress (manual start, or a prior demo's run that
+// hasn't been stopped) — we don't disturb the user's active bag.
+let _autoBagActive = false;
+
+async function _demoAutoBagStart(label) {
+  try {
+    const s = await fetch('/demo/status').then(r => r.json());
+    if (s.recording) return;
+  } catch (e) { return; }
+  const labelEl = document.getElementById('dbag-label');
+  if (labelEl) labelEl.value = label;
+  _autoBagActive = true;
+  await dbagStart();
+}
+
+async function _demoAutoBagStopAndDigest() {
+  if (!_autoBagActive) return;
+  _autoBagActive = false;
+  dbagSetStatus('auto-stopping…', null);
+  try {
+    const r = await fetch('/demo/stop', { method: 'POST' });
+    const j = await r.json();
+    if (!j.ok) {
+      dbagSetStatus(j.message || 'auto-stop failed', false);
+      return;
+    }
+    const name = (j.path || '').split('/').filter(Boolean).pop();
+    _dbagStopPolling();
+    dbagPollStatus();
+    // rosbag2 needs a moment to flush the metadata.yaml; wait
+    // before kicking digest_demo_bag.py at it.
+    setTimeout(() => {
+      dbagFetchBags();
+      if (name) dbagDigestBag(name);
+    }, 1200);
+    dbagSetStatus(`auto-stopped → ${name || '?'} (digesting…)`, null);
+  } catch (e) {
+    dbagSetStatus('auto-stop failed: ' + e, false);
+  }
+}
+
 function dbagDeleteBag(name) {
   if (!confirm(`Delete demo bag "${name}"?`)) return;
   fetch('/demo/bags/delete', {
@@ -5535,6 +5590,7 @@ function stopAllDemos() {
   if (refMarker) refMarker.setAttribute('visibility', 'hidden');
   const predPath = $('pred-path');
   if (predPath) predPath.setAttribute('visibility', 'hidden');
+  _demoAutoBagStopAndDigest();
 }
 
 function maybeRecordImages(prefix) {
@@ -5583,6 +5639,9 @@ function startDemo1() {
   };
   publishCmdRaw('mode:BALL_TRACK_TRAJECTORY ' + JSON.stringify(params));
   setActiveDemo(1);
+  if ($('d1-auto-bag') && $('d1-auto-bag').checked) {
+    _demoAutoBagStart('demo1');
+  }
 }
 
 function reverseDemo1() {
@@ -5598,6 +5657,9 @@ function startDemo2() {
   publishCmdRaw('mode:BALL_TRACK_GOTO ' +
     JSON.stringify({ ball: currentBallConfig() }));
   setActiveDemo(2);
+  if ($('d2-auto-bag') && $('d2-auto-bag').checked) {
+    _demoAutoBagStart('demo2');
+  }
 }
 
 function cancelDemo2Target() {
