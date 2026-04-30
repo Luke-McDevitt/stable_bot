@@ -25,3 +25,16 @@ stewart_vision/config/oak_extrinsics.yaml
 # digest files in with `git add -f`.
 tuning_data/*_vision_debug/*.mcap
 tuning_data/*_vision_debug/metadata.yaml
+
+# Demo-run bags (Demos 1, 2, 3 tuning runs). Same policy as
+# vision_debug: digest only, raw mcap stays on the Pi.
+tuning_data/*_demo1/*.mcap
+tuning_data/*_demo1/metadata.yaml
+tuning_data/*_demo2/*.mcap
+tuning_data/*_demo2/metadata.yaml
+tuning_data/*_demo3/*.mcap
+tuning_data/*_demo3/metadata.yaml
+tuning_data/*_demo_run/*.mcap
+tuning_data/*_demo_run/metadata.yaml
+tuning_data/*_demo_untagged/*.mcap
+tuning_data/*_demo_untagged/metadata.yaml

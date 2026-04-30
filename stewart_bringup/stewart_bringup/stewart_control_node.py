@@ -81,6 +81,8 @@ LEG_LIMITS_PATH = os.path.join(_BRINGUP_DIR, 'config/leg_limits.yaml')
 GLOBAL_LIMITS_PATH = os.path.join(_BRINGUP_DIR, 'config/global_limits.yaml')
 LEVEL_CAL_PATH = os.path.join(_BRINGUP_DIR, 'config/platform_level.yaml')
 LEVEL_GAINS_PATH = os.path.join(_BRINGUP_DIR, 'config/level_gains.yaml')
+BALL_TRACK_GAINS_PATH = os.path.join(_BRINGUP_DIR,
+                                     'config/ball_track_gains.yaml')
 BAGS_DIR = os.path.expanduser('~/stable_bot_bags')
 # Last-commanded pose persisted across restarts so the GUI Z sliders read
 # the operator's last setpoint instead of 0 on a fresh GUI load. Holds the
@@ -323,6 +325,33 @@ def _load_level_gains():
         return defaults
     try:
         with open(LEVEL_GAINS_PATH) as f:
+            doc = yaml.safe_load(f) or {}
+    except Exception:
+        return defaults
+    out = dict(defaults)
+    for k in defaults:
+        if k in doc:
+            out[k] = float(doc[k])
+    return out
+
+
+def _load_ball_track_gains():
+    """Read the BALL_TRACK PID gains from ball_track_gains.yaml.
+    Falls back to historical defaults if the YAML is missing so the
+    node still starts. See config/ball_track_gains.yaml for the
+    physical meaning of each gain."""
+    defaults = {
+        'kp': 0.03,
+        'kd': 0.005,
+        'ki': 0.0,
+        'max_tilt_deg': 6.0,
+        'pitch_sign': 1.0,
+        'roll_sign': 1.0,
+    }
+    if not os.path.exists(BALL_TRACK_GAINS_PATH):
+        return defaults
+    try:
+        with open(BALL_TRACK_GAINS_PATH) as f:
             doc = yaml.safe_load(f) or {}
     except Exception:
         return defaults
@@ -1163,21 +1192,43 @@ class StewartControlNode(Node):
         # so the ball rolls "downhill" toward x=0. Per spec §9 ẍ_ball =
         # -g·sin(θ)·α: positive θ_pitch yields negative ẍ_x, i.e. ball
         # decelerates from +x → 0. Stable closed-loop with Kp > 0.
-        self.ball_track_gains = {
-            'kp': float(os.environ.get('BALL_TRACK_KP', '0.03')),
-            'kd': float(os.environ.get('BALL_TRACK_KD', '0.005')),
-            'ki': float(os.environ.get('BALL_TRACK_KI', '0.0')),
-            'max_tilt_deg': float(os.environ.get('BALL_TRACK_MAX_TILT', '6.0')),
-            'pitch_sign': float(os.environ.get('BALL_TRACK_PITCH_SIGN', '+1.0')),
-            'roll_sign':  float(os.environ.get('BALL_TRACK_ROLL_SIGN',  '+1.0')),
-            'state_stale_s': 0.5,
-            'ref_stale_s':   2.0,
-        }
+        # Loaded from config/ball_track_gains.yaml. Live-editable from
+        # the GUI's "Gains & Control" panel via /control_cmd
+        # ball_track_save_gains. The BALL_TRACK loop reads
+        # self.ball_track_gains at the top of every iteration so
+        # changes take effect within one tick.
+        gains_from_yaml = _load_ball_track_gains()
+        # Env-var override path retained for one-shot experiments
+        # without touching disk; populated only if the env var is
+        # explicitly set.
+        env_override = {}
+        for env_key, gain_key in (
+            ('BALL_TRACK_KP', 'kp'),
+            ('BALL_TRACK_KD', 'kd'),
+            ('BALL_TRACK_KI', 'ki'),
+            ('BALL_TRACK_MAX_TILT', 'max_tilt_deg'),
+            ('BALL_TRACK_PITCH_SIGN', 'pitch_sign'),
+            ('BALL_TRACK_ROLL_SIGN', 'roll_sign'),
+        ):
+            if env_key in os.environ:
+                try:
+                    env_override[gain_key] = float(os.environ[env_key])
+                except ValueError:
+                    pass
+        self.ball_track_gains = dict(gains_from_yaml)
+        self.ball_track_gains.update(env_override)
+        # Loop-internal knobs not part of the editable set.
+        self.ball_track_gains['state_stale_s'] = 0.5
+        self.ball_track_gains['ref_stale_s'] = 2.0
         self.ball_track_enabled = False
         self.ball_track_thread = None
         self.ball_track_stop = threading.Event()
         # Last commanded tilts (for /status surfacing).
         self.ball_track_corr = [0.0, 0.0]   # [roll_deg, pitch_deg]
+        # Set to True by /control_cmd ball_track_zero_integrator;
+        # the BALL_TRACK loop picks it up on its next tick and zeros
+        # integ_x / integ_y. The loop also clears this flag itself.
+        self._ball_track_integ_reset_pending = False
 
         # --- Timers ---
         self.create_timer(0.05, self._tick_state)      # 20 Hz encoders/rpy
@@ -1934,6 +1985,14 @@ class StewartControlNode(Node):
             'ball_track_enabled': bool(self.ball_track_enabled),
             'ball_track_corr_roll_deg':  float(self.ball_track_corr[0]),
             'ball_track_corr_pitch_deg': float(self.ball_track_corr[1]),
+            # Live ball-track gain set so the GUI's Gains & Control
+            # panel can populate its inputs from /status without a
+            # service round-trip.
+            'ball_track_gains': {
+                k: float(v) for k, v in self.ball_track_gains.items()
+                if k in ('kp', 'kd', 'ki', 'max_tilt_deg',
+                         'pitch_sign', 'roll_sign')
+            },
             'imu_yaw_deg': float(cur_rpy[2]) if cur_rpy is not None else float('nan'),
             'recording': self.recording_t0 is not None,
             'recording_keyframe_count': len(self.recording_keyframes),
@@ -2410,6 +2469,24 @@ class StewartControlNode(Node):
                 ok, reply_msg = self._do_level_save_gains(d.get('gains', {}))
                 extra['gains'] = dict(self.level_gains)
                 extra['gains_file_path'] = LEVEL_GAINS_PATH
+            elif cmd == 'ball_track_get_gains':
+                extra['ball_track_gains'] = dict(self.ball_track_gains)
+                extra['ball_track_gains_file_path'] = BALL_TRACK_GAINS_PATH
+                ok, reply_msg = True, "ball-track gains dumped"
+            elif cmd == 'ball_track_reload_gains':
+                ok, reply_msg = self._do_ball_track_reload_gains()
+                extra['ball_track_gains'] = dict(self.ball_track_gains)
+                extra['ball_track_gains_file_path'] = BALL_TRACK_GAINS_PATH
+            elif cmd == 'ball_track_save_gains':
+                # Mirror of level_save_gains for the ball-track PID.
+                # Body: `gains: {kp: ..., kd: ..., ki: ..., max_tilt_deg: ...,
+                # pitch_sign: ±1, roll_sign: ±1}` (any subset).
+                ok, reply_msg = self._do_ball_track_save_gains(
+                    d.get('gains', {}))
+                extra['ball_track_gains'] = dict(self.ball_track_gains)
+                extra['ball_track_gains_file_path'] = BALL_TRACK_GAINS_PATH
+            elif cmd == 'ball_track_zero_integrator':
+                ok, reply_msg = self._do_ball_track_zero_integrator()
             else:
                 ok, reply_msg = False, f"unknown cmd '{cmd}'"
         except Exception as e:
@@ -3432,6 +3509,111 @@ class StewartControlNode(Node):
             msg += "; " + "; ".join(clamped_msgs)
         return True, msg
 
+    # Range-validation table for the ball-track PID. Same pattern
+    # as _LEVEL_GAIN_BOUNDS — last-line guard against catastrophic
+    # typos when the GUI publishes a save.
+    _BALL_TRACK_GAIN_BOUNDS = {
+        'kp':           (0.0, 1.0),     # deg/mm
+        'kd':           (0.0, 0.5),     # deg/(mm/s)
+        'ki':           (0.0, 0.5),     # deg/(mm·s)
+        'max_tilt_deg': (0.5, 15.0),    # platform tilt saturation
+        'pitch_sign':   (-1.0, 1.0),    # ±1 only (clamped/snapped)
+        'roll_sign':    (-1.0, 1.0),
+    }
+
+    def _do_ball_track_save_gains(self, gains_dict):
+        """Persist ball-track gains to YAML + reload in-memory. Same
+        contract as _do_level_save_gains: partial dict accepted,
+        unknown keys reject the whole call (typo guard), out-of-range
+        values are clamped with a notice. The BALL_TRACK loop reads
+        self.ball_track_gains every tick, so changes apply within
+        ~20 ms of the save reply."""
+        if not isinstance(gains_dict, dict) or not gains_dict:
+            return False, "gains: empty or not a dict"
+        unknown = [k for k in gains_dict
+                   if k not in self._BALL_TRACK_GAIN_BOUNDS]
+        if unknown:
+            return False, (
+                f"unknown gain keys: {unknown}. Known: "
+                f"{list(self._BALL_TRACK_GAIN_BOUNDS.keys())}")
+        clamped_msgs = []
+        clean = {}
+        for k, v in gains_dict.items():
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return False, f"gain '{k}' is not a number: {v!r}"
+            lo, hi = self._BALL_TRACK_GAIN_BOUNDS[k]
+            if v < lo or v > hi:
+                v_clamped = max(lo, min(v, hi))
+                clamped_msgs.append(
+                    f"{k}={v} clamped to {v_clamped} "
+                    f"(range [{lo}, {hi}])")
+                v = v_clamped
+            # Sign fields snap to ±1 — clamp to [-1, +1] above gives
+            # any value in that range, but the loop expects exactly
+            # ±1 to match the spec's sign convention.
+            if k in ('pitch_sign', 'roll_sign'):
+                v = 1.0 if v >= 0.0 else -1.0
+            clean[k] = v
+        # Merge with on-disk so unedited fields survive a partial
+        # save.
+        try:
+            on_disk = {}
+            if os.path.isfile(BALL_TRACK_GAINS_PATH):
+                with open(BALL_TRACK_GAINS_PATH) as f:
+                    on_disk = yaml.safe_load(f) or {}
+            on_disk.update(clean)
+            os.makedirs(os.path.dirname(BALL_TRACK_GAINS_PATH),
+                        exist_ok=True)
+            tmp = BALL_TRACK_GAINS_PATH + '.tmp'
+            with open(tmp, 'w') as f:
+                yaml.safe_dump(on_disk, f, sort_keys=True,
+                               default_flow_style=False)
+            os.replace(tmp, BALL_TRACK_GAINS_PATH)
+        except Exception as e:
+            return False, f"failed to write {BALL_TRACK_GAINS_PATH}: {e}"
+        # Reload + preserve loop-internal knobs that aren't on disk.
+        try:
+            new_gains = _load_ball_track_gains()
+            new_gains['state_stale_s'] = self.ball_track_gains.get(
+                'state_stale_s', 0.5)
+            new_gains['ref_stale_s'] = self.ball_track_gains.get(
+                'ref_stale_s', 2.0)
+            self.ball_track_gains = new_gains
+        except Exception as e:
+            return True, (f"wrote YAML but reload failed: {e}; "
+                          f"call ball_track_reload_gains manually")
+        msg = (f"saved {len(clean)} gain(s) to "
+               f"{os.path.basename(BALL_TRACK_GAINS_PATH)}")
+        if clamped_msgs:
+            msg += "; " + "; ".join(clamped_msgs)
+        return True, msg
+
+    def _do_ball_track_reload_gains(self):
+        """Re-read ball_track_gains.yaml from disk and replace the
+        in-memory gains. Used to revert in-progress edits or after
+        the YAML is changed externally."""
+        try:
+            new_gains = _load_ball_track_gains()
+            new_gains['state_stale_s'] = self.ball_track_gains.get(
+                'state_stale_s', 0.5)
+            new_gains['ref_stale_s'] = self.ball_track_gains.get(
+                'ref_stale_s', 2.0)
+            self.ball_track_gains = new_gains
+            return True, "ball-track gains reloaded from yaml"
+        except Exception as e:
+            return False, f"reload failed: {e}"
+
+    def _do_ball_track_zero_integrator(self):
+        """Reset the ball-track integrator state. Useful when the
+        loop's accumulated integral has wound up away from zero
+        during a tuning experiment."""
+        # The integrator state lives inside _ball_track_run's local
+        # closure; we set a flag the loop picks up on its next tick.
+        self._ball_track_integ_reset_pending = True
+        return True, "ball-track integrator reset queued"
+
     def _do_set_leg_current(self, current_a):
         """Update SET_LIMITS on every leg to the new current cap. Keeps
         the current vel_limit unchanged. Takes effect immediately on the
@@ -3822,6 +4004,14 @@ class StewartControlNode(Node):
         z_hold = float(self.current_xyz[2]) if self.current_xyz else 50.0
         while not self.ball_track_stop.is_set():
             t0 = time.monotonic()
+            # Pick up an external integrator-reset request (from
+            # /control_cmd ball_track_zero_integrator). Cleared
+            # before the tick so a re-fire of the flag during this
+            # tick still applies on the next iteration.
+            if getattr(self, '_ball_track_integ_reset_pending', False):
+                self._ball_track_integ_reset_pending = False
+                integ_x = 0.0
+                integ_y = 0.0
             g = self.ball_track_gains
             kp = float(g['kp'])
             kd = float(g['kd'])

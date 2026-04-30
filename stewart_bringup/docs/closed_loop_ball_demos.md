@@ -838,6 +838,99 @@ behavior depends on where the ball ends up:
   abort to `LEVEL_HOLD`. This is the "operator picked it up to do
   something else" path. Re-arm via the path's Start button when ready.
 
+#### 11.2.4 Gains & Control Parameters panel
+
+Below the three demo panels, a collapsible **Gains & Control
+Parameters** panel exposes the BALL_TRACK PID for live tuning.
+Mirrors the **Level-PI Tuning** panel's UX exactly (same
+dirty-input model, same Save / Revert / Zero-integrator buttons).
+
+Inputs (read live from `/status.ball_track_gains`, populated only
+when the user isn't mid-edit):
+
+  - `Kp [deg/mm]` — position-error gain. Tune first; raise until
+    the ball returns toward the reference within ~10 s.
+  - `Kd [deg/(mm/s)]` — velocity damping. Tune second; raise to
+    kill overshoot/wobble.
+  - `Ki [deg/(mm·s)]` — integral. Last; small (0.001–0.01) only
+    if there's a steady-state offset / stiction.
+  - `Max tilt [deg]` — saturation on the platform tilt the loop
+    can command.
+  - `Pitch sign`, `Roll sign` — ±1. Flip these if the ball moves
+    *away* from the reference instead of toward it (sign
+    convention bug under tilt).
+
+Buttons:
+
+  - **Save** — writes only the dirty inputs to
+    `config/ball_track_gains.yaml` and re-loads in-memory.
+    BALL_TRACK loop picks up new gains within one tick (~20 ms).
+    Unknown keys reject the whole call (typo guard); out-of-range
+    values are clamped with a notice.
+  - **Revert from yaml** — re-reads the on-disk YAML, clearing
+    any in-progress edits.
+  - **Zero integrator** — sets a flag the loop picks up on the
+    next tick to reset `integ_x` / `integ_y` to 0. Use during
+    tuning if the integral has wound up.
+
+Backend handlers in `stewart_control_node`:
+
+  - `_load_ball_track_gains()` — startup loader.
+  - `_do_ball_track_save_gains(d)` — validate + atomic write +
+    reload.
+  - `_do_ball_track_reload_gains()` — re-read disk.
+  - `_do_ball_track_zero_integrator()` — request integrator reset.
+
+`/control_cmd` verbs: `ball_track_save_gains`,
+`ball_track_reload_gains`, `ball_track_get_gains`,
+`ball_track_zero_integrator`.
+
+#### 11.2.5 Demo Run Bag Recording panel
+
+Below the gains panel, a **Demo Run Bag Recording** panel mirrors
+the IMU-vs-Camera + Vision-Debug bag pipelines:
+
+  - **Label dropdown**: `demo1` / `demo2` / `demo3` /
+    `demo_untagged`. Folded into the bag directory name so a
+    glance at the file list tells you which demo the bag captured.
+  - **● Record** → spawns `ros2 bag record -s mcap` for the
+    `DEMO_TOPICS` allowlist:
+
+        /ball_state, /ball_ref, /ball_xy_mono, /ball_xy_depth,
+        /oak/ball/v0/{rgb_pixel, diagnostic},
+        /oak/ball/depth/{rgb_pixel, diagnostic},
+        /platform_pose, /platform_pose/markers_visible,
+        /platform_rpy, /platform/imu/data,
+        /control_cmd, /control_result, /status,
+        /leg_encoders, /leg_currents, /odrive_errors
+
+    NO image streams (RGB / depth-blob debug overlay) — keeps
+    bag size manageable.
+  - **■ Stop** → SIGINT the recorder so rosbag2 flushes cleanly.
+  - **Bag list** — lists prior recordings with timestamp + size +
+    summary stats (when digested).
+  - **digest** per row → invokes
+    `stewart_bringup/scripts/digest_demo_bag.py` server-side. The
+    script computes the headline tracking metric (Euclidean
+    state-vs-reference error magnitude) and produces:
+      - `digest.png`: 6-row plot of trajectory, error magnitude
+        with settling band, x/y tracking, KF velocity,
+        IMU roll/pitch, per-leg currents.
+      - `digest.summary.json`: rms / p50 / p95 / max error (mm),
+        settling-time-to-±10mm (s), gains_at_record, topic
+        counts.
+  - **PNG** link → views the digest PNG in a new tab.
+  - **push** → commits **only** `digest.png` + `digest.summary.json`
+    (force-add to bypass `.gitignore`). The raw .mcap stays on
+    the Pi — too large to ship per-bag. Commit message embeds
+    duration, error stats, settling time, and the gain set so
+    the GitHub UI shows the headline numbers without opening
+    the JSON.
+
+This makes tuning a record → digest → adjust loop instead of
+guess-and-check: every gain experiment produces an artifact you
+can compare against the next one.
+
 ### 11.3 Right column — Existing controls
 
 The right column hosts the existing operator controls unchanged:
@@ -1547,8 +1640,8 @@ DONE-WHEN gate in §14 is green.
 | 4 | **V0 ball detection** | Verify `oak_driver_node`'s host-side HSV threshold finds the orange foam ball; tune HSV_LO / HSV_HI by watching the live feed. | Milestone 6 |
 | 5 | **`/ball_xy_mono`** | Wire `ball_localizer_node`'s ray-plane projection. Hand-move the ball; ruler-test against the reported (x, y). | Milestone 7 |
 | 6 | **KF on the mono path** | `ball_kf_node` smooths position + produces velocity. NIS in [0.5, 5] under hand motion. | Milestone 9 |
-| 7 | **Closed-loop ball-centering (sanity)** | Drop ball off-center; platform tilts to push it toward center; settles within ±10 mm in 10 s. **Tune Kp first**. | Milestone 10 |
-| 8 | **Demo 1 — Orbit** | Ball-track-trajectory mode. Tune Kd to remove wobble, then small Ki for stiction. Reverse button works. | Milestone 11 |
+| 7 | **Closed-loop ball-centering (sanity)** | Drop ball off-center; platform tilts to push it toward center; settles within ±10 mm in 10 s. **Tune Kp first**, then Kd to kill wobble, then small Ki only if stiction. Use the **Demos > Gains & Control Parameters** panel for live edits — no service restart needed. | Milestone 10 |
+| 8 | **Demo 1 — Orbit** | Ball-track-trajectory mode. Same gains as step 7 transfer; if the orbit drags the ball, raise Kd. Reverse button works. | Milestone 11 |
 | 8.5 | **BALL_HOLD (Active Stabilization)** | Implement controller-side base-IMU feedforward in `stewart_control_node`: subscribe to `/base/imu/data`, compute `theta_ff` from `_ball_physics.feedforward_tilt_for_base_accel`, add to PID output. Engage from the GUI's Ball-Hold panel; bump the table by hand and watch the ball stay put within ±5 mm. Saturation graceful degradation kicks in past 95% commanded-tilt for >100 ms. Spec §11.7. | (no formal gate; ball stays within ±5 mm of target during a 200 mm hand-bump) |
 | 9 | **Demo 2 — Click-to-Goto** | Same gains transfer; ±10 mm settling. Z-height slider commands pure heave. | Milestone 12 |
 | 10 | **Stereo triangulation** | Implement `/ball_xy_stereo` in `ball_localizer_node`. `/method_comparison` shows green most of the time. | (extends Milestone 8) |

@@ -501,6 +501,102 @@
       <div id="d3-status" class="text-xs text-slate-400 mt-2 mono min-h-4"></div>
     </div>
 
+    <!-- Gains & Control parameters (mirrors the Level-PI panel UX).
+         Lets you tune the BALL_TRACK PID without restarting the
+         service. Inputs read live from /status, dirty-marker holds
+         your edits until Save / Revert. -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700"
+             id="bt-gains-panel">
+      <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">
+        Gains &amp; Control Parameters
+      </summary>
+      <p class="text-xs text-slate-500 mt-2 mb-2">
+        BALL_TRACK PID (drives Demos 1/2/3). Tune Kp first, then Kd
+        to kill overshoot, then a small Ki only if there's stiction.
+        See <span class="mono">config/ball_track_gains.yaml</span>
+        for the physical meaning of each gain.
+      </p>
+      <div class="grid grid-cols-2 gap-2 text-xs mt-2 mono">
+        <label class="flex flex-col">
+          <span class="text-slate-400">Kp [deg/mm]</span>
+          <input id="bt-g-kp" type="number" step="0.005" min="0" max="1" value="0.030"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+        </label>
+        <label class="flex flex-col">
+          <span class="text-slate-400">Kd [deg/(mm/s)]</span>
+          <input id="bt-g-kd" type="number" step="0.001" min="0" max="0.5" value="0.005"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+        </label>
+        <label class="flex flex-col">
+          <span class="text-slate-400">Ki [deg/(mm·s)]</span>
+          <input id="bt-g-ki" type="number" step="0.001" min="0" max="0.5" value="0.000"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+        </label>
+        <label class="flex flex-col">
+          <span class="text-slate-400">Max tilt [deg]</span>
+          <input id="bt-g-max_tilt_deg" type="number" step="0.5" min="0.5" max="15" value="6"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+        </label>
+        <label class="flex flex-col">
+          <span class="text-slate-400">Pitch sign (±1)</span>
+          <input id="bt-g-pitch_sign" type="number" step="2" min="-1" max="1" value="1"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+        </label>
+        <label class="flex flex-col">
+          <span class="text-slate-400">Roll sign (±1)</span>
+          <input id="bt-g-roll_sign" type="number" step="2" min="-1" max="1" value="1"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+        </label>
+      </div>
+      <div class="grid grid-cols-3 gap-2 mt-3">
+        <button id="bt-gains-save"
+                class="bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">Save</button>
+        <button id="bt-gains-revert"
+                class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">Revert from yaml</button>
+        <button id="bt-zero-integ"
+                class="bg-amber-600 hover:bg-amber-500 rounded py-1 text-xs">Zero integrator</button>
+      </div>
+      <div id="bt-gains-status" class="text-xs mt-2 mono min-h-4 text-slate-400"></div>
+    </details>
+
+    <!-- Demo-run bag recorder. Captures everything needed to
+         evaluate a tuning attempt — ball state, ref, IMU, /status,
+         per-leg currents — and runs digest_demo_bag.py to produce
+         the tracking-error / settling / RPY plots. -->
+    <details class="bg-slate-800 rounded-lg p-4 border border-slate-700"
+             id="dbag-panel">
+      <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">
+        Demo Run Bag Recording
+      </summary>
+      <p class="text-xs text-slate-500 mt-2 mb-2">
+        Record before starting a demo, stop at the end. Click
+        Digest to produce a PNG + JSON of tracking error, settling
+        time, IMU tilt, leg currents — Push commits the digest
+        only (raw bag stays on the Pi).
+      </p>
+      <div class="flex items-center gap-2 mb-2">
+        <span class="text-xs text-slate-400">Label:</span>
+        <select id="dbag-label"
+                class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs">
+          <option value="demo1">demo1 (orbit)</option>
+          <option value="demo2">demo2 (goto)</option>
+          <option value="demo3">demo3 (path)</option>
+          <option value="demo_untagged">untagged</option>
+        </select>
+        <button id="dbag-start-btn"
+                class="bg-rose-600 hover:bg-rose-500 rounded px-3 py-1 text-xs">
+          ● Record
+        </button>
+        <button id="dbag-stop-btn"
+                class="bg-slate-600 hover:bg-slate-500 rounded px-3 py-1 text-xs hidden">
+          ■ Stop
+        </button>
+        <span id="dbag-status" class="text-xs text-slate-400 mono"></span>
+      </div>
+      <div id="dbag-bags-list"
+           class="text-xs text-slate-400 mono mt-2 space-y-1"></div>
+    </details>
+
     <!-- 3D Viewer (scaffold for v9; spec v9 §11.6) — hidden -->
     <details id="view3d-panel" class="bg-slate-800 rounded-lg p-4 border border-slate-700" style="display:none">
       <summary class="text-sm uppercase text-slate-400 cursor-pointer select-none">
@@ -1892,6 +1988,28 @@ function setupROSInterface() {
                         r.cmd === 'level_save_gains')) {
           populateGainInputs(r.gains);
         }
+        // Ball-track gains: same dirty-clear + status-line pattern.
+        if (r.cmd === 'ball_track_save_gains') {
+          if (r.success) clearBtGainDirty();
+          setBtGainsStatus(
+            r.success ? `✓ ${r.message}` : `✗ ${r.message}`,
+            r.success ? 'text-emerald-400' : 'text-red-400');
+        } else if (r.cmd === 'ball_track_reload_gains') {
+          if (r.success) clearBtGainDirty();
+          setBtGainsStatus(
+            r.success ? '✓ reverted from yaml' : `✗ ${r.message}`,
+            r.success ? 'text-emerald-400' : 'text-red-400');
+        } else if (r.cmd === 'ball_track_zero_integrator') {
+          setBtGainsStatus(
+            r.success ? '✓ integrator zeroed' : `✗ ${r.message}`,
+            r.success ? 'text-emerald-400' : 'text-red-400');
+        }
+        if (r.ball_track_gains && (
+                r.cmd === 'ball_track_get_gains' ||
+                r.cmd === 'ball_track_reload_gains' ||
+                r.cmd === 'ball_track_save_gains')) {
+          populateBtGainInputs(r.ball_track_gains);
+        }
         return;
       }
       if (r.cmd === 'prep_pos_ff') {
@@ -2030,6 +2148,7 @@ function setupROSInterface() {
       // Apply tilt, an IVA sweep, or any other /control_cmd consumer.
       syncStabZFromStatus(s);
       syncDemo2ZFromStatus(s);
+      syncBtGainsFromStatus(s);
       $('status-box').innerText = Object.entries(s).map(([k,v])=>
         `${k.padEnd(28)} ${JSON.stringify(v)}`).join('\n');
       updateLevelButtons(!!s.level_enabled);
@@ -2529,6 +2648,7 @@ function wireLevelTuningPanel() {
   // Ask the node for current gains right away so the readout is live
   // even before the first heartbeat arrives.
   setTimeout(() => publishCmd({cmd: 'level_get_gains'}), 200);
+  setTimeout(() => publishCmd({cmd: 'ball_track_get_gains'}), 250);
 }
 
 // Paint the Level ON/OFF buttons (main + stab panel) based on current
@@ -3654,6 +3774,44 @@ function initVisionGUI() {
   vbagPollStatus();
   vbagFetchBags();
 
+  // --- Ball-track gains panel (Demos column) ---
+  for (const k of BT_GAIN_KEYS) {
+    const el = document.getElementById('bt-g-' + k);
+    if (!el) continue;
+    el.addEventListener('input',  () => markBtGainDirty(k));
+    el.addEventListener('change', () => markBtGainDirty(k));
+  }
+  const btSave = $('bt-gains-save');
+  if (btSave) btSave.addEventListener('click', () => {
+    const payload = readBtGainInputs();
+    if (Object.keys(payload).length === 0) {
+      setBtGainsStatus('nothing to save', 'text-amber-400');
+      return;
+    }
+    setBtGainsStatus('saving…', 'text-slate-400');
+    publishCmd({cmd: 'ball_track_save_gains', gains: payload});
+    // /control_result reply path will clear dirty + show success.
+  });
+  const btRevert = $('bt-gains-revert');
+  if (btRevert) btRevert.addEventListener('click', () => {
+    setBtGainsStatus('reverting from yaml…', 'text-slate-400');
+    clearBtGainDirty();
+    publishCmd({cmd: 'ball_track_reload_gains'});
+  });
+  const btZero = $('bt-zero-integ');
+  if (btZero) btZero.addEventListener('click', () => {
+    publishCmd({cmd: 'ball_track_zero_integrator'});
+    setBtGainsStatus('integrator zero requested', 'text-slate-400');
+  });
+
+  // --- Demo-run bag recorder ---
+  const dbStart = $('dbag-start-btn');
+  const dbStop  = $('dbag-stop-btn');
+  if (dbStart) dbStart.addEventListener('click', dbagStart);
+  if (dbStop)  dbStop.addEventListener('click',  dbagStop);
+  dbagPollStatus();
+  dbagFetchBags();
+
   // Drawn-route overlay is intentionally disabled until the platform→
   // camera projection is wired (see renderRouteOverlay block comment).
   const routeCb = $('vis-show-route');
@@ -4628,6 +4786,246 @@ function vbagPushBag(name) {
     vbagSetStatus((j.ok ? '✓ ' : '✗ ') + (j.message || ''),
                   !!j.ok);
   }).catch(e => vbagSetStatus('push failed: ' + e, false));
+}
+
+// ===========================================================================
+// Ball-track gains panel (Demos > Gains & Control Parameters).
+// Mirrors the Level-PI gains panel pattern: dirty-marker keeps an
+// edited input from being overwritten by /status, Save publishes
+// /control_cmd ball_track_save_gains, Revert publishes
+// ball_track_reload_gains, Zero integrator publishes
+// ball_track_zero_integrator.
+// ===========================================================================
+
+const BT_GAIN_KEYS = [
+  'kp', 'kd', 'ki', 'max_tilt_deg', 'pitch_sign', 'roll_sign',
+];
+const _btGainDirty = new Set();
+
+function markBtGainDirty(k) { _btGainDirty.add(k); }
+function clearBtGainDirty() { _btGainDirty.clear(); }
+
+function populateBtGainInputs(g) {
+  if (!g || typeof g !== 'object') return;
+  for (const k of BT_GAIN_KEYS) {
+    if (_btGainDirty.has(k)) continue;        // user is mid-edit
+    const el = document.getElementById('bt-g-' + k);
+    if (!el) continue;
+    if (typeof g[k] === 'number' && isFinite(g[k])) {
+      // Only update if the value differs to avoid cursor-jump while
+      // typing.
+      const cur = parseFloat(el.value);
+      if (!isFinite(cur) || Math.abs(cur - g[k]) > 1e-9) {
+        el.value = String(g[k]);
+      }
+    }
+  }
+}
+
+function readBtGainInputs() {
+  const out = {};
+  for (const k of BT_GAIN_KEYS) {
+    const el = document.getElementById('bt-g-' + k);
+    if (!el) continue;
+    if (!_btGainDirty.has(k)) continue;       // only send what changed
+    const v = parseFloat(el.value);
+    if (isFinite(v)) out[k] = v;
+  }
+  return out;
+}
+
+function setBtGainsStatus(msg, classes) {
+  const el = document.getElementById('bt-gains-status');
+  if (!el) return;
+  el.innerText = msg;
+  el.className = 'text-xs mt-2 mono min-h-4 ' + (classes || 'text-slate-400');
+}
+
+// Hook into /status broadcast — gains are surfaced under
+// status.ball_track_gains. Called from the existing onStatus handler.
+function syncBtGainsFromStatus(s) {
+  if (s && s.ball_track_gains) {
+    populateBtGainInputs(s.ball_track_gains);
+  }
+}
+
+// ===========================================================================
+// Demo-run bag recorder panel.
+// ===========================================================================
+
+let _dbagPollTimer = null;
+
+function _dbagFmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+function _dbagFmtAge(mtime) {
+  const ageS = Math.max(0, (Date.now() / 1000) - mtime);
+  if (ageS < 60) return Math.floor(ageS) + 's ago';
+  if (ageS < 3600) return Math.floor(ageS / 60) + 'm ago';
+  if (ageS < 86400) return Math.floor(ageS / 3600) + 'h ago';
+  return Math.floor(ageS / 86400) + 'd ago';
+}
+
+function _dbagRenderBag(e) {
+  const stats = e.summary ? `
+    <div class="text-xs text-slate-400 mt-1">
+      ${(e.summary.duration_s || 0).toFixed(1)}s
+      ${e.summary.demo_label ? ' | ' + e.summary.demo_label : ''}
+      ${e.summary.rms_error_mm != null
+        ? ' | rms=' + e.summary.rms_error_mm.toFixed(1) + 'mm' : ''}
+      ${e.summary.p95_error_mm != null
+        ? ' | p95=' + e.summary.p95_error_mm.toFixed(1) + 'mm' : ''}
+      ${e.summary.settling_time_s != null
+        ? ' | settled ' + Number(e.summary.settling_time_s).toFixed(2) + 's'
+        : ''}
+      ${e.summary.gains_at_record
+        ? ' | kp=' + e.summary.gains_at_record.kp
+          + ' kd=' + e.summary.gains_at_record.kd
+          + ' ki=' + e.summary.gains_at_record.ki
+        : ''}
+    </div>` : '';
+  const pngLink = e.has_png
+    ? `<a class="text-cyan-400 underline" target="_blank"
+          href="/demo/bags/png?name=${encodeURIComponent(e.name)}">PNG</a>`
+    : '<span class="text-slate-600">no PNG</span>';
+  return `
+    <div class="border-b border-slate-700 pb-2 mb-1">
+      <div class="flex items-center gap-2">
+        <span class="flex-1 truncate text-slate-300" title="${e.name}">${e.name}</span>
+        <span class="text-slate-500">${_dbagFmtAge(e.mtime)}</span>
+        <span class="text-slate-500">${_dbagFmtBytes(e.size_bytes || 0)}</span>
+        ${pngLink}
+        <button class="bg-emerald-700 hover:bg-emerald-600 px-2 rounded text-xs"
+                onclick="dbagDigestBag('${e.name}')">digest</button>
+        <button class="bg-blue-700 hover:bg-blue-600 px-2 rounded text-xs"
+                onclick="dbagPushBag('${e.name}')">push</button>
+        <button class="bg-red-800 hover:bg-red-700 px-2 rounded text-xs"
+                onclick="dbagDeleteBag('${e.name}')">del</button>
+      </div>
+      ${stats}
+    </div>`;
+}
+
+function dbagFetchBags() {
+  const out = document.getElementById('dbag-bags-list');
+  if (!out) return;
+  fetch('/demo/bags').then(r => r.json()).then(j => {
+    const entries = (j.entries || []);
+    if (!entries.length) {
+      out.innerHTML = '<div class="text-slate-500">no demo bags yet</div>';
+      return;
+    }
+    out.innerHTML = entries.map(_dbagRenderBag).join('');
+  }).catch(e => {
+    out.innerText = 'failed to fetch /demo/bags: ' + e;
+  });
+}
+
+function dbagSetStatus(text, ok) {
+  const el = document.getElementById('dbag-status');
+  if (!el) return;
+  el.innerText = text;
+  el.className = 'text-xs mono ' +
+    (ok === true ? 'text-emerald-400' :
+     ok === false ? 'text-red-400' : 'text-slate-400');
+}
+
+function _dbagStartPolling() {
+  if (_dbagPollTimer) return;
+  _dbagPollTimer = setInterval(dbagPollStatus, 1000);
+}
+function _dbagStopPolling() {
+  if (_dbagPollTimer) clearInterval(_dbagPollTimer);
+  _dbagPollTimer = null;
+}
+
+function dbagPollStatus() {
+  fetch('/demo/status').then(r => r.json()).then(j => {
+    const startBtn = document.getElementById('dbag-start-btn');
+    const stopBtn  = document.getElementById('dbag-stop-btn');
+    if (j.recording) {
+      if (startBtn) startBtn.classList.add('hidden');
+      if (stopBtn)  stopBtn.classList.remove('hidden');
+      const t = (j.elapsed_s || 0).toFixed(0);
+      dbagSetStatus(`● ${j.label || 'demo'} ${t}s → ${j.path || '?'}`, null);
+    } else {
+      if (startBtn) startBtn.classList.remove('hidden');
+      if (stopBtn)  stopBtn.classList.add('hidden');
+      _dbagStopPolling();
+      dbagSetStatus('', null);
+    }
+  }).catch(() => {});
+}
+
+async function dbagStart() {
+  dbagSetStatus('starting…', null);
+  const labelEl = document.getElementById('dbag-label');
+  const label = labelEl ? labelEl.value : 'demo_run';
+  try {
+    const r = await fetch('/demo/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({label}),
+    });
+    const j = await r.json();
+    dbagSetStatus(j.message || (j.ok ? 'recording' : 'failed'),
+                  j.ok ? null : false);
+    _dbagStartPolling();
+    dbagPollStatus();
+  } catch (e) {
+    dbagSetStatus('start failed: ' + e, false);
+  }
+}
+
+async function dbagStop() {
+  dbagSetStatus('stopping…', null);
+  try {
+    const r = await fetch('/demo/stop', { method: 'POST' });
+    const j = await r.json();
+    dbagSetStatus(j.message || (j.ok ? 'stopped' : 'failed'),
+                  j.ok ? true : false);
+    setTimeout(dbagFetchBags, 800);
+  } catch (e) {
+    dbagSetStatus('stop failed: ' + e, false);
+  }
+}
+
+function dbagDigestBag(name) {
+  dbagSetStatus(`running digest on ${name}…`, null);
+  fetch('/demo/bags/digest', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    dbagSetStatus((j.ok ? '✓ digest ' : '✗ digest ') + (j.message || ''),
+                  !!j.ok);
+    if (j.ok) dbagFetchBags();
+  }).catch(e => dbagSetStatus('digest failed: ' + e, false));
+}
+
+function dbagDeleteBag(name) {
+  if (!confirm(`Delete demo bag "${name}"?`)) return;
+  fetch('/demo/bags/delete', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    dbagSetStatus(j.message || (j.ok ? 'deleted' : 'failed'), !!j.ok);
+    dbagFetchBags();
+  }).catch(e => dbagSetStatus('delete failed: ' + e, false));
+}
+
+function dbagPushBag(name) {
+  dbagSetStatus(`pushing ${name}…`, null);
+  fetch('/demo/bags/push', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    dbagSetStatus((j.ok ? '✓ ' : '✗ ') + (j.message || ''),
+                  !!j.ok);
+  }).catch(e => dbagSetStatus('push failed: ' + e, false));
 }
 
 // Auto-abort on /odrive_errors. The error topic is already

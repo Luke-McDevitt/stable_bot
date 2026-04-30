@@ -26,6 +26,7 @@ import http.server
 import json
 import math
 import os
+import re
 import signal
 import socketserver
 import subprocess
@@ -84,6 +85,42 @@ _vision_lock = threading.Lock()
 _vision_proc = None
 _vision_path = None
 _vision_started_at = None
+
+# Demo-run bag recorder (mirror IVA / vision pattern).
+# Captures everything needed to evaluate a tuning attempt for
+# Demo 1 (orbit), Demo 2 (goto), or Demo 3 (path):
+# ball state vs reference, motor commands, platform pose, /status,
+# /control_cmd. NO image streams — keeps bag size manageable.
+_demo_lock = threading.Lock()
+_demo_proc = None
+_demo_path = None
+_demo_started_at = None
+_demo_label = None    # 'demo1', 'demo2', 'demo3', or 'untagged'
+DEMO_TOPICS = [
+    # Ball perception + reference
+    '/ball_state',
+    '/ball_ref',
+    '/ball_xy_mono',
+    '/ball_xy_depth',
+    '/oak/ball/v0/rgb_pixel',
+    '/oak/ball/v0/diagnostic',
+    '/oak/ball/depth/rgb_pixel',
+    '/oak/ball/depth/diagnostic',
+    # Pose ground truth
+    '/platform_pose',
+    '/platform_pose/markers_visible',
+    '/platform_rpy',
+    '/platform/imu/data',
+    # Operator + node IO
+    '/control_cmd',
+    '/control_result',
+    '/status',
+    # Motor state (so post-run analysis can tie tracking error to
+    # actuator current/encoder behavior)
+    '/leg_encoders',
+    '/leg_currents',
+    '/odrive_errors',
+]
 VISION_DEBUG_TOPICS = [
     # Camera streams
     '/oak/rgb/image_compressed',
@@ -727,6 +764,288 @@ def _vision_bag_png_path(name):
     return p if os.path.isfile(p) else None
 
 
+# ---- Demo-run bag recorder (Demos 1 / 2 / 3 tuning runs) ----
+
+def _list_demo_bags():
+    """Enumerate demo-run bags. Bag dirs are named
+    <UTC>Z_demo_<label>, where label is 'demo1', 'demo2', etc.
+    Returns dicts shaped like _list_iva_bags so the GUI list can
+    render with a shared template."""
+    root = _iva_bags_root()
+    out = []
+    if not os.path.isdir(root):
+        return out
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return out
+    for name in entries:
+        # Match the demo-bag naming pattern. We accept any folder
+        # that contains '_demo' in the name AND isn't a vision_debug
+        # bag (which can also contain 'demo' if someone names it
+        # weirdly).
+        if 'vision_debug' in name:
+            continue
+        if not ('_demo1' in name or '_demo2' in name
+                or '_demo3' in name or '_demo_run' in name
+                or '_demo_untagged' in name):
+            continue
+        full = os.path.join(root, name)
+        if not os.path.isdir(full):
+            continue
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        png = os.path.join(full, 'digest.png')
+        js  = os.path.join(full, 'digest.summary.json')
+        entry = {
+            'name': name,
+            'path': full,
+            'mtime': st.st_mtime,
+            'size_bytes': _iva_dir_size(full),
+            'has_png': os.path.isfile(png),
+            'has_summary': os.path.isfile(js),
+        }
+        if entry['has_summary']:
+            try:
+                with open(js) as f:
+                    s = json.load(f)
+                entry['summary'] = {
+                    'duration_s': s.get('duration_s'),
+                    'demo_label': s.get('demo_label'),
+                    'gains_at_record': s.get('gains_at_record'),
+                    'p95_error_mm': (s.get('error_mm') or {}).get('p95'),
+                    'rms_error_mm': (s.get('error_mm') or {}).get('rms'),
+                    'settling_time_s': s.get('settling_time_s'),
+                }
+            except Exception:
+                pass
+        out.append(entry)
+    out.sort(key=lambda e: e['mtime'], reverse=True)
+    return out
+
+
+def _resolve_demo_bag_path(name):
+    if '/' in name or '\\' in name or name.startswith('.'):
+        return None
+    full = os.path.realpath(os.path.join(_iva_bags_root(), name))
+    root = os.path.realpath(_iva_bags_root())
+    if not full.startswith(root + os.sep):
+        return None
+    if not os.path.isdir(full):
+        return None
+    return full
+
+
+def _demo_start(label='demo_run'):
+    """Spawn `ros2 bag record` for the demo-run topic set. `label`
+    is folded into the directory name so the operator can tell at a
+    glance which demo a bag was for."""
+    global _demo_proc, _demo_path, _demo_started_at, _demo_label
+    # Sanitize label so it can't escape the directory.
+    safe_label = re.sub(r'[^a-zA-Z0-9_]', '_', str(label) or 'demo_run')[:32]
+    if not safe_label:
+        safe_label = 'demo_run'
+    with _demo_lock:
+        if _demo_proc is not None and _demo_proc.poll() is None:
+            return False, 'already recording', _demo_path
+        ts = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+        out_dir = os.path.join(_iva_bags_root(),
+                               f'{ts}_{safe_label}')
+        os.makedirs(os.path.dirname(out_dir), exist_ok=True)
+        cmd = ('source /opt/ros/kilted/setup.bash && '
+               'source /home/sorak/ros2_ws/install/local_setup.bash && '
+               f'exec ros2 bag record -s mcap -o {out_dir} '
+               + ' '.join(DEMO_TOPICS))
+        try:
+            _demo_proc = subprocess.Popen(
+                ['/bin/bash', '-c', cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid)
+            _demo_path = out_dir
+            _demo_started_at = time.time()
+            _demo_label = safe_label
+            return True, f'recording → {out_dir}', out_dir
+        except Exception as e:
+            _demo_proc = None
+            _demo_path = None
+            _demo_started_at = None
+            _demo_label = None
+            return False, f'failed to spawn: {e}', None
+
+
+def _demo_stop():
+    global _demo_proc, _demo_path, _demo_started_at, _demo_label
+    with _demo_lock:
+        if _demo_proc is None:
+            return False, 'not recording', _demo_path
+        if _demo_proc.poll() is not None:
+            path = _demo_path
+            _demo_proc = None
+            _demo_path = None
+            _demo_started_at = None
+            _demo_label = None
+            return True, f'recorder already exited; bag at {path}', path
+        try:
+            os.killpg(os.getpgid(_demo_proc.pid), signal.SIGINT)
+        except Exception as e:
+            return False, f'SIGINT failed: {e}', _demo_path
+        try:
+            _demo_proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(_demo_proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        path = _demo_path
+        _demo_proc = None
+        _demo_path = None
+        _demo_started_at = None
+        _demo_label = None
+        return True, f'saved → {path}', path
+
+
+def _demo_status():
+    with _demo_lock:
+        running = (_demo_proc is not None
+                   and _demo_proc.poll() is None)
+        elapsed = (time.time() - _demo_started_at) \
+            if (_demo_started_at and running) else None
+        return {
+            'recording': running,
+            'path': _demo_path,
+            'label': _demo_label,
+            'elapsed_s': elapsed,
+        }
+
+
+def _digest_demo_bag(name):
+    full = _resolve_demo_bag_path(name)
+    if full is None:
+        return False, "bad name"
+    analyzer = os.path.join(_BRINGUP_DIR, 'scripts/digest_demo_bag.py')
+    if not os.path.isfile(analyzer):
+        return False, f"analyzer not found at {analyzer}"
+    cmd = (
+        'source /opt/ros/kilted/setup.bash && '
+        'source ~/ros2_ws/install/local_setup.bash && '
+        f'python3 {analyzer!r} {full!r}'
+    )
+    try:
+        r = subprocess.run(['bash', '-c', cmd],
+                           capture_output=True, text=True, timeout=180)
+        ok = (r.returncode == 0)
+        out = (r.stdout or '').strip()
+        err = (r.stderr or '').strip()
+        return ok, (out + ('\n' + err if err else ''))[-4000:]
+    except subprocess.TimeoutExpired:
+        return False, "digest timed out after 180 s"
+    except Exception as e:
+        return False, f"digest failed: {e}"
+
+
+def _delete_demo_bag(name):
+    bag_dir = _resolve_demo_bag_path(name)
+    if bag_dir is None:
+        return False, f'no such demo bag: {name}'
+    try:
+        import shutil
+        shutil.rmtree(bag_dir)
+    except Exception as e:
+        return False, f'rmtree failed: {e}'
+    return True, f'deleted {bag_dir}'
+
+
+def _demo_bag_png_path(name):
+    full = _resolve_demo_bag_path(name)
+    if full is None:
+        return None
+    p = os.path.join(full, 'digest.png')
+    return p if os.path.isfile(p) else None
+
+
+def _push_demo_bag_to_git(name):
+    """Push only digest.png + digest.summary.json. Raw bag stays
+    on the Pi (gitignored — too large per-run)."""
+    bag_dir = _resolve_demo_bag_path(name)
+    if bag_dir is None:
+        return False, f'no such demo bag: {name}'
+    repo_dir = os.path.dirname(_iva_bags_root())
+    if not os.path.isdir(os.path.join(repo_dir, '.git')):
+        return False, f'{repo_dir} is not a git repo'
+
+    out_lines = []
+    png = os.path.join(bag_dir, 'digest.png')
+    js  = os.path.join(bag_dir, 'digest.summary.json')
+    if not (os.path.isfile(png) and os.path.isfile(js)):
+        out_lines.append('(running digest first)')
+        ok, msg = _digest_demo_bag(name)
+        out_lines.append(msg or '')
+        if not ok:
+            return False, '\n'.join(out_lines)
+
+    rel_png = os.path.relpath(png, repo_dir)
+    rel_js  = os.path.relpath(js,  repo_dir)
+
+    headline = ''
+    try:
+        with open(js) as f:
+            s = json.load(f)
+        em = s.get('error_mm') or {}
+        gn = s.get('gains_at_record') or {}
+        headline = (
+            f"\nlabel={s.get('demo_label', '?')}  "
+            f"duration={s.get('duration_s', 0):.1f}s  "
+            f"settling={s.get('settling_time_s', 'n/a')}\n"
+            f"error_mm: rms={em.get('rms', 0):.1f} "
+            f"p95={em.get('p95', 0):.1f} "
+            f"max={em.get('max', 0):.1f}\n"
+            f"gains: kp={gn.get('kp', '?')} "
+            f"kd={gn.get('kd', '?')} "
+            f"ki={gn.get('ki', '?')}")
+    except Exception:
+        pass
+
+    msg = (f'Demo digest {name}\n' + headline + '\n\n'
+           'Digest only (digest.png + digest.summary.json). Raw '
+           'rosbag2 mcap stays on the Pi.\n')
+
+    def _run(cmd):
+        try:
+            r = subprocess.run(cmd, cwd=repo_dir,
+                               capture_output=True, text=True,
+                               timeout=120)
+            line = ' '.join(cmd)
+            if r.returncode != 0:
+                out_lines.append(f"FAILED: {line}\n{r.stderr}")
+            else:
+                out_lines.append(f"OK: {line}")
+                if r.stdout.strip():
+                    out_lines.append(r.stdout.strip())
+            return r.returncode == 0
+        except Exception as e:
+            out_lines.append(f"FAILED: {' '.join(cmd)}: {e}")
+            return False
+
+    if not _run(['git', 'add', '-f', rel_png, rel_js]):
+        return False, '\n'.join(out_lines)
+    diff = subprocess.run(['git', 'diff', '--cached', '--quiet'],
+                          cwd=repo_dir)
+    if diff.returncode == 0:
+        out_lines.append('(nothing to commit — digest already in HEAD)')
+        if _run(['git', 'push']):
+            out_lines.append('✓ pushed')
+            return True, '\n'.join(out_lines)
+        return False, '\n'.join(out_lines)
+    if not _run(['git', 'commit', '-m', msg]):
+        return False, '\n'.join(out_lines)
+    if not _run(['git', 'push']):
+        return False, '\n'.join(out_lines)
+    out_lines.append('✓ pushed to origin (digest only)')
+    return True, '\n'.join(out_lines)
+
+
 def _rosbridge_already_running():
     """True if anything is listening on TCP 9090 (rosbridge default port).
     Catches stacks started outside this gui_server (notably systemd on Pi)."""
@@ -1021,6 +1340,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({'vision_dir': _iva_bags_root(),
                              'entries': _list_vision_bags()})
             return
+        if self.path == '/demo/status':
+            self._send_json(_demo_status())
+            return
+        if self.path == '/demo/bags':
+            self._send_json({'demo_dir': _iva_bags_root(),
+                             'entries': _list_demo_bags()})
+            return
+        if self.path.startswith('/demo/bags/png'):
+            from urllib.parse import urlsplit, parse_qs
+            q = parse_qs(urlsplit(self.path).query)
+            name = (q.get('name') or [''])[0]
+            png = _demo_bag_png_path(name)
+            if not png:
+                self._send_json(
+                    {'error': 'png not found — run digest first'}, 404)
+                return
+            try:
+                with open(png, 'rb') as f:
+                    data = f.read()
+            except OSError as e:
+                self._send_json({'error': str(e)}, 500)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path.startswith('/vision/bags/png'):
             from urllib.parse import urlsplit, parse_qs
             q = parse_qs(urlsplit(self.path).query)
@@ -1202,6 +1550,63 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
                 return
             ok, msg = _digest_vision_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 500)
+            return
+        # ----- Demo-run bag recorder endpoints -----
+        if self.path == '/demo/start':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = (json.loads(self.rfile.read(length) or b'{}')
+                        if length else {})
+                label = str(body.get('label', 'demo_run'))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg, path = _demo_start(label=label)
+            self._send_json(
+                {'ok': ok, 'message': msg, 'path': path},
+                status=200 if ok else 409)
+            return
+        if self.path == '/demo/stop':
+            ok, msg, path = _demo_stop()
+            self._send_json(
+                {'ok': ok, 'message': msg, 'path': path},
+                status=200 if ok else 409)
+            return
+        if self.path == '/demo/bags/delete':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _delete_demo_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 400)
+            return
+        if self.path == '/demo/bags/digest':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _digest_demo_bag(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 500)
+            return
+        if self.path == '/demo/bags/push':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _push_demo_bag_to_git(name)
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 500)
             return

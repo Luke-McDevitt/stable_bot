@@ -1,0 +1,32 @@
+# BALL_TRACK PID gains — drive Demos 1, 2, 3.
+#
+# Loaded by stewart_control_node._load_ball_track_gains() at startup.
+# Live-editable via the GUI's "Gains & Control" panel (publishes
+# /control_cmd ball_track_save_gains, which writes back here and
+# reloads in-memory). The BALL_TRACK loop reads these gains at the
+# top of each iteration so changes take effect within one tick.
+#
+# Physical meaning per spec §9 (Control law):
+#
+#   tilt_pitch = pitch_sign * (kp * ex + kd * edot_x + ki * integ_x)
+#   tilt_roll  = roll_sign  * (kp * ey + kd * edot_y + ki * integ_y)
+#
+# where (ex, ey) = ball-position error in mm, (edot_x, edot_y) = ball
+# velocity in mm/s, (integ_x, integ_y) = error integrator in mm·s.
+# Tilt commands are clamped to ±max_tilt_deg before sending to IK.
+#
+# Tuning sequence (spec §14, milestone 7-8):
+#   1. KP first — drop ball off-center, raise kp until it returns to
+#      origin within ~10 s. Don't worry about overshoot yet.
+#   2. KD next — once kp drives the ball home, raise kd to kill the
+#      overshoot/wobble. Sweep kd up until response is critically-
+#      damped.
+#   3. KI last — small (0.001-0.01) only if there's stiction or
+#      steady-state offset.
+
+kp: 0.03                    # deg/mm — Kp on position error
+kd: 0.005                   # deg/(mm/s) — Kd on velocity (ball edot)
+ki: 0.0                     # deg/(mm·s) — Ki on error integral
+max_tilt_deg: 6.0           # degrees — saturation on platform tilt
+pitch_sign: 1.0             # ±1 — flip if ball-direction confused
+roll_sign:  1.0             # ±1 — flip if ball-direction confused
