@@ -4002,6 +4002,16 @@ class StewartControlNode(Node):
         integ_x = 0.0
         integ_y = 0.0
         z_hold = float(self.current_xyz[2]) if self.current_xyz else 50.0
+        # Ball-fall recovery state. The loop normally goes flat (zero
+        # tilt) when state goes stale, but it sits there indefinitely
+        # waiting for the ball to reappear. After BALL_FALL_TIMEOUT_S
+        # of continuous staleness, we conclude the ball has fallen
+        # off the platform and exit BALL_TRACK mode entirely so the
+        # operator can address the situation. Spec: when a demo sees
+        # a ball fall, command level for ~3 s, then drop to LEVEL_HOLD.
+        BALL_FALL_TIMEOUT_S = 3.0
+        stale_started_at = None
+        ball_fall_handled = False
         while not self.ball_track_stop.is_set():
             t0 = time.monotonic()
             # Pick up an external integrator-reset request (from
@@ -4037,7 +4047,37 @@ class StewartControlNode(Node):
                 tilt_roll = 0.0
                 integ_x = 0.0
                 integ_y = 0.0
+                # Ball-fall recovery: after BALL_FALL_TIMEOUT_S of
+                # continuous staleness, exit the BALL_TRACK loop.
+                # The platform has been at flat tilt the whole time
+                # (the staleness branch enforced it above), so the
+                # exit just transitions us cleanly to LEVEL_HOLD.
+                # The operator must restart the demo manually.
+                if stale_started_at is None:
+                    stale_started_at = now
+                if (not ball_fall_handled
+                        and (now - stale_started_at) > BALL_FALL_TIMEOUT_S):
+                    ball_fall_handled = True
+                    self.get_logger().warn(
+                        f"BALL_TRACK ball-fall: state stale "
+                        f"{now - stale_started_at:.1f}s — exiting to "
+                        f"LEVEL_HOLD. Restart the demo manually.")
+                    # Command flat one more time before bailing.
+                    try:
+                        self._do_set_pose(0.0, 0.0, z_hold,
+                                          0.0, 0.0, 0.0,
+                                          allow_large=True)
+                    except Exception:
+                        pass
+                    self.current_rpy = [0.0, 0.0, 0.0]
+                    # Signal exit. ball_track_enabled is what /status
+                    # reports; ball_track_stop ends this loop.
+                    self.ball_track_enabled = False
+                    self.ball_track_stop.set()
+                    break
             else:
+                stale_started_at = None
+                ball_fall_handled = False
                 px, py, vx, vy = state
                 rx, ry = ref
                 # Error: ball needs to move from current pos toward ref.

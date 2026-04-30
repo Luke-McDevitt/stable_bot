@@ -3237,8 +3237,32 @@ window.addEventListener('DOMContentLoaded', () => {
   $('arm-btn').addEventListener('click', () => publishCmd({ cmd: 'activate' }));
   $('disarm-btn').addEventListener('click', () => publishCmd({ cmd: 'deactivate' }));
   $('rest-btn').addEventListener('click', () => publishCmd({ cmd: 'go_to_rest' }));
-  $('level-on-btn').addEventListener('click', () =>
-    publishCmd({ cmd: 'enable_level', enable: true }));
+  // Arming-panel "Level ON" mirrors the Stabilization panel's
+  // typical sequence: dial up to a safe operating Z, then engage
+  // the level PI loop. Without the pre-pose, Level ON at rest
+  // pose (z=0) leaves the legs at the bottom limit and the level
+  // loop can't apply tilt corrections — the user observed this
+  // as "Level ON in the arming panel doesn't work, the stab panel
+  // does". Operator can still adjust Z afterwards via the Stab
+  // panel's slider; this just guarantees a working starting
+  // point. Z=30 mm matches the spec's minimum operating Z (closed-
+  // loop demos run at 30..50 mm).
+  $('level-on-btn').addEventListener('click', () => {
+    // If a slider value is already > 30 mm (e.g., user dialed up
+    // earlier), respect it; else lift to 30. publishCmd is async
+    // but sequentially-ordered — set_pose lands at the controller
+    // before enable_level engages.
+    let z = 30;
+    const slider = document.getElementById('stab-z-slider');
+    if (slider) {
+      const v = parseFloat(slider.value);
+      if (isFinite(v) && v >= 30) z = v;
+    }
+    publishCmd({ cmd: 'set_pose',
+                 x: 0, y: 0, z: z,
+                 roll: 0, pitch: 0, yaw: 0 });
+    publishCmd({ cmd: 'enable_level', enable: true });
+  });
   $('level-off-btn').addEventListener('click', () =>
     publishCmd({ cmd: 'enable_level', enable: false }));
 
