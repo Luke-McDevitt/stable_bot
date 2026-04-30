@@ -526,24 +526,38 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
     cam_rgb.setFps(rgb_fps)
     cam_rgb.setIspScale(1, 2)              # 540p ISP for cheaper compression
     cam_rgb.setInterleaved(False)
-    cam_rgb.initialControl.setAutoFocusMode(
-        dai.RawCameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
-    # Auto-exposure ceiling — without this, the IMX378 AE picks
-    # whatever exposure it needs for "correct" brightness, often
-    # 33-67 ms in indoor light, which mathematically caps framerate
-    # at 1/exposure (15-30 fps regardless of setFps). The OAK-D Pro
-    # AF needs a hard exposure ceiling to actually deliver the 60 Hz
-    # we asked for. 8 ms ceiling = 125 fps headroom; AE will then
-    # raise ISO/gain to compensate. For HSV detection of a saturated
-    # orange ball this is fine — color stays stable up to ISO 3200
-    # on this sensor. Bump via OAK_AE_MAX_EXP_US if the GUI feed
-    # is too dark in your room.
+    # Manual focus + manual exposure to deterministically hit 60 fps.
+    # CONTINUOUS_VIDEO autofocus pauses the sensor while it refocuses
+    # (well-documented FPS killer on OAK-D Pro AF); auto-exposure
+    # ignored our setAutoExposureLimit and stayed at ~67 ms exposure
+    # in the 11:44 UTC test, capping us to ~15 Hz. Both modes are
+    # replaced with fixed values, env-overridable for tuning:
+    #   OAK_FOCUS_POS    — 0=infinity, 255=closest macro. Default 145
+    #                      ≈ 50-60 cm; the platform sits at ~600 mm.
+    #   OAK_EXP_US       — exposure time per frame in µs. Default
+    #                      8000 (= 1/125 s). Cap is 1/exposure, so
+    #                      8 ms allows up to 125 fps; 16 ms allows
+    #                      62 fps; 33 ms caps at 30 fps.
+    #   OAK_ISO          — analog gain. Default 800. Raise to brighten
+    #                      (1600 / 3200) at the cost of more noise;
+    #                      HSV detection holds up to ~3200.
     try:
-        ae_max_exp = max(500, min(33000,
-            int(os.environ.get('OAK_AE_MAX_EXP_US', '8000'))))
+        focus_pos = max(0, min(255,
+            int(os.environ.get('OAK_FOCUS_POS', '145'))))
     except Exception:
-        ae_max_exp = 8000
-    cam_rgb.initialControl.setAutoExposureLimit(ae_max_exp)
+        focus_pos = 145
+    try:
+        exp_us = max(500, min(33000,
+            int(os.environ.get('OAK_EXP_US', '8000'))))
+    except Exception:
+        exp_us = 8000
+    try:
+        iso = max(100, min(6400,
+            int(os.environ.get('OAK_ISO', '800'))))
+    except Exception:
+        iso = 800
+    cam_rgb.initialControl.setManualFocus(focus_pos)
+    cam_rgb.initialControl.setManualExposure(exp_us, iso)
 
     # Mono left — raw output for ArUco pose recovery
     mono_l = pipeline.create(dai.node.MonoCamera)
@@ -978,8 +992,9 @@ class OakDriverNode(Node):
                 'rgb_fps': int(self._rgb_fps_used),
                 'mono_fps': int(self._mono_fps_used),
                 'jpeg_quality': int(self._jpeg_quality_used),
-                'ae_max_exp_us': int(os.environ.get(
-                    'OAK_AE_MAX_EXP_US', '8000')),
+                'focus_pos': int(os.environ.get('OAK_FOCUS_POS', '145')),
+                'exp_us':    int(os.environ.get('OAK_EXP_US', '8000')),
+                'iso':       int(os.environ.get('OAK_ISO', '800')),
                 'enable_depth': bool(self.enable_depth),
                 'mask_v0_to_platform': bool(self.mask_v0_to_platform),
                 'usb_speed': os.environ.get('OAK_USB_SPEED', '?'),
