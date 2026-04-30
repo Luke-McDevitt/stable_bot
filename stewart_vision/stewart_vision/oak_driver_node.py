@@ -64,18 +64,13 @@ RGB_W, RGB_H = 960, 540
 # Mono cameras at THE_800_P native (1280 × 800).
 MONO_W, MONO_H = 1280, 800
 
-# V0 small-frame size — fed by an on-device ImageManip downscaler.
-# Detection runs on the 320×180 BGR888p stream so the Pi only has to
-# threshold ~57k pixels per frame instead of 518k, and USB-2 bandwidth
-# drops from ~93 MB/s @ 60 Hz to ~10 MB/s @ 60 Hz. The detector output
-# (cx, cy, r) is multiplied back up by V0_SCALE before publishing so
-# downstream consumers (ball_localizer, ref_generator, GUI) see the
-# same 540p coordinate space they always have.
-# 320 = 960/3 — chosen because 320 is a multiple of 16 (ImageManip's
-# warp engine requirement) and the 3× scale-up keeps the math clean.
+# Phase 2B reference target — when on-device V0 (NN blob) lands, the
+# detector will run on a 320×180 ImageManip output. Kept here as a
+# spec'd dimension for the blob's input shape; not consumed by the
+# current pipeline (Phase 2A's downscale was reverted because the cv2
+# detector struggled with a 5-px-radius ball). See
+# docs/oak_phase2b_on_device_v0.md.
 V0_W, V0_H = 320, 180
-V0_SCALE_X = float(RGB_W) / float(V0_W)
-V0_SCALE_Y = float(RGB_H) / float(V0_H)
 
 
 # --- V0 color-threshold detector ---------------------------------------------
@@ -85,10 +80,7 @@ V0_SCALE_Y = float(RGB_H) / float(V0_H)
 # in the GUI's vision-debug panel.
 HSV_LO = np.array([5,   140, 90], dtype=np.uint8)   # H,S,V lower
 HSV_HI = np.array([22,  255, 255], dtype=np.uint8)  # H,S,V upper
-# 60 px @ 540p (60/(960*540)=0.0001 of frame). At V0_W×V0_H
-# (320×180) the same fraction is 60/9 ≈ 7. Floor at a small absolute
-# value so noise blobs of 1-2 px get rejected even at low res.
-MIN_CONTOUR_AREA_PX = 7
+MIN_CONTOUR_AREA_PX = 60
 
 
 def detect_ball_v0(rgb_bgr: np.ndarray,
@@ -571,21 +563,15 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
         return out
 
     add_out('rgb_jpeg', enc_rgb.bitstream)
-    # On-device downscale for V0: 540p → 320×180 BGR888p. ImageManip
-    # uses the RVC2 warp engines and is sub-millisecond at this scale.
-    # Sending only this small frame to the host (instead of the raw
-    # 540p stream) is what makes the 60 Hz target achievable on USB-2;
-    # see V0_W/V0_H notes near the top of this file. Phase 2B (TODO)
-    # would replace the Pi-side cv2 detector with an on-device NN
-    # blob (Kornia HSV → centroid) wired ImageManip → NeuralNetwork
-    # → XLinkOut, dropping per-detection USB cost from ~170 KB to
-    # ~16 B.  See docs/oak_phase2b_on_device_v0.md.
-    v0_manip = pipeline.create(dai.node.ImageManip)
-    v0_manip.initialConfig.setResize(V0_W, V0_H)
-    v0_manip.initialConfig.setFrameType(dai.RawImgFrame.Type.BGR888p)
-    v0_manip.setMaxOutputFrameSize(V0_W * V0_H * 3)
-    cam_rgb.video.link(v0_manip.inputImage)
-    add_out('rgb_v0',   v0_manip.out)              # downscaled for V0
+    # Full-resolution raw RGB for V0 detection. We tried an on-device
+    # ImageManip downscale to 320×180 (Phase 2A, 2026-04-30) to save
+    # USB bandwidth; on USB-3 that wasn't binding, but the small frame
+    # made the cv2 HSV+contour detector flaky (ball ~5 px radius is
+    # right on the morph-open cliff edge). Bag data showed V0 success
+    # rate dropping from 8 Hz to <2 Hz. Reverted — Phase 2B's on-device
+    # NN path (see docs/oak_phase2b_on_device_v0.md) remains the right
+    # move once a custom .blob is compiled.
+    add_out('rgb_raw',  cam_rgb.video)             # uncompressed for V0
     add_out('left',     mono_l.out)                # raw mono left for ArUco
 
     if not enable_depth:
@@ -806,7 +792,7 @@ class OakDriverNode(Node):
         # We'd rather skip frames than serve stale ones to the
         # controller — see oscillating-latency observation 2026-04-29.
         self.q_rgb_jpeg = self.device.getOutputQueue('rgb_jpeg', 1, False)
-        self.q_rgb_v0   = self.device.getOutputQueue('rgb_v0',   1, False)
+        self.q_rgb_raw  = self.device.getOutputQueue('rgb_raw',  1, False)
         self.q_left     = self.device.getOutputQueue('left',     1, False)
         # Spatial output / SLC config queues — only present when depth
         # is enabled. _tick guards on these being non-None.
@@ -848,18 +834,13 @@ class OakDriverNode(Node):
         self._last_pose: Optional[PoseStamped] = None
         self._mask_pose_stamp: Optional[float] = None
         self._platform_mask: Optional[np.ndarray] = None
-        # V0_W × V0_H downsample of _platform_mask, cached so the
-        # cv2.resize doesn't run every tick. Refreshed alongside
-        # _platform_mask in _refresh_mask_if_stale.
-        self._platform_mask_v0: Optional[np.ndarray] = None
         # Tighter mask for the depth-blob detector that lives inside
         # the ArUco marker ring (radius ~120 mm), so the marker
         # mounting frame can't be the largest above-plane component.
         self._platform_depth_mask: Optional[np.ndarray] = None
         self._expected_depth: Optional[np.ndarray] = None
-        # Latest V0-resolution RGB frame (V0_W × V0_H), cached for the
-        # depth-debug overlay. _tick already pulls this for V0; we
-        # stash a reference so the depth-blob renderer can draw on it.
+        # Latest RGB raw frame, cached for the depth-debug overlay.
+        # _tick already gets RGB raw for V0; we just stash it.
         self._last_rgb_bgr: Optional[np.ndarray] = None
         # Diagnostic counters — published every 5 s so we can tell at
         # a glance where the V0 / depth-blob pipeline is dying when
@@ -1029,19 +1010,12 @@ class OakDriverNode(Node):
             self.K_rgb, self.dist_rgb, R_pose, t_pose)
         if poly is None:
             self._platform_mask = None
-            self._platform_mask_v0 = None
             self._platform_depth_mask = None
             self._expected_depth = None
             self._mask_pose_stamp = stamp_s
             return
         # cv2 image axes are (row=H, col=W).
         self._platform_mask = _platform_image_mask((RGB_H, RGB_W), poly)
-        # Downsampled mask in V0 image-space — V0 reads the 320×180
-        # ImageManip output, so the mask must match. INTER_NEAREST
-        # preserves the 0/255 binary nature.
-        self._platform_mask_v0 = cv2.resize(
-            self._platform_mask, (V0_W, V0_H),
-            interpolation=cv2.INTER_NEAREST)
         # Tight mask for depth-blob: inside the marker ring, so the
         # raised marker hardware doesn't win the largest-blob contest.
         depth_poly = _project_platform_polygon(
@@ -1096,15 +1070,13 @@ class OakDriverNode(Node):
             except Exception:
                 pass
 
-        # RGB (downscaled to V0_W × V0_H by on-device ImageManip)
-        # → V0 detector → /oak/ball/v0/rgb_pixel.
+        # RGB raw → V0 detector → /oak/ball/v0/rgb_pixel.
         # TODO(phase2b): replace this Pi-side cv2 detector with an
-        # on-device NeuralNetwork node so the Pi only receives a
-        # ~16 B NNData packet instead of a 320×180 BGR frame. See
-        # docs/oak_phase2b_on_device_v0.md.
-        rgb_v0 = self.q_rgb_v0.tryGet()
-        if rgb_v0 is not None:
-            frame = rgb_v0.getCvFrame()  # BGR uint8 at V0_W × V0_H
+        # on-device NeuralNetwork node so V0 doesn't depend on the host
+        # CPU at all. See docs/oak_phase2b_on_device_v0.md.
+        rgb_raw = self.q_rgb_raw.tryGet()
+        if rgb_raw is not None:
+            frame = rgb_raw.getCvFrame()  # BGR uint8
             self._last_rgb_bgr = frame
             # Translate the OAK frame timestamp into ROS-clock space
             # so /ball_xy_mono and /ball_state carry the actual capture
@@ -1114,7 +1086,7 @@ class OakDriverNode(Node):
             # clock have different epochs (steady vs system), so we
             # compute the live offset and apply it.
             try:
-                capture_dai = rgb_v0.getTimestamp().total_seconds()
+                capture_dai = rgb_raw.getTimestamp().total_seconds()
                 now_dai = dai.Clock.now().total_seconds()
                 age_s = max(0.0, now_dai - capture_dai)
                 ros_capture = self.get_clock().now() - Duration(
@@ -1122,20 +1094,10 @@ class OakDriverNode(Node):
                 v0_stamp = ros_capture.to_msg()
             except Exception:
                 v0_stamp = self.get_clock().now().to_msg()
-            v0_mask = (self._platform_mask_v0
-                       if (self.mask_v0_to_platform
-                           and self._platform_mask_v0 is not None)
-                       else None)
+            v0_mask = self._platform_mask if self.mask_v0_to_platform else None
             det = detect_ball_v0(frame, restrict_mask=v0_mask)
             if det is not None:
                 cx, cy, r, conf = det
-                # Map the small-frame detection back into the canonical
-                # 540p coordinate space — ball_localizer's K_rgb and the
-                # SLC ROI normalization both reference RGB_W/RGB_H, so
-                # downstream consumers must see 540p pixels.
-                cx *= V0_SCALE_X
-                cy *= V0_SCALE_Y
-                r *= V0_SCALE_X       # pixel radius scales with width
                 p = PointStamped()
                 p.header.stamp = v0_stamp
                 p.header.frame_id = 'oak_rgb'
@@ -1326,19 +1288,8 @@ class OakDriverNode(Node):
                             and self._last_rgb_bgr is not None):
                         n_above = (int(np.sum(above_mask > 0))
                                    if above_mask is not None else 0)
-                        # _last_rgb_bgr is V0_W×V0_H after Phase 2A;
-                        # the depth-derived masks are still 540p so we
-                        # have to resize the RGB up for shape parity
-                        # with the masks. depth_debug is opt-in via
-                        # OAK_DEPTH_DEBUG, so the upscale cost only
-                        # hits when debugging.
-                        rgb_for_dbg = self._last_rgb_bgr
-                        if rgb_for_dbg.shape[:2] != (RGB_H, RGB_W):
-                            rgb_for_dbg = cv2.resize(
-                                rgb_for_dbg, (RGB_W, RGB_H),
-                                interpolation=cv2.INTER_LINEAR)
                         dbg = render_depth_debug_overlay(
-                            rgb_for_dbg,
+                            self._last_rgb_bgr,
                             self._platform_depth_mask, eroded_mask,
                             above_mask, blob_for_dbg,
                             plane_offset_mm, n_above=n_above)
