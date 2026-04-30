@@ -1,0 +1,84 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T022607Z_demo1",
+  "demo_label": "demo1",
+  "duration_s": 27.347268721000003,
+  "topic_counts": {
+    "/ball_ref": 205,
+    "/ball_state": 2138,
+    "/ball_xy_depth": 42,
+    "/ball_xy_mono": 1501,
+    "/control_cmd": 7,
+    "/control_result": 0,
+    "/leg_currents": 520,
+    "/leg_encoders": 520,
+    "/oak/ball/depth/diagnostic": 251,
+    "/oak/ball/depth/rgb_pixel": 43,
+    "/oak/ball/v0/diagnostic": 254,
+    "/oak/ball/v0/rgb_pixel": 254,
+    "/odrive_errors": 53,
+    "/platform/imu/data": 8119,
+    "/platform_pose": 235,
+    "/platform_pose/markers_visible": 235,
+    "/platform_rpy": 519,
+    "/status": 53
+  },
+  "gains_at_record": {
+    "kp": 0.03,
+    "kd": 0.005,
+    "ki": 0.0,
+    "max_tilt_deg": 3.0,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0
+  },
+  "ball_state_n": 2138,
+  "ball_ref_n": 205,
+  "mono_n": 1501,
+  "depth_n": 42,
+  "error_mm": {
+    "n": 246,
+    "mean": 121.57574435903246,
+    "std": 42.151383429956354,
+    "rms": 128.6755638865127,
+    "p50": 119.39209303517606,
+    "p95": 196.96447792098067,
+    "min": 36.85604623344403,
+    "max": 248.99679608933204
+  },
+  "error_x_mm": {
+    "n": 246,
+    "mean": 88.99995332544749,
+    "std": 34.490125579261836,
+    "rms": 95.44925591331284,
+    "p50": 95.29437535377728,
+    "p95": 134.5280181207055,
+    "min": 12.27982738928307,
+    "max": 136.4118146666925
+  },
+  "error_y_mm": {
+    "n": 246,
+    "mean": 19.52898029601531,
+    "std": 84.05628599756693,
+    "rms": 86.29507684165372,
+    "p50": -20.91832461949768,
+    "p95": 190.1361024555512,
+    "min": -54.80114803461343,
+    "max": 248.0691700558618
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 235,
+    "mean": 813.3019920778581,
+    "std": 0.7127180196780852,
+    "rms": 813.302304364612,
+    "p50": 813.3822501690349,
+    "p95": 813.8865886303303,
+    "min": 808.1288436507704,
+    "max": 819.0968055440271
+  },
+  "markers_visible": {
+    "n": 235,
+    "mean": 7.863829787234042,
+    "min": 6,
+    "max": 9
+  }
+}
