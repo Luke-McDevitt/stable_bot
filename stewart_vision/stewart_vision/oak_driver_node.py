@@ -483,7 +483,7 @@ def _load_rgb_intrinsics(yaml_path: str) -> Tuple[Optional[np.ndarray],
 
 # --- DepthAI pipeline builder ------------------------------------------------
 
-def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 60,
+def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
                     enable_depth: bool = False):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
@@ -726,14 +726,24 @@ class OakDriverNode(Node):
         # work stays cheap. Drop to 30 Hz first if you see USB
         # brownouts (X_LINK_ERROR in the logs); the JPEG encoder
         # tracks rgb_fps, so this also affects the GUI MJPEG rate.
+        #
+        # Mono is intentionally LEFT at 15 Hz: the OV9282 mono cameras
+        # ship raw uncompressed frames over USB (1.28×0.8 MB/frame =
+        # 1.0 MB), so 60 Hz mono = 61 MB/s per camera. That alone is
+        # 2× USB-2's ~35 MB/s sustained ceiling; with depth enabled
+        # (mono right + depth-aligned 540p uint16) it's >5×. The OAK
+        # silently throttles itself to fit, dragging RGB and V0 down
+        # with it. ArUco doesn't need fast pose updates — /platform_pose
+        # was already 10 Hz before any FPS bump — so the mono fast-path
+        # would just burn USB for no controller benefit.
         try:
             rgb_fps = max(5, min(120, int(os.environ.get('OAK_RGB_FPS', '60'))))
         except Exception:
             rgb_fps = 60
         try:
-            mono_fps = max(5, min(120, int(os.environ.get('OAK_MONO_FPS', '60'))))
+            mono_fps = max(5, min(60, int(os.environ.get('OAK_MONO_FPS', '15'))))
         except Exception:
-            mono_fps = 60
+            mono_fps = 15
         self.get_logger().info(
             f"Building OAK pipeline (rgb={rgb_fps} Hz, mono={mono_fps} Hz)…")
         pipeline = _build_pipeline(rgb_fps=rgb_fps, mono_fps=mono_fps,

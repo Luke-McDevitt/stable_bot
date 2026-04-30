@@ -110,6 +110,10 @@ DEMO_TOPICS = [
     '/oak/ball/v0/diagnostic',
     '/oak/ball/depth/rgb_pixel',
     '/oak/ball/depth/diagnostic',
+    # See-to-Pi latency (capture→host wall-clock from the OAK driver).
+    # Lets digest_demo_bag plot the actual vision lag the controller
+    # is fighting — independent of any control_latency_s constant.
+    '/oak/latency_ms',
     # Pose ground truth
     '/platform_pose',
     '/platform_pose/markers_visible',

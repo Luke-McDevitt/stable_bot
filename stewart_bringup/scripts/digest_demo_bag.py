@@ -197,6 +197,7 @@ def _read_bag(bag_dir: str):
     enc_t,   enc_data = [], []
     cur_t,   cur_data = [], []
     bt_diag_t, bt_diag = [], []   # ball_track FSM diagnostic
+    lat_t,   lat_ms   = [], []     # /oak/latency_ms (capture→Pi)
 
     while reader.has_next():
         topic, raw, t_ns = reader.read_next()
@@ -265,6 +266,13 @@ def _read_bag(bag_dir: str):
             if len(d) >= 6:
                 cur_t.append(t_ns)
                 cur_data.append([float(x) for x in d[:6]])
+        elif topic == '/oak/latency_ms':
+            # Float32: OAK capture-to-Pi-receipt wall-clock lag in ms.
+            try:
+                lat_t.append(t_ns)
+                lat_ms.append(float(msg.data))
+            except Exception:
+                pass
         elif topic == '/ball_track/diagnostic':
             d = list(msg.data)
             # Field layout (see stewart_control_node._ball_track_run):
@@ -302,6 +310,9 @@ def _read_bag(bag_dir: str):
                   np.array(cur_data) if cur_data else np.zeros((0, 6))),
         'bt_diag': (np.array(bt_diag_t, dtype=np.int64),
                     np.array(bt_diag) if bt_diag else np.zeros((0, 11))),
+        'lat':   (np.array(lat_t, dtype=np.int64),
+                  np.array(lat_ms, dtype=np.float64) if lat_ms
+                  else np.zeros((0,), dtype=np.float64)),
     }
 
 
@@ -389,6 +400,7 @@ def digest(bag_dir: str):
     mark_t, mark_n = data['mark']
     enc_t, enc_data = data['enc']
     cur_t, cur_data = data['cur']
+    lat_t, lat_ms = data['lat']
 
     # Bag-relative origin.
     cands = []
@@ -447,6 +459,7 @@ def digest(bag_dir: str):
         'error_y_mm': _stats(err_xy[:, 1]) if err_xy.size else {'n': 0},
         'settling_time_s': settling,
         'platform_pose_z_mm': _stats(pose_z),
+        'oak_latency_ms': _stats(lat_ms),
         'markers_visible': {
             'n': int(mark_t.size),
             'mean': float(np.mean(mark_n)) if mark_n.size else None,
