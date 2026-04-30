@@ -1,0 +1,106 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T032051Z_demo1",
+  "demo_label": "demo1",
+  "demo_mode": "BALL_TRACK_TRAJECTORY",
+  "demo_params": {
+    "radius_mm": 80,
+    "dir": "CCW",
+    "phase_rad": 0,
+    "mode": "waypoint",
+    "period_s": 12,
+    "n_waypoints": 24,
+    "arrival_tol_mm": 20,
+    "dwell_s": 0.3,
+    "max_wait_s": 14,
+    "ball": {
+      "type": "foam",
+      "label": "Foam (40 mm, mass-matched, solid)",
+      "diameter_mm": 40,
+      "radius_mm": 20,
+      "mass_g": 2.7,
+      "density": "solid",
+      "moi_factor": 0.4,
+      "alpha": 0.7142857142857143
+    }
+  },
+  "duration_s": 13.869031167000001,
+  "topic_counts": {
+    "/ball_ref": 314,
+    "/ball_state": 1175,
+    "/ball_xy_depth": 36,
+    "/ball_xy_mono": 760,
+    "/control_cmd": 7,
+    "/control_result": 0,
+    "/leg_currents": 270,
+    "/leg_encoders": 271,
+    "/oak/ball/depth/diagnostic": 100,
+    "/oak/ball/depth/rgb_pixel": 36,
+    "/oak/ball/v0/diagnostic": 100,
+    "/oak/ball/v0/rgb_pixel": 100,
+    "/odrive_errors": 27,
+    "/platform/imu/data": 4313,
+    "/platform_pose": 100,
+    "/platform_pose/markers_visible": 100,
+    "/platform_rpy": 270,
+    "/status": 28
+  },
+  "gains_at_record": {
+    "kp": 0.05,
+    "kd": 0.005,
+    "ki": 0.0,
+    "max_tilt_deg": 2.5,
+    "pitch_sign": -1.0,
+    "roll_sign": -1.0
+  },
+  "ball_state_n": 1175,
+  "ball_ref_n": 314,
+  "mono_n": 760,
+  "depth_n": 36,
+  "error_mm": {
+    "n": 450,
+    "mean": 218.0095991881757,
+    "std": 99.56407986445569,
+    "rms": 239.66892025760185,
+    "p50": 286.7220867895162,
+    "p95": 287.9972696242758,
+    "min": 51.09207964544342,
+    "max": 450.5365155554275
+  },
+  "error_x_mm": {
+    "n": 450,
+    "mean": -86.74475169343081,
+    "std": 108.74582464524772,
+    "rms": 139.10537848742564,
+    "p50": -161.16043870947573,
+    "p95": 116.13581200502266,
+    "min": -313.8992394789116,
+    "max": 186.76823823548048
+  },
+  "error_y_mm": {
+    "n": 450,
+    "mean": -174.49526417052797,
+    "std": 87.42017956611872,
+    "rms": 195.16886281708665,
+    "p50": -236.78295048785105,
+    "p95": -51.630138898645775,
+    "min": -323.1879009235755,
+    "max": -48.851764559021284
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 100,
+    "mean": 810.7340803066289,
+    "std": 0.6546444532636949,
+    "rms": 810.7343446098702,
+    "p50": 810.7136519384651,
+    "p95": 811.8694725383262,
+    "min": 809.4842230653566,
+    "max": 813.105388759744
+  },
+  "markers_visible": {
+    "n": 100,
+    "mean": 7.92,
+    "min": 7,
+    "max": 8
+  }
+}
