@@ -831,6 +831,13 @@ class OakDriverNode(Node):
         # produces (cx_norm, cy_norm, conf) via XLink — Pi receives
         # ~16 B per detection instead of a 1.5 MB raw frame. Falls
         # back to cv2 silently if the requested .blob isn't on disk.
+        # `OAK_V0_BACKEND` sets the *initial* backend at boot. The
+        # selection is also runtime-switchable via the /oak/cmd_v0_backend
+        # topic — gui_server.py exposes a button so the operator can
+        # A/B compare without restarting. When a blob is present we
+        # build BOTH the cv2 (rgb_raw) and NN (v0_nn) pipelines and
+        # only publish from one at a time, so toggling has zero
+        # rebuild cost.
         self.v0_backend = os.environ.get('OAK_V0_BACKEND', 'cv2').lower()
         if self.v0_backend not in ('cv2', 'nn'):
             self.get_logger().warn(
@@ -838,7 +845,10 @@ class OakDriverNode(Node):
                 f"falling back to cv2.")
             self.v0_backend = 'cv2'
         self._v0_blob_path = None
-        if self.v0_backend == 'nn':
+        # Always look for the blob so the NN pipeline is available at
+        # runtime if the operator flips the toggle. Set non-None even
+        # when starting in cv2 mode if the file exists.
+        if True:
             # Search the package's installed share dir + the source
             # repo so we work both in colcon-symlink-installed mode
             # and in the dev-machine direct-import case.
@@ -858,16 +868,19 @@ class OakDriverNode(Node):
                     self._v0_blob_path = p
                     break
             if self._v0_blob_path is None:
-                self.get_logger().warn(
-                    f"OAK_V0_BACKEND=nn requested but no blob found at "
-                    f"any of: {candidates}. Falling back to cv2 backend. "
-                    f"Build with stewart_vision/scripts/build_v0_blob.py.")
-                self.v0_backend = 'cv2'
+                if self.v0_backend == 'nn':
+                    self.get_logger().warn(
+                        f"OAK_V0_BACKEND=nn requested but no blob found "
+                        f"at any of: {candidates}. Falling back to cv2 "
+                        f"backend. Build with "
+                        f"stewart_vision/scripts/build_v0_blob.py.")
+                    self.v0_backend = 'cv2'
             else:
                 self.get_logger().info(
-                    f"V0 backend: NN  blob={self._v0_blob_path}")
-        if self.v0_backend == 'cv2':
-            self.get_logger().info("V0 backend: cv2 (host HSV+contour)")
+                    f"V0 NN blob available: {self._v0_blob_path}")
+        self.get_logger().info(
+            f"V0 backend (initial): {self.v0_backend}  "
+            f"(switch at runtime via /oak/cmd_v0_backend)")
         # Boot banner — prints the git sha of the running code so
         # we can verify a `git pull` actually took effect after a
         # restart. If the SHA in the journal doesn't match `git
@@ -1083,6 +1096,11 @@ class OakDriverNode(Node):
 
         self.create_subscription(
             PoseStamped, '/platform_pose', self._on_pose, 10)
+        # Runtime backend toggle. GUI publishes "cv2" or "nn" here;
+        # invalid payloads are ignored. Switching to NN with no blob
+        # logs a warning and stays on cv2.
+        self.create_subscription(
+            String, '/oak/cmd_v0_backend', self._on_v0_backend_cmd, 1)
 
         # Half-width of the depth ROI around the V0 pixel, in
         # normalized RGB coordinates. 24 px (48 px wide ROI) covers
@@ -1136,6 +1154,31 @@ class OakDriverNode(Node):
         _refresh_mask_if_stale."""
         self._last_pose = msg
         self._n_pose += 1
+
+    def _on_v0_backend_cmd(self, msg: String):
+        """Runtime toggle of the V0 backend (cv2 ⇄ nn). Both pipelines
+        are built at startup if a blob is available, so the switch is
+        just an in-memory flag flip — no pipeline rebuild, no service
+        restart. /oak/config publishes the new state on its next tick."""
+        wanted = (msg.data or '').strip().lower()
+        if wanted not in ('cv2', 'nn'):
+            self.get_logger().warn(
+                f"/oak/cmd_v0_backend: unknown payload {wanted!r} "
+                f"(expected 'cv2' or 'nn')")
+            return
+        if wanted == 'nn' and self.q_v0_nn is None:
+            self.get_logger().warn(
+                "/oak/cmd_v0_backend=nn but no NN blob loaded — "
+                "build with stewart_vision/scripts/build_v0_blob.py "
+                "and rebuild the package. Staying on cv2.")
+            return
+        if wanted == self.v0_backend:
+            return
+        self.v0_backend = wanted
+        # Push a config snapshot immediately so subscribers see the
+        # switch without waiting for the 5 s tick.
+        self._publish_config_snapshot()
+        self.get_logger().info(f"V0 backend switched to: {wanted}")
 
     def _log_pipeline_health(self):
         """Periodic snapshot so we can tell which stage of the V0 /
@@ -1396,8 +1439,12 @@ class OakDriverNode(Node):
             if nn_msg is not None:
                 self._n_v0_attempts += 1
                 try:
-                    out = nn_msg.getFirstLayerFp16()  # list[float] len 3
-                    cx_n, cy_n, conf = float(out[0]), float(out[1]), float(out[2])
+                    # Model output shape is (1, 3, 1, 1) — three FP16
+                    # values flattened. Index [0]=cx, [1]=cy, [2]=conf.
+                    out = nn_msg.getFirstLayerFp16()
+                    cx_n = float(out[0])
+                    cy_n = float(out[1])
+                    conf = float(out[2])
                 except Exception:
                     cx_n, cy_n, conf = float('nan'), float('nan'), 0.0
                 # NN normalised coords (V0_W × V0_H frame) → 540p coords

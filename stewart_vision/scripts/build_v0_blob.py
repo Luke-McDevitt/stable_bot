@@ -94,6 +94,21 @@ class V0Detector(nn.Module):
             self.score.weight.data = torch.tensor(
                 [[[[W_B]], [[W_G]], [[W_R]]]], dtype=torch.float32)
             self.score.bias.data = torch.tensor([BIAS], dtype=torch.float32)
+        # Precompute coordinate grids as buffers — they serialize as
+        # ONNX Constants which OpenVINO IR handles cleanly. Doing
+        # `torch.arange` inside forward() produces a Range op that
+        # OpenVINO 2022.1 (the blobconverter default) sometimes fails
+        # on with "Const layer ... has incorrect dimensions".
+        ys = torch.arange(NN_H, dtype=torch.float32).view(1, 1, NN_H, 1)
+        xs = torch.arange(NN_W, dtype=torch.float32).view(1, 1, 1, NN_W)
+        self.register_buffer('ys_grid', ys / float(NN_H))   # already / H
+        self.register_buffer('xs_grid', xs / float(NN_W))   # already / W
+        # 1-D shape (not 0-D) — OpenVINO 2022.1's IR converter has
+        # trouble with 0-D constants under some op compositions.
+        self.register_buffer(
+            'inv_area',
+            torch.tensor([1.0 / float(NN_H * NN_W)],
+                         dtype=torch.float32))
 
     def forward(self, bgr_uint8: torch.Tensor) -> torch.Tensor:
         # bgr_uint8: (1, 3, H, W) in [0, 255], BGR planar.
@@ -101,28 +116,26 @@ class V0Detector(nn.Module):
         s = self.score(x)                 # (1, 1, H, W)
         m = torch.relu(s - SCORE_FLOOR)   # zero out non-ball pixels
 
-        # Soft argmax — weighted centroid of m. Static shape so the
-        # OpenVINO front-end picks up the index tensors as constants.
-        H = bgr_uint8.shape[-2]
-        W = bgr_uint8.shape[-1]
-        ys = torch.arange(H, dtype=torch.float32).view(1, 1, H, 1)
-        xs = torch.arange(W, dtype=torch.float32).view(1, 1, 1, W)
-        # Move to model's device (no-op on CPU export, harmless on GPU).
-        ys = ys.to(m.device)
-        xs = xs.to(m.device)
+        # Use adaptive_avg_pool2d for global reductions instead of
+        # `.sum()` + `.stack()`. Pool ops keep the 4-D shape, sidestep
+        # the 0-D-scalar / concat-axis corner cases that bit OpenVINO
+        # 2022.1 with the previous version.
+        m_avg = nn.functional.adaptive_avg_pool2d(m, 1)        # (1,1,1,1)
+        mx_avg = nn.functional.adaptive_avg_pool2d(
+            m * self.xs_grid, 1)                               # (1,1,1,1)
+        my_avg = nn.functional.adaptive_avg_pool2d(
+            m * self.ys_grid, 1)                               # (1,1,1,1)
 
-        # Add a tiny constant so the divisor is never zero — empty-mask
-        # case still produces a finite (cx, cy) at the frame center.
-        denom = m.sum() + 1e-3
-        cx = (m * xs).sum() / denom / float(W)
-        cy = (m * ys).sum() / denom / float(H)
-
-        # Confidence: how much of the frame the score-positive pixels
-        # cover. Above ~0.001 means the ball was seen.
-        n_above = (m > 0.0).to(torch.float32).sum()
-        conf = n_above / float(H * W)
-
-        return torch.stack([cx, cy, conf])
+        # Centroid = (sum of m*xs) / (sum of m); the H*W divisor in
+        # both adaptive-avg-pool ops cancels. xs_grid / ys_grid are
+        # already pre-normalized to [0, 1].
+        denom = m_avg + 1e-6
+        cx = mx_avg / denom                                    # (1,1,1,1)
+        cy = my_avg / denom                                    # (1,1,1,1)
+        # Output shape (1, 3, 1, 1). Host unpacks three floats from
+        # NNData.getFirstLayerFp16(). Concat along channel axis is
+        # well-supported by OpenVINO IR.
+        return torch.cat([cx, cy, m_avg], dim=1)
 
 
 # ---- ONNX export + blobconverter --------------------------------------------
@@ -131,16 +144,45 @@ def export_onnx(model: V0Detector, out_path: str) -> None:
     model.eval()
     # Static-shape dummy input: blobconverter wants no dynamic axes.
     dummy = torch.zeros((1, 3, NN_H, NN_W), dtype=torch.uint8)
-    torch.onnx.export(
-        model,
-        dummy,
-        out_path,
-        input_names=['bgr_uint8'],
-        output_names=['cxcyconf'],
-        opset_version=12,
-        do_constant_folding=True,
-        dynamic_axes=None,
-    )
+    # Modern torch's onnx exporter sometimes externalizes weight
+    # tensors into a sidecar `.onnx.data` file even for tiny models;
+    # blobconverter's cloud service rejects that with "invalid
+    # external data". Force the legacy exporter (dynamo=False) and
+    # then re-save the ONNX flattened (save_as_external_data=False)
+    # to guarantee a single self-contained file.
+    try:
+        torch.onnx.export(
+            model, dummy, out_path,
+            input_names=['bgr_uint8'],
+            output_names=['cxcyconf'],
+            opset_version=12,
+            do_constant_folding=True,
+            dynamic_axes=None,
+            dynamo=False,
+        )
+    except TypeError:
+        # Older torch (< 2.5) doesn't accept `dynamo=`.
+        torch.onnx.export(
+            model, dummy, out_path,
+            input_names=['bgr_uint8'],
+            output_names=['cxcyconf'],
+            opset_version=12,
+            do_constant_folding=True,
+            dynamic_axes=None,
+        )
+    # Re-save inline so blobconverter sees a single file with no
+    # ExternalDataInfo references.
+    try:
+        import onnx as _onnx
+        m = _onnx.load(out_path)
+        _onnx.save_model(m, out_path, save_as_external_data=False)
+        # Clean up any sidecar that the first export wrote.
+        sidecar = out_path + '.data'
+        if os.path.isfile(sidecar):
+            os.remove(sidecar)
+    except Exception as e:
+        print(f"[build_v0_blob] WARN: failed to flatten ONNX: {e}",
+              file=sys.stderr)
     print(f"[build_v0_blob] ONNX written to {out_path}")
 
 
@@ -153,11 +195,17 @@ def compile_blob(onnx_path: str, blob_path: str, shaves: int) -> None:
         sys.exit(1)
     print(f"[build_v0_blob] compiling for Myriad X (shaves={shaves}) — "
           f"this calls blobconverter's cloud service, ~30 s")
+    # blobconverter's defaults add `--mean_values=[127.5,...] --scale_values=
+    # [255,...]` which is fine for FP32 inputs but errors out on uint8
+    # ("Mean preprocessing can be applied to float inputs"). Our model
+    # already normalises internally (x = bgr_uint8.float() / 255.0), so
+    # override optimizer_params to drop the auto preprocessing entirely.
     blob = blobconverter.from_onnx(
         model=onnx_path,
         data_type='FP16',
         shaves=shaves,
         version='2022.1',
+        optimizer_params=[],
     )
     # blobconverter returns a path under its cache; copy to our blobs dir.
     import shutil

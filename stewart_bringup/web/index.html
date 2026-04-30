@@ -167,6 +167,22 @@
           <span class="text-yellow-400">yellow</span>&nbsp;&lt;&nbsp;15 mm,
           <span class="text-red-400">red</span>&nbsp;≥&nbsp;15 mm.
         </p>
+        <!-- V0 backend toggle (Phase 2B). Switches detector between
+             host-cv2 and on-device NN at runtime via /oak/cmd_v0_backend.
+             /oak/config snapshot drives the indicator below the buttons. -->
+        <hr class="border-slate-700 my-3"/>
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs text-slate-400">V0 backend:</span>
+          <button id="v0-backend-cv2-btn"
+                  class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-xs">
+            cv2 (host)
+          </button>
+          <button id="v0-backend-nn-btn"
+                  class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-xs">
+            NN (on-device)
+          </button>
+          <span id="v0-backend-status" class="text-xs text-slate-400 mono"></span>
+        </div>
         <!-- Vision-debug bag recorder. Captures everything the
              depth-blob detector sees (RGB, /oak/depth_blob/debug_image
              overlay, V0/depth pixel topics + diagnostics, /platform_pose,
@@ -1940,6 +1956,17 @@ function setupROSInterface() {
     queue_length: 1,
   });
   topic.rgb_feed.subscribe(onRgbFrame);
+
+  // V0 backend toggle (Phase 2B). Subscribe to /oak/config for the
+  // live state, publish to /oak/cmd_v0_backend to switch.
+  topic.oak_config = new ROSLIB.Topic({
+    ros, name: '/oak/config', messageType: 'std_msgs/msg/String' });
+  topic.oak_config.subscribe(m => {
+    try { onOakConfig(JSON.parse(m.data)); } catch (e) {}
+  });
+  topic.oak_v0_backend_cmd = new ROSLIB.Topic({
+    ros, name: '/oak/cmd_v0_backend',
+    messageType: 'std_msgs/msg/String' });
 
   // Annotated depth-blob debug image (toggled via OAK_DEPTH_DEBUG).
   // Not subscribed in the GUI yet — declared for future use; the
@@ -3916,6 +3943,14 @@ function initVisionGUI() {
   vbagPollStatus();
   vbagFetchBags();
 
+  // --- V0 backend toggle (cv2 ⇄ NN) ---
+  const v0Cv2Btn = $('v0-backend-cv2-btn');
+  const v0NnBtn  = $('v0-backend-nn-btn');
+  if (v0Cv2Btn) v0Cv2Btn.addEventListener('click',
+                  () => publishV0Backend('cv2'));
+  if (v0NnBtn)  v0NnBtn.addEventListener('click',
+                  () => publishV0Backend('nn'));
+
   // --- Ball-track gains panel (Demos column) ---
   for (const k of BT_GAIN_KEYS) {
     const el = document.getElementById('bt-g-' + k);
@@ -5591,6 +5626,36 @@ function renderPredPath() {
 function publishCmdRaw(s) {
   if (!topic.control_cmd) return;
   topic.control_cmd.publish(new ROSLIB.Message({ data: s }));
+}
+
+// V0 backend toggle (Phase 2B). Publishes 'cv2' or 'nn' to
+// /oak/cmd_v0_backend; oak_driver flips an in-memory flag and emits
+// a fresh /oak/config snapshot, which onOakConfig() picks up to
+// repaint the buttons.
+function publishV0Backend(which) {
+  if (!topic.oak_v0_backend_cmd) return;
+  topic.oak_v0_backend_cmd.publish(new ROSLIB.Message({ data: which }));
+}
+
+function onOakConfig(cfg) {
+  const status = document.getElementById('v0-backend-status');
+  const cv2Btn = document.getElementById('v0-backend-cv2-btn');
+  const nnBtn  = document.getElementById('v0-backend-nn-btn');
+  if (!cfg) return;
+  const active = (cfg.v0_backend || 'cv2').toLowerCase();
+  // Highlight the active backend; gray out the inactive one.
+  const onClasses = 'bg-emerald-600 hover:bg-emerald-500';
+  const offClasses = 'bg-slate-700 hover:bg-slate-600';
+  for (const [btn, name] of [[cv2Btn, 'cv2'], [nnBtn, 'nn']]) {
+    if (!btn) continue;
+    btn.classList.remove(...onClasses.split(' '),
+                         ...offClasses.split(' '));
+    btn.classList.add(...(active === name ? onClasses : offClasses).split(' '));
+  }
+  if (status) {
+    const blob = cfg.v0_blob ? `blob=${cfg.v0_blob}` : 'no blob loaded';
+    status.innerText = `live: ${active} · ${blob} · exp=${cfg.exp_us}us iso=${cfg.iso}`;
+  }
 }
 
 function setActiveDemo(n) {
