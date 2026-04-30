@@ -1,0 +1,65 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T032216Z_demo1",
+  "demo_label": "demo1",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 4.0673091040000005,
+  "topic_counts": {
+    "/ball_ref": 0,
+    "/ball_state": 308,
+    "/ball_xy_depth": 1,
+    "/ball_xy_mono": 201,
+    "/control_cmd": 2,
+    "/control_result": 0,
+    "/leg_currents": 80,
+    "/leg_encoders": 80,
+    "/oak/ball/depth/diagnostic": 43,
+    "/oak/ball/depth/rgb_pixel": 1,
+    "/oak/ball/v0/diagnostic": 44,
+    "/oak/ball/v0/rgb_pixel": 41,
+    "/odrive_errors": 9,
+    "/platform/imu/data": 1031,
+    "/platform_pose": 34,
+    "/platform_pose/markers_visible": 34,
+    "/platform_rpy": 78,
+    "/status": 9
+  },
+  "gains_at_record": {
+    "kp": 0.03,
+    "kd": 0.006,
+    "ki": 0.0,
+    "max_tilt_deg": 2.5,
+    "pitch_sign": -1.0,
+    "roll_sign": -1.0
+  },
+  "ball_state_n": 308,
+  "ball_ref_n": 0,
+  "mono_n": 201,
+  "depth_n": 1,
+  "error_mm": {
+    "n": 0
+  },
+  "error_x_mm": {
+    "n": 0
+  },
+  "error_y_mm": {
+    "n": 0
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 34,
+    "mean": 809.2088469062514,
+    "std": 2.413537273587117,
+    "rms": 809.2124461929117,
+    "p50": 809.6196375536339,
+    "p95": 812.4691547104568,
+    "min": 801.924700788602,
+    "max": 814.5062044500223
+  },
+  "markers_visible": {
+    "n": 34,
+    "mean": 8.0,
+    "min": 8,
+    "max": 8
+  }
+}
