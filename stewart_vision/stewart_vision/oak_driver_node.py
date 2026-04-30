@@ -528,6 +528,22 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
     cam_rgb.setInterleaved(False)
     cam_rgb.initialControl.setAutoFocusMode(
         dai.RawCameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
+    # Auto-exposure ceiling — without this, the IMX378 AE picks
+    # whatever exposure it needs for "correct" brightness, often
+    # 33-67 ms in indoor light, which mathematically caps framerate
+    # at 1/exposure (15-30 fps regardless of setFps). The OAK-D Pro
+    # AF needs a hard exposure ceiling to actually deliver the 60 Hz
+    # we asked for. 8 ms ceiling = 125 fps headroom; AE will then
+    # raise ISO/gain to compensate. For HSV detection of a saturated
+    # orange ball this is fine — color stays stable up to ISO 3200
+    # on this sensor. Bump via OAK_AE_MAX_EXP_US if the GUI feed
+    # is too dark in your room.
+    try:
+        ae_max_exp = max(500, min(33000,
+            int(os.environ.get('OAK_AE_MAX_EXP_US', '8000'))))
+    except Exception:
+        ae_max_exp = 8000
+    cam_rgb.initialControl.setAutoExposureLimit(ae_max_exp)
 
     # Mono left — raw output for ArUco pose recovery
     mono_l = pipeline.create(dai.node.MonoCamera)
@@ -962,6 +978,8 @@ class OakDriverNode(Node):
                 'rgb_fps': int(self._rgb_fps_used),
                 'mono_fps': int(self._mono_fps_used),
                 'jpeg_quality': int(self._jpeg_quality_used),
+                'ae_max_exp_us': int(os.environ.get(
+                    'OAK_AE_MAX_EXP_US', '8000')),
                 'enable_depth': bool(self.enable_depth),
                 'mask_v0_to_platform': bool(self.mask_v0_to_platform),
                 'usb_speed': os.environ.get('OAK_USB_SPEED', '?'),
