@@ -276,6 +276,58 @@
             red circle is the chosen blob.
           </div>
         </details>
+        <!-- NN weight sliders (on-device color-score). Saving writes
+             stewart_vision/blobs/v0_weights.json. Push commits + pushes
+             that JSON to git. To APPLY changes, the .blob must be
+             rebuilt on a dev machine with PyTorch + blobconverter:
+                 python3 stewart_vision/scripts/build_v0_blob.py
+             then commit + push the new .blob and pi_deploy.sh on Pi. -->
+        <details class="mt-2 bg-slate-900 rounded p-2 border border-slate-700">
+          <summary class="text-xs text-slate-400 cursor-pointer select-none">
+            NN weights (rebuild required to apply)
+          </summary>
+          <div class="grid grid-cols-2 gap-x-3 gap-y-1 mt-2">
+            <label class="text-xs text-slate-400">W_R (red weight)
+              <span id="nn-w-r-val" class="mono text-slate-300 ml-1">1.00</span>
+              <input id="nn-w-r" type="range" min="-3" max="3" step="0.05" value="1.0" class="w-full">
+            </label>
+            <label class="text-xs text-slate-400">W_G (green weight)
+              <span id="nn-w-g-val" class="mono text-slate-300 ml-1">0.40</span>
+              <input id="nn-w-g" type="range" min="-3" max="3" step="0.05" value="0.4" class="w-full">
+            </label>
+            <label class="text-xs text-slate-400">W_B (blue weight)
+              <span id="nn-w-b-val" class="mono text-slate-300 ml-1">-1.50</span>
+              <input id="nn-w-b" type="range" min="-3" max="3" step="0.05" value="-1.5" class="w-full">
+            </label>
+            <label class="text-xs text-slate-400">BIAS
+              <span id="nn-bias-val" class="mono text-slate-300 ml-1">-0.50</span>
+              <input id="nn-bias" type="range" min="-2" max="2" step="0.05" value="-0.5" class="w-full">
+            </label>
+            <label class="text-xs text-slate-400 col-span-2">SCORE_FLOOR (per-pixel cutoff)
+              <span id="nn-score-floor-val" class="mono text-slate-300 ml-1">0.30</span>
+              <input id="nn-score-floor" type="range" min="0" max="1" step="0.01" value="0.3" class="w-full">
+            </label>
+          </div>
+          <div class="flex items-center gap-2 mt-2 flex-wrap">
+            <button id="nn-weights-save"
+                    class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs">
+              Save JSON
+            </button>
+            <button id="nn-weights-push"
+                    class="bg-blue-600 hover:bg-blue-500 rounded px-3 py-1 text-xs">
+              Push to GitHub
+            </button>
+            <span id="nn-weights-status" class="text-xs text-slate-400 mono"></span>
+          </div>
+          <div class="text-xs text-slate-500 mt-2">
+            Sliders write to <span class="mono">stewart_vision/blobs/v0_weights.json</span>.
+            They take effect after rebuilding the blob:
+            <span class="mono">python3 stewart_vision/scripts/build_v0_blob.py</span>
+            on a dev machine with <span class="mono">torch</span> +
+            <span class="mono">blobconverter</span>, then commit the new
+            <span class="mono">.blob</span> and <span class="mono">pi_deploy.sh</span>.
+          </div>
+        </details>
         <!-- Vision-debug bag recorder. Captures everything the
              depth-blob detector sees (RGB, /oak/depth_blob/debug_image
              overlay, V0/depth pixel topics + diagnostics, /platform_pose,
@@ -4122,6 +4174,40 @@ function initVisionGUI() {
     });
   }
 
+  // --- NN weight sliders + Save/Push ---
+  const NN_W_IDS = [
+    ['nn-w-r', 'nn-w-r-val', 'w_r'],
+    ['nn-w-g', 'nn-w-g-val', 'w_g'],
+    ['nn-w-b', 'nn-w-b-val', 'w_b'],
+    ['nn-bias', 'nn-bias-val', 'bias'],
+    ['nn-score-floor', 'nn-score-floor-val', 'score_floor'],
+  ];
+  for (const [sId, vId, _] of NN_W_IDS) {
+    const s = $(sId), v = $(vId);
+    if (!s) continue;
+    s.addEventListener('input', () => {
+      if (v) v.innerText = parseFloat(s.value).toFixed(2);
+    });
+  }
+  // Pull current values from the server so the sliders reflect what's
+  // on disk, not the HTML defaults.
+  fetch('/v0/weights')
+    .then(r => r.json())
+    .then(d => {
+      for (const [sId, vId, key] of NN_W_IDS) {
+        if (key in d) {
+          const s = $(sId), v = $(vId);
+          if (s) s.value = d[key];
+          if (v) v.innerText = parseFloat(d[key]).toFixed(2);
+        }
+      }
+    })
+    .catch(() => {});
+  const nnSave = $('nn-weights-save');
+  const nnPush = $('nn-weights-push');
+  if (nnSave) nnSave.addEventListener('click', nnWeightsSave);
+  if (nnPush) nnPush.addEventListener('click', nnWeightsPush);
+
   // --- HSV slider tuning + V0 debug overlay ---
   const HSV_IDS = [
     ['hsv-h-lo','hsv-h-lo-val'], ['hsv-h-hi','hsv-h-hi-val'],
@@ -5950,6 +6036,52 @@ function publishHsvFromSliders() {
   const ids = ['hsv-h-lo','hsv-h-hi','hsv-s-lo','hsv-s-hi','hsv-v-lo','hsv-v-hi'];
   const data = ids.map(i => parseFloat(document.getElementById(i)?.value || 0));
   topic.oak_hsv_cmd.publish(new ROSLIB.Message({ data }));
+}
+
+// NN weight save/push. Save writes the JSON via gui_server; push
+// commits + pushes the JSON via gui_server's git wrapper. Status
+// message shows result and clears after a few seconds.
+function _nnWeightsRead() {
+  return {
+    w_r:  parseFloat(document.getElementById('nn-w-r')?.value || 1.0),
+    w_g:  parseFloat(document.getElementById('nn-w-g')?.value || 0.4),
+    w_b:  parseFloat(document.getElementById('nn-w-b')?.value || -1.5),
+    bias: parseFloat(document.getElementById('nn-bias')?.value || -0.5),
+    score_floor: parseFloat(
+      document.getElementById('nn-score-floor')?.value || 0.3),
+  };
+}
+function _nnSetStatus(text, ok) {
+  const el = document.getElementById('nn-weights-status');
+  if (!el) return;
+  el.innerText = text;
+  el.className = 'text-xs mono ' +
+    (ok === true ? 'text-emerald-400' :
+     ok === false ? 'text-red-400' : 'text-slate-400');
+  // Auto-clear status text after a few seconds so it doesn't stick.
+  setTimeout(() => {
+    if (el.innerText === text) el.innerText = '';
+  }, 6000);
+}
+async function nnWeightsSave() {
+  _nnSetStatus('saving…', null);
+  try {
+    const r = await fetch('/v0/weights', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_nnWeightsRead()),
+    });
+    const j = await r.json();
+    _nnSetStatus(j.message || (j.ok ? 'saved' : 'failed'), !!j.ok);
+  } catch (e) { _nnSetStatus('save failed: ' + e, false); }
+}
+async function nnWeightsPush() {
+  _nnSetStatus('pushing…', null);
+  try {
+    const r = await fetch('/v0/weights/push', { method: 'POST' });
+    const j = await r.json();
+    _nnSetStatus(j.message || (j.ok ? 'pushed' : 'failed'), !!j.ok);
+  } catch (e) { _nnSetStatus('push failed: ' + e, false); }
 }
 
 function onOakConfig(cfg) {

@@ -88,6 +88,38 @@ BIAS = -0.50
 SCORE_FLOOR = 0.30
 
 
+# Optional weight overrides — the GUI's NN-weight sliders write
+# stewart_vision/blobs/v0_weights.json with operator-tuned values.
+# We honour those when present so a rebuild on the dev machine
+# picks up the GUI's current state without editing this file.
+def _load_weights_json():
+    """Return (W_B, W_G, W_R, BIAS, SCORE_FLOOR) — JSON-overridden if
+    the file exists, else the module defaults defined above."""
+    import json as _json
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(os.path.dirname(here), 'blobs', 'v0_weights.json')
+    if not os.path.isfile(path):
+        return W_B, W_G, W_R, BIAS, SCORE_FLOOR
+    try:
+        with open(path) as f:
+            d = _json.load(f) or {}
+        return (
+            float(d.get('w_b', W_B)),
+            float(d.get('w_g', W_G)),
+            float(d.get('w_r', W_R)),
+            float(d.get('bias', BIAS)),
+            float(d.get('score_floor', SCORE_FLOOR)),
+        )
+    except Exception as e:
+        print(f"[build_v0_blob] WARN: {path} unreadable ({e}); "
+              f"using defaults", file=sys.stderr)
+        return W_B, W_G, W_R, BIAS, SCORE_FLOOR
+
+
+# Load JSON values once at module import so V0Detector picks them up.
+W_B, W_G, W_R, BIAS, SCORE_FLOOR = _load_weights_json()
+
+
 class V0Detector(nn.Module):
     """RGB-frame → (cx_norm, cy_norm, conf).
 

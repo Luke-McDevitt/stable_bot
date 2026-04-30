@@ -1421,6 +1421,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(
                     {'error': str(e), 'matrix': None}, status=200)
             return
+        if self.path == '/v0/weights':
+            # Current NN color-score weights. Read from the JSON if
+            # present (operator's tuned values), otherwise from the
+            # module defaults baked into build_v0_blob.py.
+            path = os.path.expanduser(
+                '~/stable_bot_repo/stewart_vision/blobs/v0_weights.json')
+            try:
+                if os.path.isfile(path):
+                    with open(path) as f:
+                        self._send_json(json.load(f) or {})
+                else:
+                    # Fallback to defaults so the GUI sliders show
+                    # something even before the JSON is created.
+                    self._send_json({
+                        'w_b': -1.50, 'w_g': 0.40, 'w_r': 1.00,
+                        'bias': -0.50, 'score_floor': 0.30,
+                        'note': 'defaults (no JSON yet)',
+                    })
+            except Exception as e:
+                self._send_json({'error': str(e)}, status=200)
+            return
         if self.path == '/vision/status':
             self._send_json(_vision_status())
             return
@@ -1652,6 +1673,109 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ok, msg = _digest_vision_bag(name)
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 500)
+            return
+        if self.path == '/v0/weights':
+            # Save NN color-score weights to JSON. Body is JSON object
+            # with float fields w_b, w_g, w_r, bias, score_floor.
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            try:
+                d = {
+                    'w_b':  float(body.get('w_b', -1.50)),
+                    'w_g':  float(body.get('w_g', 0.40)),
+                    'w_r':  float(body.get('w_r', 1.00)),
+                    'bias': float(body.get('bias', -0.50)),
+                    'score_floor': float(body.get('score_floor', 0.30)),
+                    'saved_at_utc': time.strftime(
+                        '%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                }
+                # Clamp to sane ranges so a runaway slider can't
+                # produce a NaN-y blob on the next rebuild.
+                d['w_b']  = max(-3.0, min(3.0, d['w_b']))
+                d['w_g']  = max(-3.0, min(3.0, d['w_g']))
+                d['w_r']  = max(-3.0, min(3.0, d['w_r']))
+                d['bias'] = max(-2.0, min(2.0, d['bias']))
+                d['score_floor'] = max(0.0, min(1.0, d['score_floor']))
+                path = os.path.expanduser(
+                    '~/stable_bot_repo/stewart_vision/blobs/'
+                    'v0_weights.json')
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, 'w') as f:
+                    json.dump(d, f, indent=2)
+                self._send_json({
+                    'ok': True,
+                    'message': f'saved {os.path.basename(path)}',
+                    'weights': d,
+                })
+            except Exception as e:
+                self._send_json(
+                    {'ok': False, 'message': f'save failed: {e}'}, 500)
+            return
+        if self.path == '/v0/weights/push':
+            # git add + commit + push the weights JSON. Lets the
+            # operator preserve a history of their tuning sessions
+            # without leaving the GUI. Failures (no remote, no creds,
+            # nothing to commit) are reported but not fatal.
+            try:
+                repo = os.path.expanduser('~/stable_bot_repo')
+                rel = 'stewart_vision/blobs/v0_weights.json'
+                env = os.environ.copy()
+                # Reuse existing committer identity from the repo —
+                # the user has been pushing throughout this session.
+                add = subprocess.run(
+                    ['git', '-C', repo, 'add', rel],
+                    capture_output=True, text=True, timeout=10)
+                if add.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': f'git add failed: {add.stderr.strip()}',
+                    }, 500)
+                    return
+                # Skip commit if nothing staged.
+                diff = subprocess.run(
+                    ['git', '-C', repo, 'diff', '--cached', '--quiet'],
+                    capture_output=True, text=True)
+                if diff.returncode == 0:
+                    self._send_json({
+                        'ok': True,
+                        'message': 'no changes to commit',
+                    })
+                    return
+                ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                commit = subprocess.run(
+                    ['git', '-C', repo, 'commit', '-m',
+                     f'NN weights: GUI tune {ts}'],
+                    capture_output=True, text=True, timeout=15)
+                if commit.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': f'commit failed: {commit.stderr.strip()}',
+                    }, 500)
+                    return
+                push = subprocess.run(
+                    ['git', '-C', repo, 'push'],
+                    capture_output=True, text=True, timeout=30)
+                if push.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': (
+                            f'commit ok, push failed: '
+                            f'{push.stderr.strip()}'),
+                    }, 500)
+                    return
+                self._send_json({
+                    'ok': True,
+                    'message': (
+                        commit.stdout.strip().split('\n')[0]
+                        + ' (pushed)'),
+                })
+            except Exception as e:
+                self._send_json(
+                    {'ok': False, 'message': f'push failed: {e}'}, 500)
             return
         # ----- Demo-run bag recorder endpoints -----
         if self.path == '/demo/start':
