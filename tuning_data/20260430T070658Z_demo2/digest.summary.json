@@ -1,0 +1,99 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T070658Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": "BALL_TRACK_GOTO",
+  "demo_params": {
+    "x_mm": -80.41377258300781,
+    "y_mm": 21.241378784179688
+  },
+  "duration_s": 17.207773721000002,
+  "topic_counts": {
+    "/ball_ref": 713,
+    "/ball_state": 701,
+    "/ball_xy_depth": 79,
+    "/ball_xy_mono": 489,
+    "/control_cmd": 4,
+    "/control_result": 0,
+    "/leg_currents": 333,
+    "/leg_encoders": 335,
+    "/oak/ball/depth/diagnostic": 162,
+    "/oak/ball/depth/rgb_pixel": 72,
+    "/oak/ball/v0/diagnostic": 78,
+    "/oak/ball/v0/rgb_pixel": 78,
+    "/odrive_errors": 34,
+    "/platform/imu/data": 5079,
+    "/platform_pose": 188,
+    "/platform_pose/markers_visible": 188,
+    "/platform_rpy": 337,
+    "/status": 34
+  },
+  "gains_at_record": {
+    "kp": 0.01,
+    "kd": 0.015,
+    "ki": 0.005,
+    "max_tilt_deg": 4.0,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 60.0,
+    "stiction_v_threshold_mm_s": 20.0,
+    "stiction_break_s": 0.6,
+    "brake_tilt_deg": 6.0,
+    "control_latency_s": 0.1,
+    "algorithm": "bangbang"
+  },
+  "ball_state_n": 701,
+  "ball_ref_n": 713,
+  "mono_n": 489,
+  "depth_n": 79,
+  "error_mm": {
+    "n": 312,
+    "mean": 117.379458924199,
+    "std": 84.33639971369564,
+    "rms": 144.5356900353887,
+    "p50": 57.72696836068766,
+    "p95": 263.67268976187756,
+    "min": 50.05437915967235,
+    "max": 273.38343548730126
+  },
+  "error_x_mm": {
+    "n": 312,
+    "mean": 109.73903300808567,
+    "std": 90.20265903077657,
+    "rms": 142.05342326664382,
+    "p50": 50.7794193981732,
+    "p95": 263.6205557741937,
+    "min": 29.371875707732464,
+    "max": 273.38294830573614
+  },
+  "error_y_mm": {
+    "n": 312,
+    "mean": 20.78731619640693,
+    "std": 16.711616246919608,
+    "rms": 26.67190717278593,
+    "p50": 27.4863659476519,
+    "p95": 39.18937078869187,
+    "min": -12.765540041199651,
+    "max": 41.09847859174118
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 188,
+    "mean": 810.1871963243008,
+    "std": 2.4070600583411697,
+    "rms": 810.1907719950625,
+    "p50": 810.5436609947611,
+    "p95": 813.2418232722644,
+    "min": 801.1036568879413,
+    "max": 814.5385918976353
+  },
+  "markers_visible": {
+    "n": 188,
+    "mean": 7.9787234042553195,
+    "min": 7,
+    "max": 8
+  }
+}
