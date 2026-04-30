@@ -183,6 +183,30 @@
           </button>
           <span id="v0-backend-status" class="text-xs text-slate-400 mono"></span>
         </div>
+        <!-- Focus controls (Vision Debug panel) — runtime toggle for
+             autofocus + manual slider for the lens position. Sends
+             /oak/cmd_focus with payload "auto", "auto_one_shot", or
+             a 0-255 integer. Live state read from /oak/config. -->
+        <div class="flex items-center gap-2 flex-wrap mt-2">
+          <span class="text-xs text-slate-400">Focus:</span>
+          <button id="focus-auto-btn"
+                  class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-xs">
+            Auto
+          </button>
+          <button id="focus-oneshot-btn"
+                  class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-xs">
+            One-shot AF
+          </button>
+          <button id="focus-manual-btn"
+                  class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-xs">
+            Manual
+          </button>
+          <input id="focus-pos-slider" type="range"
+                 min="0" max="255" step="1" value="145"
+                 class="flex-1 min-w-[120px]">
+          <span id="focus-pos-val" class="text-xs text-slate-400 mono w-8 text-right">145</span>
+          <span id="focus-status" class="text-xs text-slate-400 mono"></span>
+        </div>
         <!-- Vision-debug bag recorder. Captures everything the
              depth-blob detector sees (RGB, /oak/depth_blob/debug_image
              overlay, V0/depth pixel topics + diagnostics, /platform_pose,
@@ -1966,6 +1990,10 @@ function setupROSInterface() {
   });
   topic.oak_v0_backend_cmd = new ROSLIB.Topic({
     ros, name: '/oak/cmd_v0_backend',
+    messageType: 'std_msgs/msg/String' });
+  // Runtime focus control. Payload: "auto" / "auto_one_shot" / 0-255.
+  topic.oak_focus_cmd = new ROSLIB.Topic({
+    ros, name: '/oak/cmd_focus',
     messageType: 'std_msgs/msg/String' });
 
   // Annotated depth-blob debug image (toggled via OAK_DEPTH_DEBUG).
@@ -3951,6 +3979,30 @@ function initVisionGUI() {
   if (v0NnBtn)  v0NnBtn.addEventListener('click',
                   () => publishV0Backend('nn'));
 
+  // --- Focus controls (autofocus on/off + manual slider) ---
+  const focusAuto    = $('focus-auto-btn');
+  const focusOneShot = $('focus-oneshot-btn');
+  const focusManual  = $('focus-manual-btn');
+  const focusSlider  = $('focus-pos-slider');
+  const focusVal     = $('focus-pos-val');
+  if (focusAuto)    focusAuto.addEventListener('click',
+                      () => publishFocus('auto'));
+  if (focusOneShot) focusOneShot.addEventListener('click',
+                      () => publishFocus('auto_one_shot'));
+  if (focusManual)  focusManual.addEventListener('click',
+                      () => publishFocus(String(focusSlider?.value || 145)));
+  if (focusSlider) {
+    // Live preview of slider value; only push to camera when the
+    // operator releases (input event would spam at 200+ Hz). Use
+    // 'change' for commit + 'input' for cosmetic readout update.
+    focusSlider.addEventListener('input', () => {
+      if (focusVal) focusVal.innerText = focusSlider.value;
+    });
+    focusSlider.addEventListener('change', () => {
+      publishFocus(String(focusSlider.value));
+    });
+  }
+
   // --- Ball-track gains panel (Demos column) ---
   for (const k of BT_GAIN_KEYS) {
     const el = document.getElementById('bt-g-' + k);
@@ -5679,6 +5731,12 @@ function publishV0Backend(which) {
   topic.oak_v0_backend_cmd.publish(new ROSLIB.Message({ data: which }));
 }
 
+// Runtime focus control. payload = "auto" / "auto_one_shot" / "0".."255".
+function publishFocus(payload) {
+  if (!topic.oak_focus_cmd) return;
+  topic.oak_focus_cmd.publish(new ROSLIB.Message({ data: String(payload) }));
+}
+
 function onOakConfig(cfg) {
   const status = document.getElementById('v0-backend-status');
   const cv2Btn = document.getElementById('v0-backend-cv2-btn');
@@ -5698,6 +5756,33 @@ function onOakConfig(cfg) {
     const blob = cfg.v0_blob ? `blob=${cfg.v0_blob}` : 'no blob loaded';
     status.innerText = `live: ${active} · ${blob} · exp=${cfg.exp_us}us iso=${cfg.iso}`;
   }
+  // Focus state — highlight the active mode and sync the slider.
+  const focusMode = (cfg.focus_mode || 'manual').toLowerCase();
+  const focusPos  = (typeof cfg.focus_pos === 'number') ? cfg.focus_pos : 145;
+  const focusOn  = 'bg-emerald-600 hover:bg-emerald-500';
+  const focusOff = 'bg-slate-700 hover:bg-slate-600';
+  const fAuto    = document.getElementById('focus-auto-btn');
+  const fOneShot = document.getElementById('focus-oneshot-btn');
+  const fManual  = document.getElementById('focus-manual-btn');
+  const focusMap = [
+    [fAuto,    focusMode === 'auto'],
+    [fOneShot, focusMode === 'auto_one_shot'],
+    [fManual,  focusMode === 'manual'],
+  ];
+  for (const [btn, on] of focusMap) {
+    if (!btn) continue;
+    btn.classList.remove(...focusOn.split(' '), ...focusOff.split(' '));
+    btn.classList.add(...(on ? focusOn : focusOff).split(' '));
+  }
+  const fSlider = document.getElementById('focus-pos-slider');
+  const fVal    = document.getElementById('focus-pos-val');
+  // Don't fight the user mid-drag — only sync slider when not focused.
+  if (fSlider && document.activeElement !== fSlider) {
+    fSlider.value = focusPos;
+  }
+  if (fVal) fVal.innerText = focusPos;
+  const fStatus = document.getElementById('focus-status');
+  if (fStatus) fStatus.innerText = `mode=${focusMode} pos=${focusPos}`;
 }
 
 function setActiveDemo(n) {

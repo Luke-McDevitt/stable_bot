@@ -610,6 +610,14 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
     cam_rgb.initialControl.setManualFocus(focus_pos)
     cam_rgb.initialControl.setManualExposure(exp_us, iso)
 
+    # Runtime camera-control input. Allows the GUI to flip auto-focus
+    # on/off and adjust focus position without rebuilding the pipeline.
+    # Host sends dai.CameraControl messages to this XLinkIn; the OAK
+    # firmware applies the new mode on the next frame.
+    cam_ctrl_in = pipeline.create(dai.node.XLinkIn)
+    cam_ctrl_in.setStreamName('cam_rgb_control')
+    cam_ctrl_in.out.link(cam_rgb.inputControl)
+
     # Mono left — raw output for ArUco pose recovery
     mono_l = pipeline.create(dai.node.MonoCamera)
     mono_l.setBoardSocket(dai.CameraBoardSocket.CAM_B)
@@ -1008,6 +1016,19 @@ class OakDriverNode(Node):
         self.q_v0_nn = (
             self.device.getOutputQueue('v0_nn', 1, False)
             if self._v0_blob_path is not None else None)
+        # Runtime camera-control input queue — drives autofocus on/off
+        # and manual focus position from the GUI without rebuilding
+        # the pipeline.
+        self.q_cam_ctrl = self.device.getInputQueue('cam_rgb_control')
+        # Track current focus state so /oak/config can report it.
+        # focus_pos is a local in _build_pipeline; re-read the env here.
+        try:
+            _initial_focus = max(0, min(255,
+                int(os.environ.get('OAK_FOCUS_POS', '145'))))
+        except Exception:
+            _initial_focus = 145
+        self._focus_mode: str = 'manual'   # 'manual' | 'auto'
+        self._focus_pos: int = _initial_focus
         # Spatial output / SLC config queues — only present when depth
         # is enabled. _tick guards on these being non-None.
         if self.enable_depth:
@@ -1105,6 +1126,13 @@ class OakDriverNode(Node):
         # logs a warning and stays on cv2.
         self.create_subscription(
             String, '/oak/cmd_v0_backend', self._on_v0_backend_cmd, 1)
+        # Runtime focus control. Payload formats:
+        #   "auto"        — switch to CONTINUOUS_VIDEO autofocus
+        #   "<int 0-255>" — manual focus at that lens position
+        # GUI's Vision Debug panel exposes both. /oak/config reports
+        # current state on its 5 s tick.
+        self.create_subscription(
+            String, '/oak/cmd_focus', self._on_focus_cmd, 1)
 
         # Half-width of the depth ROI around the V0 pixel, in
         # normalized RGB coordinates. 24 px (48 px wide ROI) covers
@@ -1135,7 +1163,10 @@ class OakDriverNode(Node):
                 'rgb_fps': int(self._rgb_fps_used),
                 'mono_fps': int(self._mono_fps_used),
                 'jpeg_quality': int(self._jpeg_quality_used),
-                'focus_pos': int(os.environ.get('OAK_FOCUS_POS', '145')),
+                # Live focus state — reflects runtime toggles via
+                # /oak/cmd_focus, not just the boot-time env value.
+                'focus_mode': str(self._focus_mode),
+                'focus_pos':  int(self._focus_pos),
                 'exp_us':    int(os.environ.get('OAK_EXP_US', '8000')),
                 'iso':       int(os.environ.get('OAK_ISO', '800')),
                 'v0_backend': str(self.v0_backend),
@@ -1188,6 +1219,56 @@ class OakDriverNode(Node):
         # switch without waiting for the 5 s tick.
         self._publish_config_snapshot()
         self.get_logger().info(f"  ✓ V0 backend switched to: {wanted}")
+
+    def _on_focus_cmd(self, msg: String):
+        """Runtime focus control. Sends a CameraControl to the OAK
+        cam_rgb input queue so the firmware applies the new mode on
+        the next frame.
+
+        Payload formats:
+          "auto"          — switch to CONTINUOUS_VIDEO autofocus
+          "auto_one_shot" — single-shot AUTO trigger (refocus once,
+                            stay there)
+          "<int 0-255>"   — manual focus at that lens position
+                            (0 = infinity, 255 = closest macro)
+        """
+        self.get_logger().info(
+            f"/oak/cmd_focus received: {msg.data!r}")
+        payload = (msg.data or '').strip().lower()
+        if self.q_cam_ctrl is None:
+            self.get_logger().warn(
+                "  rejected: cam_rgb_control input queue not open")
+            return
+        ctrl = dai.CameraControl()
+        if payload in ('auto', 'continuous'):
+            ctrl.setAutoFocusMode(
+                dai.RawCameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
+            self._focus_mode = 'auto'
+        elif payload in ('auto_one_shot', 'one_shot', 'auto_oneshot'):
+            ctrl.setAutoFocusMode(
+                dai.RawCameraControl.AutoFocusMode.AUTO)
+            ctrl.setAutoFocusTrigger()
+            self._focus_mode = 'auto_one_shot'
+        else:
+            try:
+                pos = int(payload)
+            except ValueError:
+                self.get_logger().warn(
+                    f"  rejected: unknown payload {payload!r} "
+                    "(expected 'auto', 'auto_one_shot', or 0-255 int)")
+                return
+            pos = max(0, min(255, pos))
+            ctrl.setManualFocus(pos)
+            self._focus_mode = 'manual'
+            self._focus_pos = pos
+        try:
+            self.q_cam_ctrl.send(ctrl)
+        except Exception as e:
+            self.get_logger().warn(f"  send failed: {e}")
+            return
+        self._publish_config_snapshot()
+        self.get_logger().info(
+            f"  ✓ focus → mode={self._focus_mode} pos={self._focus_pos}")
 
     def _log_pipeline_health(self):
         """Periodic snapshot so we can tell which stage of the V0 /
