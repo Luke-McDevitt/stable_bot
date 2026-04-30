@@ -385,8 +385,16 @@
           <input id="d1-radius" type="number" min="35" max="195" step="5" value="80"
                  class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
         </label>
+        <!-- Period bumped 4 → 12 s default so the orbit reference
+             moves slow enough for the closed-loop tilt response to
+             physically push the ball around. Vision arrives at ~14 Hz
+             (~70 ms cadence); a 4 s period was advancing the
+             reference ~9 mm per vision sample, faster than tilt-
+             induced ball motion can track. 12 s is conservative for
+             initial tuning — once gains are dialed in, drop the
+             period. Min raised 1 → 4 s for the same reason. -->
         <label>Period (s)
-          <input id="d1-period" type="number" min="1" max="10" step="0.5" value="4"
+          <input id="d1-period" type="number" min="4" max="30" step="1" value="12"
                  class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
         </label>
         <label class="col-span-2">Direction
