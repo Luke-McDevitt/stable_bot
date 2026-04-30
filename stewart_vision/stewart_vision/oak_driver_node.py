@@ -999,11 +999,15 @@ class OakDriverNode(Node):
         self.q_rgb_jpeg = self.device.getOutputQueue('rgb_jpeg', 1, False)
         self.q_rgb_raw  = self.device.getOutputQueue('rgb_raw',  1, False)
         self.q_left     = self.device.getOutputQueue('left',     1, False)
-        # Phase 2B: NN backend output queue, only present when the
-        # blob loaded successfully and the pipeline added the NN node.
+        # Phase 2B: NN backend output queue. Open it whenever the
+        # blob was found at startup (so the pipeline included the NN
+        # node), regardless of the *initial* backend setting — the
+        # runtime toggle needs the queue available even if we started
+        # in cv2 mode. Without this, clicking NN in the GUI gets
+        # rejected by _on_v0_backend_cmd and the toggle silently fails.
         self.q_v0_nn = (
             self.device.getOutputQueue('v0_nn', 1, False)
-            if self.v0_backend == 'nn' else None)
+            if self._v0_blob_path is not None else None)
         # Spatial output / SLC config queues — only present when depth
         # is enabled. _tick guards on these being non-None.
         if self.enable_depth:
@@ -1160,25 +1164,30 @@ class OakDriverNode(Node):
         are built at startup if a blob is available, so the switch is
         just an in-memory flag flip — no pipeline rebuild, no service
         restart. /oak/config publishes the new state on its next tick."""
+        self.get_logger().info(
+            f"/oak/cmd_v0_backend received: {msg.data!r}")
         wanted = (msg.data or '').strip().lower()
         if wanted not in ('cv2', 'nn'):
             self.get_logger().warn(
-                f"/oak/cmd_v0_backend: unknown payload {wanted!r} "
+                f"  rejected: unknown payload {wanted!r} "
                 f"(expected 'cv2' or 'nn')")
             return
         if wanted == 'nn' and self.q_v0_nn is None:
             self.get_logger().warn(
-                "/oak/cmd_v0_backend=nn but no NN blob loaded — "
-                "build with stewart_vision/scripts/build_v0_blob.py "
-                "and rebuild the package. Staying on cv2.")
+                "  rejected: NN backend requested but no NN queue "
+                "available — blob may have been missing at startup. "
+                "Build with stewart_vision/scripts/build_v0_blob.py, "
+                "deploy, and restart. Staying on cv2.")
             return
         if wanted == self.v0_backend:
+            self.get_logger().info(
+                f"  no-op: already on {wanted}")
             return
         self.v0_backend = wanted
         # Push a config snapshot immediately so subscribers see the
         # switch without waiting for the 5 s tick.
         self._publish_config_snapshot()
-        self.get_logger().info(f"V0 backend switched to: {wanted}")
+        self.get_logger().info(f"  ✓ V0 backend switched to: {wanted}")
 
     def _log_pipeline_health(self):
         """Periodic snapshot so we can tell which stage of the V0 /
