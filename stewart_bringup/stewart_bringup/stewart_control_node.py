@@ -4106,24 +4106,31 @@ class StewartControlNode(Node):
             state_age = now - self.last_ball_state_t
             ref_age = now - self.last_ball_ref_t
 
-            if (state is None or ref is None
-                    or state_age > stale_state
-                    or ref_age > stale_ref):
+            state_stale = (state is None or state_age > stale_state)
+            ref_stale = (ref is None or ref_age > stale_ref)
+            if state_stale or ref_stale:
                 # Sit level + reset integrator. Don't let stale data
                 # drive surprise tilts.
                 tilt_pitch = 0.0
                 tilt_roll = 0.0
                 integ_x = 0.0
                 integ_y = 0.0
-                # Ball-fall recovery: after BALL_FALL_TIMEOUT_S of
-                # continuous staleness, exit the BALL_TRACK loop.
-                # The platform has been at flat tilt the whole time
-                # (the staleness branch enforced it above), so the
-                # exit just transitions us cleanly to LEVEL_HOLD.
-                # The operator must restart the demo manually.
-                if stale_started_at is None:
-                    stale_started_at = now
+                # Ball-fall recovery: only count STATE staleness, not
+                # ref staleness. ref-stale just means the operator
+                # hasn't clicked a target yet (Demo 2 with no auto-
+                # default after the bolt-at-center fix), or the
+                # ref_generator is between modes. We don't want to
+                # auto-quit the demo just for that. State-stale = ball
+                # genuinely missing from vision, which is the actual
+                # ball-fall signal.
+                if state_stale:
+                    if stale_started_at is None:
+                        stale_started_at = now
+                else:
+                    stale_started_at = None
+                    ball_fall_handled = False
                 if (not ball_fall_handled
+                        and stale_started_at is not None
                         and (now - stale_started_at) > BALL_FALL_TIMEOUT_S):
                     ball_fall_handled = True
                     self.get_logger().warn(

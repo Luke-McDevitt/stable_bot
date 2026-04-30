@@ -216,8 +216,17 @@ class RefGeneratorNode(Node):
 
     def _compute_ref(self):
         if self.mode == 'BALL_TRACK_GOTO':
-            x = float(self.params.get('x_mm', 0.0))
-            y = float(self.params.get('y_mm', 0.0))
+            # Don't default to (0, 0) — there's a bolt at the platform
+            # center on the user's hardware, sending the ball there
+            # would be actively bad. Return None until the operator
+            # actually clicks a target on the SVG (which republishes
+            # mode:BALL_TRACK_GOTO with x_mm/y_mm set). The /ball_ref
+            # topic just doesn't publish; the BALL_TRACK loop sees a
+            # stale ref and sits level.
+            if 'x_mm' not in self.params or 'y_mm' not in self.params:
+                return None
+            x = float(self.params['x_mm'])
+            y = float(self.params['y_mm'])
             return x, y
         if self.mode == 'BALL_TRACK_TRAJECTORY':
             R = float(self.params.get('radius_mm', 80.0))
