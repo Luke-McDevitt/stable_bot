@@ -3818,7 +3818,10 @@ function onRgbFrame(m) {
   $('vision-feed-empty').style.display = 'none';
   _fpsLastFrameMs = performance.now();
   _fpsCount++;
-  const now = performance.now();
+  // Reuse `now` declared above (the diagnostic-log throttle uses
+  // the same timestamp). Re-declaring it as `const now` was a
+  // SyntaxError that killed the entire script — taking rosbridge
+  // connection setup with it.
   if (now - _fpsT0 >= 1000) {
     const fps = (_fpsCount * 1000 / (now - _fpsT0)).toFixed(1);
     $('vision-feed-fps').innerText = `${fps} fps`;
