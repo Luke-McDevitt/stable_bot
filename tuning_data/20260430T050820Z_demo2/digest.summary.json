@@ -1,0 +1,95 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T050820Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": "BALL_TRACK_GOTO",
+  "demo_params": {
+    "x_mm": -53.10342788696289,
+    "y_mm": 7.586187839508057
+  },
+  "duration_s": 44.470421983,
+  "topic_counts": {
+    "/ball_ref": 254,
+    "/ball_state": 3781,
+    "/ball_xy_depth": 238,
+    "/ball_xy_mono": 2577,
+    "/control_cmd": 18,
+    "/control_result": 2,
+    "/leg_currents": 877,
+    "/leg_encoders": 877,
+    "/oak/ball/depth/diagnostic": 367,
+    "/oak/ball/depth/rgb_pixel": 238,
+    "/oak/ball/v0/diagnostic": 368,
+    "/oak/ball/v0/rgb_pixel": 367,
+    "/odrive_errors": 87,
+    "/platform/imu/data": 14292,
+    "/platform_pose": 366,
+    "/platform_pose/markers_visible": 365,
+    "/platform_rpy": 866,
+    "/status": 87
+  },
+  "gains_at_record": {
+    "kp": 0.01,
+    "kd": 0.015,
+    "ki": 0.005,
+    "max_tilt_deg": 4.0,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 10.0,
+    "v_coast_mm_s": 5.0,
+    "brake_horizon_mm": 80.0,
+    "algorithm": "bangbang"
+  },
+  "ball_state_n": 3781,
+  "ball_ref_n": 254,
+  "mono_n": 2577,
+  "depth_n": 238,
+  "error_mm": {
+    "n": 349,
+    "mean": 192.62884013945535,
+    "std": 84.88831297531456,
+    "rms": 210.50390906885033,
+    "p50": 251.04153201617032,
+    "p95": 256.3522141149187,
+    "min": 45.74832986284445,
+    "max": 326.19753028282696
+  },
+  "error_x_mm": {
+    "n": 349,
+    "mean": 173.76912634380056,
+    "std": 77.0817402932936,
+    "rms": 190.09814296023646,
+    "p50": 222.32949962185,
+    "p95": 225.9529418140961,
+    "min": 41.83124964745974,
+    "max": 326.1184347058095
+  },
+  "error_y_mm": {
+    "n": 349,
+    "mean": 77.76848643957355,
+    "std": 46.11566212507602,
+    "rms": 90.41344908992416,
+    "p50": 115.18230605270898,
+    "p95": 117.79334841739495,
+    "min": -7.18298737632653,
+    "max": 149.80463615323555
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 366,
+    "mean": 809.7941697509269,
+    "std": 0.934138614046069,
+    "rms": 809.7947085388637,
+    "p50": 809.9359093925063,
+    "p95": 810.7575951823395,
+    "min": 802.980143839674,
+    "max": 814.9434372528991
+  },
+  "markers_visible": {
+    "n": 365,
+    "mean": 7.841095890410959,
+    "min": 6,
+    "max": 9
+  }
+}
