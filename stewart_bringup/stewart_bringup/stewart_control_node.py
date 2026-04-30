@@ -1229,6 +1229,12 @@ class StewartControlNode(Node):
         # the BALL_TRACK loop picks it up on its next tick and zeros
         # integ_x / integ_y. The loop also clears this flag itself.
         self._ball_track_integ_reset_pending = False
+        # Auto-level scheduler. When BALL_TRACK ends (operator stop
+        # OR ball-fall recovery), we briefly enable the level loop
+        # so the platform settles flat. _level_auto_off_at is the
+        # monotonic time after which _tick_state will disable level
+        # again. None when not scheduled.
+        self._level_auto_off_at = None  # float|None
 
         # --- Timers ---
         self.create_timer(0.05, self._tick_state)      # 20 Hz encoders/rpy
@@ -1902,6 +1908,19 @@ class StewartControlNode(Node):
 
     # ---- periodic ticks ----
     def _tick_state(self):
+        # Auto-disable level if a demo-end schedule has expired.
+        # This is the back-half of _schedule_level_for_seconds:
+        # the helper turned level ON; here we turn it OFF after
+        # the deadline.
+        if self._level_auto_off_at is not None and \
+                time.monotonic() >= self._level_auto_off_at:
+            try:
+                self._do_enable_level(False)
+                self.get_logger().info("auto-level expired; level OFF")
+            except Exception:
+                pass
+            self._level_auto_off_at = None
+
         # encoders
         if self.listener is not None:
             enc = self.listener.get_all(max_age_s=0.5)
@@ -3917,12 +3936,17 @@ class StewartControlNode(Node):
                 f"mode {mode}: bad JSON params {params_text!r}; ignoring")
             return
         if mode == 'LEVEL_HOLD':
-            # Stop ball-tracking; leave level loop OFF (operator can
-            # re-enable Level via the Stabilization panel as needed).
-            if self.ball_track_enabled:
+            # Stop ball-tracking. If a demo was actually running,
+            # briefly engage the level loop so the platform settles
+            # flat after the operator stops or the ball falls. The
+            # level loop auto-disables after 3 s — see
+            # _schedule_level_for_seconds().
+            was_running = self.ball_track_enabled
+            if was_running:
                 self._stop_ball_track_loop()
                 self.get_logger().info(
                     "ball_track stopped (mode:LEVEL_HOLD)")
+                self._schedule_level_for_seconds(3.0)
             return
         if mode in ('BALL_TRACK_GOTO', 'BALL_TRACK_TRAJECTORY',
                     'BALL_TRACK_PATH'):
@@ -3975,6 +3999,28 @@ class StewartControlNode(Node):
             t.join(timeout=1.0)
         self.ball_track_thread = None
         self.ball_track_corr = [0.0, 0.0]
+
+    def _schedule_level_for_seconds(self, duration_s):
+        """Engage the level PI loop now and queue an auto-disable
+        after `duration_s`. Used when a demo ends (operator stop or
+        ball-fall recovery) so the platform settles flat for a few
+        seconds before going dormant. The auto-off check fires from
+        _tick_state at ~20 Hz; sub-second precision is fine for this
+        purpose. Calling again while a previous schedule is active
+        just refreshes the deadline."""
+        try:
+            ok, msg = self._do_enable_level(True)
+            if not ok:
+                self.get_logger().info(
+                    f"auto-level: enable_level failed: {msg}")
+                return
+        except Exception as e:
+            self.get_logger().info(
+                f"auto-level: enable_level threw: {e}")
+            return
+        self._level_auto_off_at = time.monotonic() + float(duration_s)
+        self.get_logger().info(
+            f"auto-level engaged for {duration_s:.1f}s")
 
     def _ball_track_run(self):
         """Closed-loop ball-position controller — spec §9, milestone #10.
@@ -4070,6 +4116,13 @@ class StewartControlNode(Node):
                     except Exception:
                         pass
                     self.current_rpy = [0.0, 0.0, 0.0]
+                    # Engage the level loop briefly so the platform
+                    # settles flat after the fall. Schedule its
+                    # auto-off via _tick_state.
+                    try:
+                        self._schedule_level_for_seconds(3.0)
+                    except Exception:
+                        pass
                     # Signal exit. ball_track_enabled is what /status
                     # reports; ball_track_stop ends this loop.
                     self.ball_track_enabled = False

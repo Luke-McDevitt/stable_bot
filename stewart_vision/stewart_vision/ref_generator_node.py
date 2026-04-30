@@ -245,7 +245,31 @@ class RefGeneratorNode(Node):
                 if direction < 0:
                     pts = [pts[0]] + list(reversed(pts[1:]))
                 self._wp_list = pts
-                self._wp_idx = 0
+                # Restart from the waypoint CLOSEST to the current
+                # ball position (when known). On a re-Start after a
+                # Stop, the ball is wherever it ended up — sending
+                # the ref back to waypoint 0 (probably the +x point
+                # at radius R) would whip the platform across the
+                # whole disk to chase a far target. Starting at the
+                # nearest point gives the loop a fighting chance.
+                start_idx = 0
+                if self.last_state is not None:
+                    bx = float(self.last_state.pose.position.x)
+                    by = float(self.last_state.pose.position.y)
+                    best_i = 0
+                    best_d2 = float('inf')
+                    for i, (wx, wy) in enumerate(pts):
+                        d2 = (wx - bx) ** 2 + (wy - by) ** 2
+                        if d2 < best_d2:
+                            best_d2 = d2
+                            best_i = i
+                    start_idx = best_i
+                    self.get_logger().info(
+                        f"orbit start: nearest wp={best_i}/{n_wp} "
+                        f"@ ({pts[best_i][0]:.0f}, {pts[best_i][1]:.0f}) "
+                        f"to ball ({bx:.0f}, {by:.0f}) "
+                        f"({best_d2 ** 0.5:.0f} mm away)")
+                self._wp_idx = start_idx
                 self._wp_arrived_t = None
                 self._wp_started_t = time.monotonic()
                 self._wp_signature = sig
