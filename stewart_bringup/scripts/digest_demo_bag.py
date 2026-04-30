@@ -531,11 +531,48 @@ def digest(bag_dir: str):
     if demo_params:
         print(f"  demo_params: {demo_params}")
     em = summary['error_mm']
+    ex = summary.get('error_x_mm', {})
+    ey = summary.get('error_y_mm', {})
     if em.get('n'):
         print(f"  error_mm: rms={em['rms']:.1f} p50={em['p50']:.1f} "
               f"p95={em['p95']:.1f} max={em['max']:.1f}")
+    if ex.get('n'):
+        print(f"  error_x_mm: mean={ex['mean']:+.1f} rms={ex['rms']:.1f} "
+              f"p95={ex['p95']:+.1f}")
+    if ey.get('n'):
+        print(f"  error_y_mm: mean={ey['mean']:+.1f} rms={ey['rms']:.1f} "
+              f"p95={ey['p95']:+.1f}")
     if settling is not None:
         print(f"  settling_time_s: {settling:.2f}")
+    # Vision health — what camera/detector rates were achieved during
+    # this run, and what the see→Pi latency looked like. These are
+    # the numbers the user (and Claude) want at a glance to decide
+    # whether the demo's tracking error came from controller tuning
+    # or from vision starvation.
+    h = summary.get('oak_health') or {}
+    if h.get('n'):
+        v0a = h.get('v0_arr_hz', {})
+        v0p = h.get('v0_pub_hz', {})
+        v0l = h.get('v0_lat_ms', {})
+        jpl = h.get('jpeg_lat_ms', {})
+        if v0a.get('n'):
+            print(f"  v0_arr_hz: p50={v0a.get('p50','—'):.1f} "
+                  f"p95={v0a.get('p95','—'):.1f}")
+        if v0p.get('n'):
+            print(f"  v0_pub_hz: p50={v0p.get('p50','—'):.1f} "
+                  f"p95={v0p.get('p95','—'):.1f}")
+        if v0l.get('n'):
+            print(f"  v0_lat_ms: p50={v0l.get('p50','—'):.0f} "
+                  f"p95={v0l.get('p95','—'):.0f}")
+        if jpl.get('n'):
+            print(f"  jpeg_lat_ms: p50={jpl.get('p50','—'):.0f} "
+                  f"p95={jpl.get('p95','—'):.0f}")
+    cfg = summary.get('oak_config')
+    if cfg:
+        print(f"  oak_config: focus={cfg.get('focus_pos')} "
+              f"exp={cfg.get('exp_us')}us iso={cfg.get('iso')} "
+              f"jpeg_q={cfg.get('jpeg_quality')} "
+              f"depth={cfg.get('enable_depth')}")
     if gains_at_record:
         print(f"  gains: {gains_at_record}")
 
