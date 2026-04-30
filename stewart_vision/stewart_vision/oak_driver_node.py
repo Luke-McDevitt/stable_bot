@@ -799,6 +799,17 @@ class OakDriverNode(Node):
             PointStamped, '/oak/ball/v0/rgb_pixel', 10)
         self.pub_v0_diag = self.create_publisher(
             Float32MultiArray, '/oak/ball/v0/diagnostic', 10)
+        # Per-backend pixel topics — populated only when each backend
+        # actually runs in the tick. Useful for the GUI's dual-circle
+        # overlay (cv2 in blue, NN in emerald) so the operator can
+        # see what each detector picks up side-by-side. The active
+        # backend ALSO mirrors its detection to pub_v0 above so the
+        # controller chain (ball_localizer → ball_kf → BALL_TRACK)
+        # is unchanged regardless of which detector is active.
+        self.pub_v0_cv2 = self.create_publisher(
+            PointStamped, '/oak/ball/v0/cv2_pixel', 10)
+        self.pub_v0_nn = self.create_publisher(
+            PointStamped, '/oak/ball/v0/nn_pixel', 10)
         # OAK-capture-to-Pi latency, computed Pi-side from the device
         # timestamp metadata so it doesn't depend on cross-host clock
         # sync. Published every RGB frame.
@@ -1634,12 +1645,20 @@ class OakDriverNode(Node):
                     # Radius proxy: sqrt(area) where area = conf * H * W.
                     p.point.z = float((conf * V0_W * V0_H) ** 0.5
                                       * (RGB_W / V0_W))
-                    self.pub_v0.publish(p)
-                    self._n_v0 += 1
-                    d = Float32MultiArray()
-                    d.data = [float(cx), float(cy), float(p.point.z),
-                              float(conf)]
-                    self.pub_v0_diag.publish(d)
+                    # Always publish to the per-backend topic so the
+                    # GUI can show NN's detection regardless of active
+                    # backend.
+                    self.pub_v0_nn.publish(p)
+                    # Mirror to /oak/ball/v0/rgb_pixel only when NN is
+                    # the active backend (so the controller chain
+                    # consumes only one source).
+                    if self.v0_backend == 'nn':
+                        self.pub_v0.publish(p)
+                        self._n_v0 += 1
+                        d = Float32MultiArray()
+                        d.data = [float(cx), float(cy), float(p.point.z),
+                                  float(conf)]
+                        self.pub_v0_diag.publish(d)
 
         # RGB raw → cv2 V0 detector → /oak/ball/v0/rgb_pixel.
         # When OAK_V0_BACKEND=nn we still pull from this queue (depth
@@ -1672,7 +1691,13 @@ class OakDriverNode(Node):
                 v0_stamp = self.get_clock().now().to_msg()
                 v0_age_s = float('nan')
             self._v0_last_age_s = v0_age_s
-            if self.v0_backend == 'cv2':
+            # Always run cv2 detection (publishes to /oak/ball/v0/cv2_pixel
+            # for the GUI's blue overlay). The cv2 block itself decides
+            # whether to also mirror the result to /oak/ball/v0/rgb_pixel
+            # based on `self.v0_backend == 'cv2'`. This way the operator
+            # can compare cv2 vs NN visually regardless of which is the
+            # controller's active source.
+            if True:
                 # Pre-crop to the platform-mask bbox so HSV+morph+contour
                 # only run on ~25 % of the frame area. Falls back to full-
                 # frame if bbox isn't ready yet (no pose received).
@@ -1728,12 +1753,18 @@ class OakDriverNode(Node):
                     p.point.x = cx
                     p.point.y = cy
                     p.point.z = r       # radius in pixels piggy-backed in z
-                    self.pub_v0.publish(p)
-                    self._n_v0 += 1
-                    # diagnostic with confidence + radius for debug strip
-                    d = Float32MultiArray()
-                    d.data = [float(cx), float(cy), float(r), float(conf)]
-                    self.pub_v0_diag.publish(d)
+                    # Per-backend topic always — feeds the GUI's blue
+                    # cv2 circle.
+                    self.pub_v0_cv2.publish(p)
+                    # Mirror to /oak/ball/v0/rgb_pixel + diagnostic
+                    # only when cv2 is the active backend.
+                    if self.v0_backend == 'cv2':
+                        self.pub_v0.publish(p)
+                        self._n_v0 += 1
+                        d = Float32MultiArray()
+                        d.data = [float(cx), float(cy),
+                                  float(r), float(conf)]
+                        self.pub_v0_diag.publish(d)
 
                     # Push a fresh ROI to the SpatialLocationCalculator
                     # so depth is sampled exactly where the ball was

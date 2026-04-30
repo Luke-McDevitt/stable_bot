@@ -101,6 +101,28 @@
                     cx="0" cy="0" r="2"
                     fill="#22d3ee"
                     visibility="hidden"/>
+            <!-- cv2 V0 detector circle — solid blue. Draws whenever
+                 /oak/ball/v0/cv2_pixel publishes recently, regardless
+                 of which backend is the controller's active source. -->
+            <circle id="vis-overlay-ball-cv2"
+                    cx="0" cy="0" r="0"
+                    fill="none" stroke="#3b82f6" stroke-width="2"
+                    visibility="hidden"/>
+            <circle id="vis-overlay-ball-cv2-center"
+                    cx="0" cy="0" r="2"
+                    fill="#3b82f6"
+                    visibility="hidden"/>
+            <!-- NN V0 detector circle — solid emerald. Drawn from
+                 /oak/ball/v0/nn_pixel; lets the operator compare the
+                 two detectors at a glance. -->
+            <circle id="vis-overlay-ball-nn"
+                    cx="0" cy="0" r="0"
+                    fill="none" stroke="#10b981" stroke-width="2"
+                    visibility="hidden"/>
+            <circle id="vis-overlay-ball-nn-center"
+                    cx="0" cy="0" r="2"
+                    fill="#10b981"
+                    visibility="hidden"/>
             <!-- Drawn-route overlay (spec §11.2.3). Scaffold only —
                  needs Stage C extrinsics + per-sample platform→camera
                  projection before this can render anything real. The
@@ -129,6 +151,10 @@
           <label class="flex items-center gap-2 text-slate-600 cursor-not-allowed"
                  title="Project the Demo-3 drawn route onto the camera image. Needs Stage C extrinsics + ArUco pose so platform-frame samples can be transformed to image pixels — scaffolded; not wired yet.">
             <input id="vis-show-route" type="checkbox" disabled> drawn route <span class="text-slate-700">(scaffold)</span>
+          </label>
+          <label class="flex items-center gap-2"
+                 title="Replace the live RGB feed with the V0 detector's debug image: lime tint shows pixels passing HSV+morph, cyan = projected platform mask, red circle = picked blob. Use while tuning HSV sliders.">
+            <input id="vis-show-v0-debug" type="checkbox"> V0 debug overlay
           </label>
         </div>
         <!-- Detector toggle for option 2 (V0 + platform mask) vs
@@ -238,22 +264,6 @@
             Values commit on release. Watch the <b>V0 debug overlay</b>
             below — green tint shows pixels passing HSV+morph;
             red circle is the chosen blob.
-          </div>
-        </details>
-        <!-- V0 detector debug overlay (live). Subscribed only when
-             this <details> is open so we don't burn CPU + bandwidth
-             when not actively tuning. -->
-        <details id="v0-debug-panel"
-                 class="mt-2 bg-slate-900 rounded p-2 border border-slate-700">
-          <summary class="text-xs text-slate-400 cursor-pointer select-none">
-            V0 debug overlay (live)
-          </summary>
-          <img id="v0-debug-img" alt="(no overlay yet)"
-               class="mt-2 w-full rounded bg-slate-950"/>
-          <div class="text-xs text-slate-500 mt-1">
-            Lime tint = pixels that passed HSV+morph (the lit-up
-            region the contour finder ranks). Cyan outline = projected
-            platform mask. Red circle = picked blob.
           </div>
         </details>
         <!-- Vision-debug bag recorder. Captures everything the
@@ -2048,8 +2058,12 @@ function setupROSInterface() {
   topic.oak_hsv_cmd = new ROSLIB.Topic({
     ros, name: '/oak/cmd_hsv',
     messageType: 'std_msgs/msg/Float32MultiArray' });
-  // V0 detector debug overlay (live RGB tinted by HSV mask). Lazy
-  // subscribe — we only attach when the operator opens the panel.
+  // V0 detector debug overlay (live RGB tinted by HSV mask). Subscribed
+  // only when the "V0 debug overlay" checkbox under the live feed is
+  // ticked. When subscribed, callback writes to the SAME #vision-feed-img
+  // as the regular RGB feed — effectively replacing the live image with
+  // the debug-tinted version. The regular onRgbFrame is suppressed via
+  // the _v0DebugActive flag so it doesn't fight the overlay.
   topic.v0_debug = new ROSLIB.Topic({
     ros, name: '/oak/v0/debug_image',
     messageType: 'sensor_msgs/msg/CompressedImage',
@@ -2058,7 +2072,7 @@ function setupROSInterface() {
   });
   let _v0DebugUrl = null;
   topic.v0_debug._cb = (m) => {
-    const img = document.getElementById('v0-debug-img');
+    const img = document.getElementById('vision-feed-img');
     if (!img) return;
     const blob = new Blob([new Uint8Array(m.data)], {type: 'image/jpeg'});
     if (_v0DebugUrl) URL.revokeObjectURL(_v0DebugUrl);
@@ -2118,6 +2132,17 @@ function setupROSInterface() {
     ros, name: '/oak/ball/v0/rgb_pixel',
     messageType: 'geometry_msgs/msg/PointStamped' });
   topic.ball_v0.subscribe(onBallV0Pixel);
+  // Per-backend pixel topics — both run regardless of which is the
+  // active controller source. GUI draws cv2 in blue, NN in emerald
+  // so the operator can compare them visually.
+  topic.ball_v0_cv2 = new ROSLIB.Topic({
+    ros, name: '/oak/ball/v0/cv2_pixel',
+    messageType: 'geometry_msgs/msg/PointStamped' });
+  topic.ball_v0_cv2.subscribe(m => onBallV0PerBackend('cv2', m));
+  topic.ball_v0_nn = new ROSLIB.Topic({
+    ros, name: '/oak/ball/v0/nn_pixel',
+    messageType: 'geometry_msgs/msg/PointStamped' });
+  topic.ball_v0_nn.subscribe(m => onBallV0PerBackend('nn', m));
 
   // Localized ball position (on-platform-gated). The GUI overlay
   // gates on this so orange false positives off the side of the
@@ -3939,6 +3964,13 @@ let _fpsLastFrameMs = 0;
 // .cx/.cy/.r in 960x540 pixel space (RGB ISP from oak_driver_node).
 let _v0Latest = null;
 let _v0LastMs = 0;
+// Per-backend latest detection (so the GUI can show cv2 + NN
+// circles independently). Both topics fire regardless of which is
+// the controller's active source.
+let _v0Cv2Latest = null;
+let _v0Cv2LastMs = 0;
+let _v0NnLatest  = null;
+let _v0NnLastMs  = 0;
 // Last time /ball_xy_mono published (i.e., last on-platform localized
 // detection). The V0 overlay gates on BOTH this AND a fresh V0 pixel
 // so off-platform false positives — orange on a desk next to the
@@ -4085,22 +4117,26 @@ function initVisionGUI() {
     s.addEventListener('input', () => { if (v) v.innerText = s.value; });
     s.addEventListener('change', () => publishHsvFromSliders());
   }
-  // Lazy-subscribe to the V0 debug overlay only while the panel is
-  // open. The OAK driver only renders the overlay when there's a
-  // subscriber, so this saves ~3 ms / frame of cv2 work otherwise.
-  const v0Panel = $('v0-debug-panel');
+  // V0 debug overlay toggle (under the live feed). When checked,
+  // subscribe to /oak/v0/debug_image and let it write to the live
+  // feed <img>; suppress the normal RGB feed so the two don't
+  // alternate. The OAK driver only renders the overlay when there's
+  // at least one subscriber, so this also saves cv2 work when off.
+  const v0DbgToggle = $('vis-show-v0-debug');
   let _v0DebugSubbed = false;
   function syncV0DebugSub() {
-    const want = v0Panel && v0Panel.open && topic.v0_debug;
+    const want = v0DbgToggle && v0DbgToggle.checked && topic.v0_debug;
     if (want && !_v0DebugSubbed) {
       topic.v0_debug.subscribe(topic.v0_debug._cb);
       _v0DebugSubbed = true;
+      window._v0DebugActive = true;     // suppresses onRgbFrame writes
     } else if (!want && _v0DebugSubbed) {
       topic.v0_debug.unsubscribe(topic.v0_debug._cb);
       _v0DebugSubbed = false;
+      window._v0DebugActive = false;
     }
   }
-  if (v0Panel) v0Panel.addEventListener('toggle', syncV0DebugSub);
+  if (v0DbgToggle) v0DbgToggle.addEventListener('change', syncV0DebugSub);
   syncV0DebugSub();
 
   // --- Ball-track gains panel (Demos column) ---
@@ -4262,6 +4298,9 @@ let _rgbFeedLastLog = 0;
 
 function onRgbFrame(m) {
   _rgbFeedFrames += 1;
+  // V0-debug-overlay toggle hijacks the live feed — bail before we
+  // overwrite its image src.
+  if (window._v0DebugActive) return;
   // Throttled console line so the dev tools confirms data flow
   // without spamming.
   const now = performance.now();
@@ -5580,6 +5619,22 @@ function onBallV0Pixel(m) {
   renderBallOverlays();
 }
 
+// Per-backend pixel topics. cv2 → blue, NN → emerald in the SVG
+// overlay. Operator can see what each detector picks up directly.
+function onBallV0PerBackend(which, m) {
+  const latest = {
+    cx: m.point.x, cy: m.point.y, r: m.point.z,
+  };
+  if (which === 'cv2') {
+    _v0Cv2Latest = latest;
+    _v0Cv2LastMs = performance.now();
+  } else if (which === 'nn') {
+    _v0NnLatest = latest;
+    _v0NnLastMs = performance.now();
+  }
+  renderBallOverlays();
+}
+
 // Depth-blob ball overlay. Subscribed to /oak/ball/depth/rgb_pixel —
 // see oak_driver_node.detect_ball_depth_blob.
 function onBallDepthPixel(m) {
@@ -5634,6 +5689,36 @@ function renderBallOverlays() {
   _renderOneOverlay('vis-overlay-ball-depth', 'vis-overlay-ball-depth-center',
                     _depthLatest, _depthLastMs, _ballDepthLastMs,
                     showDepth, DEPTH_STALE_MS);
+  // Per-backend overlays (cv2 blue + NN emerald). These are gated
+  // only on freshness, NOT on the ball_xy_mono freshness, since
+  // they show RAW detector output (whether or not the localizer
+  // accepted the projection). Lets the operator see a detector
+  // mis-firing OFF the platform — extremely useful for HSV tuning.
+  const now2 = performance.now();
+  const cv2Fresh = _v0Cv2Latest && (now2 - _v0Cv2LastMs) < V0_STALE_MS;
+  const nnFresh  = _v0NnLatest  && (now2 - _v0NnLastMs)  < V0_STALE_MS;
+  const showCv2  = cb.checked && cv2Fresh;
+  const showNn   = cb.checked && nnFresh;
+  const renderRaw = (ring, dot, latest, on) => {
+    const r = $(ring), d = $(dot);
+    if (!r || !d) return;
+    if (!on) {
+      r.setAttribute('visibility', 'hidden');
+      d.setAttribute('visibility', 'hidden');
+      return;
+    }
+    r.setAttribute('cx', latest.cx);
+    r.setAttribute('cy', latest.cy);
+    r.setAttribute('r',  Math.max(latest.r, 4));
+    r.setAttribute('visibility', 'visible');
+    d.setAttribute('cx', latest.cx);
+    d.setAttribute('cy', latest.cy);
+    d.setAttribute('visibility', 'visible');
+  };
+  renderRaw('vis-overlay-ball-cv2', 'vis-overlay-ball-cv2-center',
+            _v0Cv2Latest, showCv2);
+  renderRaw('vis-overlay-ball-nn',  'vis-overlay-ball-nn-center',
+            _v0NnLatest,  showNn);
   // Clear stale platform-frame readouts so the user doesn't compare
   // a fresh number against a frozen one (very misleading at the
   // centered ball — depth could have dropped out 5s ago and you'd
