@@ -1,3 +1,13 @@
+# Direction-tested 2026-04-30: with /ball_state and /ball_ref both in
+# IMU frame (post-§0 fix in ref_generator + ball_localizer), the
+# combination (pitch_sign=-1, roll_sign=+1) drives the ball toward
+# the SVG-clicked target. Signs are asymmetric because Ry(+p) (per
+# right-hand rule) tips the +X edge DOWN — the BALL_TRACK loop's
+# "+pitch pushes ball -X" assumption is opposite of the IK math, so
+# pitch_sign needs to invert it. Rx(+r) tips +Y up like the loop
+# expects, so roll_sign stays +1. See bag 20260430T204648Z_demo2 —
+# err_x mean +11mm, err_y mean +22mm over a 46s run, the first
+# closed-loop demo where the ball actually tracked the target.
 accel_tilt_deg: 3.0
 algorithm: pid
 brake_horizon_mm: 60.0
