@@ -623,6 +623,16 @@
             <input id="bt-g-stiction_break_s" type="number" step="0.1" min="0.05" max="5" value="0.6"
                    class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
           </label>
+          <label class="flex flex-col">
+            <span class="text-slate-400">Brake tilt [deg]</span>
+            <input id="bt-g-brake_tilt_deg" type="number" step="0.5" min="0.5" max="15" value="6"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
+          <label class="flex flex-col">
+            <span class="text-slate-400">Control latency [s]</span>
+            <input id="bt-g-control_latency_s" type="number" step="0.01" min="0" max="0.5" value="0.10"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
         </div>
       </div>
       <div class="grid grid-cols-3 gap-2 mt-3">
@@ -4953,6 +4963,7 @@ const BT_GAIN_KEYS = [
   'accel_tilt_deg', 'err_tol_mm', 'v_brake_mm_s',
   'v_coast_mm_s', 'brake_horizon_mm',
   'stiction_v_threshold_mm_s', 'stiction_break_s',
+  'brake_tilt_deg', 'control_latency_s',
 ];
 // Special: algorithm is a string-typed field. Dirty/populate handled
 // via a separate small wrapper so the numeric BT_GAIN_KEYS path stays

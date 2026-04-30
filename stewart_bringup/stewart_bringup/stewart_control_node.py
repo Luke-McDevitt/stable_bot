@@ -360,6 +360,20 @@ def _load_ball_track_gains():
         # friction often pins the ball at accel_tilt=3°.
         'stiction_v_threshold_mm_s': 20.0,
         'stiction_break_s':          0.6,
+        # Brake authority — separate from accel_tilt because
+        # kinetic friction (rolling) is much lower than static
+        # friction (overcoming rest), so a fast-rolling ball
+        # needs MORE tilt to brake than the ball at rest needed
+        # to start moving. Default = max_tilt_deg so by default
+        # we use full available authority for braking.
+        'brake_tilt_deg':   6.0,
+        # Latency compensation. /oak/latency_ms reports ~70-100 ms
+        # capture→Pi; KF + control loop adds another ~20 ms; total
+        # see-to-command latency is ~100 ms. The FSM extrapolates
+        # ball position forward by this time using KF velocity so
+        # phase decisions (especially BRAKE) fire at the right
+        # moment instead of N ms late.
+        'control_latency_s':  0.10,
     }
     defaults_str = {
         'algorithm': 'pid',     # 'pid' | 'bangbang'
@@ -2047,7 +2061,9 @@ class StewartControlNode(Node):
                             'v_brake_mm_s', 'v_coast_mm_s',
                             'brake_horizon_mm',
                             'stiction_v_threshold_mm_s',
-                            'stiction_break_s')},
+                            'stiction_break_s',
+                            'brake_tilt_deg',
+                            'control_latency_s')},
                 'algorithm': str(
                     self.ball_track_gains.get('algorithm', 'pid')),
             },
@@ -3585,6 +3601,8 @@ class StewartControlNode(Node):
         'brake_horizon_mm': (10.0, 200.0),
         'stiction_v_threshold_mm_s': (1.0, 200.0),
         'stiction_break_s':          (0.05, 5.0),
+        'brake_tilt_deg':            (0.5, 15.0),
+        'control_latency_s':         (0.0, 0.5),
     }
     _BALL_TRACK_STR_KEYS = ('algorithm',)
     _BALL_TRACK_ALGORITHMS = ('pid', 'bangbang')
@@ -4264,17 +4282,41 @@ class StewartControlNode(Node):
                     #     starts moving with healthy velocity.
                     #   COAST: zero tilt while ball coasts toward target.
                     #   BRAKE: full tilt opposite when ball about to
-                    #     overshoot.
+                    #     overshoot. Uses brake_tilt_deg (typically
+                    #     larger than accel_tilt_deg because kinetic
+                    #     friction is lower than static — a moving
+                    #     ball needs MORE tilt to brake than a still
+                    #     ball needs to start).
                     #   SETTLE: zero tilt within err_tol_mm of target.
                     #   STICTION_BREAK: ACCEL but tilt bumped to
                     #     max_tilt because ball isn't moving.
                     accel_tilt = float(g.get('accel_tilt_deg', max_tilt))
+                    brake_tilt = float(g.get('brake_tilt_deg', max_tilt))
                     err_tol = float(g.get('err_tol_mm', 15.0))
                     v_brake = float(g.get('v_brake_mm_s', 80.0))
                     v_coast = float(g.get('v_coast_mm_s', 30.0))
                     brake_horizon = float(g.get('brake_horizon_mm', 60.0))
                     stiction_v = float(g.get('stiction_v_threshold_mm_s', 20.0))
                     stiction_break_s = float(g.get('stiction_break_s', 0.6))
+                    latency_s = float(g.get('control_latency_s', 0.10))
+
+                    # Latency-compensated lookahead. Vision is ~100 ms
+                    # behind reality; if we make phase decisions on the
+                    # raw KF state, we BRAKE 100 ms after we should
+                    # have. Extrapolate position forward by latency
+                    # using current velocity. Recompute err/u/v_toward
+                    # off the lead position so the FSM sees "where
+                    # the ball will be when our tilt command actually
+                    # takes effect".
+                    px_lead = px + vx * latency_s
+                    py_lead = py + vy * latency_s
+                    ex_lead = px_lead - rx
+                    ey_lead = py_lead - ry
+                    err_mag = math.hypot(ex_lead, ey_lead)
+                    ux = ex_lead / err_mag if err_mag > 1e-6 else 0.0
+                    uy = ey_lead / err_mag if err_mag > 1e-6 else 0.0
+                    v_toward = -(vx * ux + vy * uy)
+
                     if err_mag < err_tol:
                         tilt_pitch = 0.0
                         tilt_roll = 0.0
@@ -4286,8 +4328,12 @@ class StewartControlNode(Node):
                         if (err_mag < brake_horizon
                                 and v_toward > v_brake):
                             # BRAKE — tilt opposite of accelerate.
-                            tilt_pitch = -ps * ux * accel_tilt
-                            tilt_roll  = -rs * uy * accel_tilt
+                            # Uses brake_tilt (separate from accel_tilt;
+                            # typically larger because braking a
+                            # rolling ball needs more authority than
+                            # starting a stationary one).
+                            tilt_pitch = -ps * ux * brake_tilt
+                            tilt_roll  = -rs * uy * brake_tilt
                             stiction_started_t = None
                             phase_code = 3   # BRAKE
                         elif v_toward > v_coast:
