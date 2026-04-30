@@ -37,7 +37,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import PointStamped, PoseStamped
-from std_msgs.msg import Float32, Float32MultiArray
+from std_msgs.msg import Float32, Float32MultiArray, String
 
 # DepthAI is hardware-side; allow the module to import on machines
 # without the OAK plugged in (the node will refuse to spin without it).
@@ -539,20 +539,27 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
     enc_rgb = pipeline.create(dai.node.VideoEncoder)
     enc_rgb.setDefaultProfilePreset(
         rgb_fps, dai.VideoEncoderProperties.Profile.MJPEG)
-    # Lower JPEG quality dramatically reduces per-frame size, which
-    # is amplified ~7× on the wire because rosbridge inflates the
-    # bytes to a JSON array of integers. Quality 70 (default) gives
-    # roughly 70-90 KB per 540p frame instead of 200+ KB at quality
-    # 95. Visual quality is still fine for diagnostic use; raw RGB
-    # for V0 is unaffected (V0 reads cam_rgb.video, not the JPEG
-    # output).  Override via OAK_RGB_JPEG_QUALITY=NN if you want
-    # crisper screenshots from the GUI feed.
+    # Quality 50 (down from 70) — at 540p MJPEG that's ~35-45 KB/frame
+    # vs ~70-90 KB at q70. Smaller per-frame payload reduces the
+    # transfer + queue time inside the OAK pipeline, which directly
+    # cuts the 115 ms see→Pi median latency we measured. V0 reads the
+    # uncompressed cam_rgb.video stream (not the JPEG output), so this
+    # only affects the GUI live feed.  Override via
+    # OAK_RGB_JPEG_QUALITY=NN if you need crisper screenshots.
     try:
-        rgb_quality = int(os.environ.get('OAK_RGB_JPEG_QUALITY', '70'))
+        rgb_quality = int(os.environ.get('OAK_RGB_JPEG_QUALITY', '50'))
         rgb_quality = max(20, min(100, rgb_quality))
         enc_rgb.setQuality(rgb_quality)
     except Exception:
         pass
+    # Drop-newest-on-overflow at the encoder input: prevents frame
+    # backlog inside the OAK if encoding lags. A 7-frame queue at
+    # 60 Hz capture is exactly what the 115 ms latency profile was
+    # showing — non-blocking + queue-of-1 forces "always encode the
+    # newest, drop the older". Same idea for the encoder's frame pool.
+    enc_rgb.input.setQueueSize(1)
+    enc_rgb.input.setBlocking(False)
+    enc_rgb.setNumFramesPool(2)
     cam_rgb.video.link(enc_rgb.input)
 
     # Outputs
@@ -668,6 +675,19 @@ class OakDriverNode(Node):
         # sync. Published every RGB frame.
         self.pub_latency = self.create_publisher(
             Float32, '/oak/latency_ms', 10)
+        # Periodic health snapshot (per-stream Hz + per-path latency)
+        # so demo bags carry the same info the [health] log lines do.
+        # Field order matches the [health] log so post-hoc parsing is
+        # consistent: [v0_arr_hz, v0_pub_hz, jpeg_hz, depth_hz,
+        #              depth_pub_hz, pose_hz, jpeg_lat_ms, v0_lat_ms].
+        self.pub_health = self.create_publisher(
+            Float32MultiArray, '/oak/health', 10)
+        # Configuration snapshot (rgb_fps, mono_fps, jpeg_quality,
+        # enable_depth, etc.) so the digest can correlate behavior
+        # changes with config changes — the user's "what tweak made
+        # this work?" question deserves a record.
+        self.pub_config = self.create_publisher(
+            String, '/oak/config', 10)
         # SpatialLocationCalculator output — 3-D ball position in
         # RGB-camera frame (metres). ball_localizer_node transforms
         # this into platform-frame mm and republishes as
@@ -746,6 +766,16 @@ class OakDriverNode(Node):
             mono_fps = max(5, min(60, int(os.environ.get('OAK_MONO_FPS', '15'))))
         except Exception:
             mono_fps = 15
+        try:
+            jpeg_q = max(20, min(100,
+                int(os.environ.get('OAK_RGB_JPEG_QUALITY', '50'))))
+        except Exception:
+            jpeg_q = 50
+        # Stash for /oak/config snapshot (read again inside
+        # _build_pipeline from env so the values stay in sync).
+        self._rgb_fps_used = rgb_fps
+        self._mono_fps_used = mono_fps
+        self._jpeg_quality_used = jpeg_q
         self.get_logger().info(
             f"Building OAK pipeline (rgb={rgb_fps} Hz, mono={mono_fps} Hz)…")
         pipeline = _build_pipeline(rgb_fps=rgb_fps, mono_fps=mono_fps,
@@ -850,6 +880,12 @@ class OakDriverNode(Node):
         self._last_pose: Optional[PoseStamped] = None
         self._mask_pose_stamp: Optional[float] = None
         self._platform_mask: Optional[np.ndarray] = None
+        # Bounding box of the projected platform polygon, cached
+        # alongside _platform_mask so V0's HSV+contour pipeline can
+        # crop to just the platform region instead of running on the
+        # full 540p frame. Tuple (x0, y0, x1, y1) in image coords, or
+        # None if no pose / off-screen polygon.
+        self._platform_bbox: Optional[Tuple[int, int, int, int]] = None
         # Tighter mask for the depth-blob detector that lives inside
         # the ArUco marker ring (radius ~120 mm), so the marker
         # mounting frame can't be the largest above-plane component.
@@ -869,6 +905,12 @@ class OakDriverNode(Node):
         self._n_depth_blob = 0
         # Last-log timestamp so health prints true Hz, not cumulative.
         self._health_last_t = time.time()
+        # Last-frame age (seconds) for the V0 raw path — populated on
+        # every RGB raw frame, surfaced by /oak/health.
+        self._v0_last_age_s = float('nan')
+        self._jpeg_last_age_s = float('nan')
+        # 30s timer cadence for /oak/config snapshots.
+        self._config_last_pub_t = 0.0
         self._diag_t0 = time.monotonic()
         # Per-frame depth detector stats from the last detection
         # attempt. Surfaced in the [probe] log so we can see which
@@ -906,6 +948,30 @@ class OakDriverNode(Node):
         # Drive everything from a single timer; DepthAI queues are
         # already producer-buffered, so we just drain them.
         self.create_timer(1.0 / 60.0, self._tick)
+
+        # Publish initial /oak/config so any subscriber that joins
+        # before the first 30 s health tick has the snapshot in hand.
+        self._publish_config_snapshot()
+
+    def _publish_config_snapshot(self):
+        """Emit a JSON snapshot of every OAK-side tunable so the
+        digest can correlate demo outcomes with config state."""
+        try:
+            import json as _json
+            cfg = {
+                'rgb_fps': int(self._rgb_fps_used),
+                'mono_fps': int(self._mono_fps_used),
+                'jpeg_quality': int(self._jpeg_quality_used),
+                'enable_depth': bool(self.enable_depth),
+                'mask_v0_to_platform': bool(self.mask_v0_to_platform),
+                'usb_speed': os.environ.get('OAK_USB_SPEED', '?'),
+                'rgb_w': RGB_W, 'rgb_h': RGB_H,
+            }
+            m = String()
+            m.data = _json.dumps(cfg, separators=(',', ':'))
+            self.pub_config.publish(m)
+        except Exception as e:
+            self.get_logger().warn(f"config snapshot failed: {e}")
 
     def _on_pose(self, msg: PoseStamped):
         """Cache the latest platform pose. Mask + expected-depth-map
@@ -951,6 +1017,12 @@ class OakDriverNode(Node):
         intrinsics_state = ('loaded' if self.K_rgb is not None
                             else 'NONE')
         depth_q = (self.q_depth is not None)
+        jpeg_lat_ms = (self._jpeg_last_age_s * 1000.0
+                       if self._jpeg_last_age_s == self._jpeg_last_age_s
+                       else float('nan'))
+        v0_lat_ms = (self._v0_last_age_s * 1000.0
+                     if self._v0_last_age_s == self._v0_last_age_s
+                     else float('nan'))
         self.get_logger().info(
             f"[health] v0_arr={v0_arr_hz:.1f}Hz "
             f"v0_pub={v0_pub_hz:.1f}Hz "
@@ -958,9 +1030,26 @@ class OakDriverNode(Node):
             f"depth={depth_hz:.1f}Hz "
             f"depth_pub={depth_pub_hz:.1f}Hz "
             f"pose={pose_hz:.1f}Hz "
+            f"jpeg_lat={jpeg_lat_ms:.0f}ms "
+            f"v0_lat={v0_lat_ms:.0f}ms "
             f"mask={mask_state} intr={intrinsics_state} "
             f"depthQ={'Y' if depth_q else 'N'} "
             f"mask_v0={self.mask_v0_to_platform}")
+        # Same data into the bag via /oak/health.
+        h = Float32MultiArray()
+        h.data = [
+            float(v0_arr_hz), float(v0_pub_hz),
+            float(jpeg_hz), float(depth_hz),
+            float(depth_pub_hz), float(pose_hz),
+            float(jpeg_lat_ms), float(v0_lat_ms),
+        ]
+        self.pub_health.publish(h)
+        # /oak/config — snapshot every 30 s + at startup. Captures
+        # tunables that change behavior so the digest can correlate
+        # demo outcomes with config state.
+        if (now - self._config_last_pub_t) >= 30.0:
+            self._config_last_pub_t = now
+            self._publish_config_snapshot()
         # Sanity-probe the depth math: at the principal point, what's
         # the ArUco-derived expected depth vs. what stereo measured?
         # On a flat platform with markers coplanar with the deck,
@@ -1062,12 +1151,27 @@ class OakDriverNode(Node):
             self.K_rgb, self.dist_rgb, R_pose, t_pose)
         if poly is None:
             self._platform_mask = None
+            self._platform_bbox = None
             self._platform_depth_mask = None
             self._expected_depth = None
             self._mask_pose_stamp = stamp_s
             return
         # cv2 image axes are (row=H, col=W).
         self._platform_mask = _platform_image_mask((RGB_H, RGB_W), poly)
+        # Cache the polygon's image-space bbox with a small margin so
+        # V0 can crop to just the platform region (~1/4 of the frame
+        # area) and skip cv2 work on the rest. ~75 % HSV/morph/contour
+        # speedup, which is what gets us comfortably under the 16.7 ms
+        # tick budget at 60 Hz.
+        margin = 8
+        x_min = int(np.clip(poly[:, 0].min() - margin, 0, RGB_W))
+        y_min = int(np.clip(poly[:, 1].min() - margin, 0, RGB_H))
+        x_max = int(np.clip(poly[:, 0].max() + margin, 0, RGB_W))
+        y_max = int(np.clip(poly[:, 1].max() + margin, 0, RGB_H))
+        if x_max > x_min and y_max > y_min:
+            self._platform_bbox = (x_min, y_min, x_max, y_max)
+        else:
+            self._platform_bbox = None
         # Tight mask for depth-blob: inside the marker ring, so the
         # raised marker hardware doesn't win the largest-blob contest.
         depth_poly = _project_platform_polygon(
@@ -1117,9 +1221,11 @@ class OakDriverNode(Node):
             try:
                 capture_ts = rgb_jpeg.getTimestamp().total_seconds()
                 now_ts = dai.Clock.now().total_seconds()
+                age_s = max(0.0, now_ts - capture_ts)
                 lat_msg = Float32()
-                lat_msg.data = float((now_ts - capture_ts) * 1000.0)
+                lat_msg.data = float(age_s * 1000.0)
                 self.pub_latency.publish(lat_msg)
+                self._jpeg_last_age_s = age_s
             except Exception:
                 pass
 
@@ -1146,10 +1252,33 @@ class OakDriverNode(Node):
                 ros_capture = self.get_clock().now() - Duration(
                     seconds=age_s)
                 v0_stamp = ros_capture.to_msg()
+                v0_age_s = age_s   # for /oak/health
             except Exception:
                 v0_stamp = self.get_clock().now().to_msg()
-            v0_mask = self._platform_mask if self.mask_v0_to_platform else None
-            det = detect_ball_v0(frame, restrict_mask=v0_mask)
+                v0_age_s = float('nan')
+            self._v0_last_age_s = v0_age_s
+            # Pre-crop to the platform-mask bbox so HSV+morph+contour
+            # only run on ~25 % of the frame area. Falls back to full-
+            # frame if bbox isn't ready yet (no pose received).
+            bbox = (self._platform_bbox
+                    if (self.mask_v0_to_platform
+                        and self._platform_bbox is not None)
+                    else None)
+            if bbox is not None:
+                x0, y0, x1, y1 = bbox
+                v0_frame = frame[y0:y1, x0:x1]
+                v0_mask = (self._platform_mask[y0:y1, x0:x1]
+                           if self._platform_mask is not None else None)
+                det = detect_ball_v0(v0_frame, restrict_mask=v0_mask)
+                if det is not None:
+                    cx, cy, r, conf = det
+                    cx += x0
+                    cy += y0
+                    det = (cx, cy, r, conf)
+            else:
+                v0_mask = (self._platform_mask
+                           if self.mask_v0_to_platform else None)
+                det = detect_ball_v0(frame, restrict_mask=v0_mask)
             if det is not None:
                 cx, cy, r, conf = det
                 p = PointStamped()

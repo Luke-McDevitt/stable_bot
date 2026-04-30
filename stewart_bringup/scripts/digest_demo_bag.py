@@ -198,6 +198,8 @@ def _read_bag(bag_dir: str):
     cur_t,   cur_data = [], []
     bt_diag_t, bt_diag = [], []   # ball_track FSM diagnostic
     lat_t,   lat_ms   = [], []     # /oak/latency_ms (capture→Pi)
+    health_t, health  = [], []     # /oak/health Float32MultiArray
+    config_d          = []         # /oak/config String (JSON snapshots)
 
     while reader.has_next():
         topic, raw, t_ns = reader.read_next()
@@ -273,6 +275,19 @@ def _read_bag(bag_dir: str):
                 lat_ms.append(float(msg.data))
             except Exception:
                 pass
+        elif topic == '/oak/health':
+            # Float32MultiArray: [v0_arr, v0_pub, jpeg, depth,
+            #   depth_pub, pose, jpeg_lat_ms, v0_lat_ms]
+            d = list(msg.data)
+            if len(d) >= 8:
+                health_t.append(t_ns)
+                health.append([float(x) for x in d[:8]])
+        elif topic == '/oak/config':
+            # String: JSON snapshot of the OAK-side tunables.
+            try:
+                config_d.append(json.loads(msg.data))
+            except Exception:
+                config_d.append({'raw': msg.data})
         elif topic == '/ball_track/diagnostic':
             d = list(msg.data)
             # Field layout (see stewart_control_node._ball_track_run):
@@ -313,6 +328,10 @@ def _read_bag(bag_dir: str):
         'lat':   (np.array(lat_t, dtype=np.int64),
                   np.array(lat_ms, dtype=np.float64) if lat_ms
                   else np.zeros((0,), dtype=np.float64)),
+        'health': (np.array(health_t, dtype=np.int64),
+                   np.array(health) if health
+                   else np.zeros((0, 8))),
+        'oak_config': config_d,
     }
 
 
@@ -401,6 +420,8 @@ def digest(bag_dir: str):
     enc_t, enc_data = data['enc']
     cur_t, cur_data = data['cur']
     lat_t, lat_ms = data['lat']
+    health_t, health = data['health']
+    oak_config = data.get('oak_config', [])
 
     # Bag-relative origin.
     cands = []
@@ -460,6 +481,25 @@ def digest(bag_dir: str):
         'settling_time_s': settling,
         'platform_pose_z_mm': _stats(pose_z),
         'oak_latency_ms': _stats(lat_ms),
+        # /oak/health field summary so the digest captures whether
+        # the camera was actually hitting the rates the config asked
+        # for during this run. Index order matches oak_driver_node:
+        # 0 v0_arr_hz, 1 v0_pub_hz, 2 jpeg_hz, 3 depth_hz,
+        # 4 depth_pub_hz, 5 pose_hz, 6 jpeg_lat_ms, 7 v0_lat_ms.
+        'oak_health': ({
+            'n': int(health.shape[0]),
+            'v0_arr_hz': _stats(health[:, 0]) if health.size else {'n': 0},
+            'v0_pub_hz': _stats(health[:, 1]) if health.size else {'n': 0},
+            'jpeg_hz':   _stats(health[:, 2]) if health.size else {'n': 0},
+            'pose_hz':   _stats(health[:, 5]) if health.size else {'n': 0},
+            'jpeg_lat_ms': _stats(health[:, 6]) if health.size else {'n': 0},
+            'v0_lat_ms':   _stats(health[:, 7]) if health.size else {'n': 0},
+        }),
+        # Most recent /oak/config snapshot in the bag (deduplicated by
+        # JSON key set since the snapshot only changes when an env or
+        # toggle flips). Captures the OAK-side tunables that were live
+        # for this run, so we can correlate config tweaks with outcomes.
+        'oak_config': (oak_config[-1] if oak_config else None),
         'markers_visible': {
             'n': int(mark_t.size),
             'mean': float(np.mean(mark_n)) if mark_n.size else None,

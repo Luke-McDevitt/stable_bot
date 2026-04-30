@@ -114,6 +114,13 @@ DEMO_TOPICS = [
     # Lets digest_demo_bag plot the actual vision lag the controller
     # is fighting — independent of any control_latency_s constant.
     '/oak/latency_ms',
+    # Per-stream Hz + per-path latency snapshot every 5 s. Same data
+    # the [health] log line carries, but in the bag so the digest can
+    # plot it over the run.
+    '/oak/health',
+    # OAK-side tunables (rgb_fps, jpeg quality, depth on/off, …) so
+    # the digest can correlate behavior changes with config tweaks.
+    '/oak/config',
     # Pose ground truth
     '/platform_pose',
     '/platform_pose/markers_visible',
