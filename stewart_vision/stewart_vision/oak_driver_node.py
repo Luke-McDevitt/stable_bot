@@ -78,7 +78,15 @@ V0_W, V0_H = 320, 180
 # Saturated orange foam ball on a black-and-white platform — wide HSV
 # tolerance so paint variation and shadows don't drop detections. Tune
 # in the GUI's vision-debug panel.
-HSV_LO = np.array([5,   140, 90], dtype=np.uint8)   # H,S,V lower
+# Loosened S/V floors (was 140/90) so motion-blurred ball pixels still
+# pass the threshold. At 8 ms exposure + ISO 1600 the blurred orange
+# can drop to S≈80, V≈55, which the previous bounds rejected — the
+# 16:43 demo bag showed v0_pub crash from 13 Hz → 5 Hz once the ball
+# started moving. Wider gate trades a few possible false-positive
+# matches outside the platform for ~3× the detection rate during
+# motion; the platform-mask AND in detect_ball_v0 + the
+# MIN_CONTOUR_AREA_PX gate keep noise out.
+HSV_LO = np.array([5,   100, 60], dtype=np.uint8)   # H,S,V lower
 HSV_HI = np.array([22,  255, 255], dtype=np.uint8)  # H,S,V upper
 MIN_CONTOUR_AREA_PX = 60
 
@@ -136,11 +144,15 @@ def detect_ball_v0(rgb_bgr: np.ndarray,
 
 # --- Platform-mask projection (RGB image space) -----------------------------
 
-# Platform disk radius, in metres. Slightly larger than the physical 200 mm
-# so a ball just inside the rim isn't trimmed by sub-pixel polygon
-# rasterization or pose noise. Matches the on-platform gate in
-# ball_localizer_node._project_to_platform.
-PLATFORM_MASK_RADIUS_M = 0.220
+# Platform disk radius (in metres) used to mask the V0 HSV result
+# before contour finding. The physical platform is 200 mm radius;
+# tightened from 0.220 → 0.190 (inside the rim by ~10 mm) on
+# 2026-04-30 because the looser HSV bounds (S 100, V 60) started
+# letting nearby orange-ish bench/foam show up as "ball" right at the
+# rim edge. The on-platform gate in ball_localizer_node still uses
+# 0.220 m, but with the V0 mask tighter at 0.190 we never present
+# detections from outside the deck in the first place.
+PLATFORM_MASK_RADIUS_M = 0.190
 # With self-cal removed (probe data confirmed pose math is accurate
 # within 20 mm), the depth-blob detector no longer needs a tight
 # mask to keep the median honest — invalid stereo on the smooth

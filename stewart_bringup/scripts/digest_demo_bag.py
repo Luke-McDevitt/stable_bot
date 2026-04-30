@@ -462,6 +462,22 @@ def digest(bag_dir: str):
     # extracted from the latest mode:BALL_TRACK_* /control_cmd in the
     # bag — that's the command that started this demo run.
     demo_mode, demo_params = _last_demo_command(data['cmd'][1])
+    # /control_cmd race: when the GUI's auto-bag is on, the SVG-click
+    # target command can land on /control_cmd before the rosbag2
+    # recorder finishes subscribing — bag captures only the bare
+    # arming (no x_mm/y_mm). For BALL_TRACK_GOTO specifically, fall
+    # back to the median of /ball_ref over the run, which the
+    # ref_generator publishes continuously and is therefore always
+    # captured. This guarantees demo_params has x_mm/y_mm whenever
+    # the controller actually had a target.
+    if (demo_mode == 'BALL_TRACK_GOTO'
+            and demo_params is not None
+            and 'x_mm' not in demo_params
+            and ref_xy.size):
+        demo_params = dict(demo_params)
+        demo_params['x_mm'] = float(np.median(ref_xy[:, 0]))
+        demo_params['y_mm'] = float(np.median(ref_xy[:, 1]))
+        demo_params['_target_source'] = 'ball_ref_median'
 
     summary = {
         'bag': os.path.abspath(bag_dir),
