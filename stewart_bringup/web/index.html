@@ -3560,13 +3560,14 @@ let _depthLatest = null;
 let _depthLastMs = 0;
 let _ballDepthLastMs = 0;
 let _ballDepthXY = null;
-// V0 freshness window. 500 ms was tight when the RGB feed ran at
-// 15 fps and rosbridge wasn't throttled; with the new 100 ms
-// throttle on /oak/rgb/image_compressed, image-and-pixel-topic
-// arrival schedules can drift 200 ms apart and the renderer's 5 Hz
-// staleness check would flicker. 1500 ms is comfortably above any
-// realistic skew.
-const V0_STALE_MS = 1500;
+// V0 freshness window. Bumped 500 → 3000 ms. With the throttled
+// RGB feed and rosbridge-side message scheduling, /oak/ball/v0/
+// rgb_pixel arrivals can briefly bunch + drop, and the 5 Hz
+// staleness re-render flickers the circle when any single check
+// catches a gap. 3 s gives the WS plenty of slack — the user will
+// notice a real detection-loss within a few hundred ms by other
+// signals (the platform-frame coords stop updating).
+const V0_STALE_MS = 3000;
 // Depth-blob detection drops detection rate when foam absorbs IR
 // (observed ~1.5 Hz on a foam ball). A 500 ms freshness gate would
 // hide the circle between every message in that regime, so the
