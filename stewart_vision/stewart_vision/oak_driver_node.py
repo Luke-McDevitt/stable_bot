@@ -526,6 +526,15 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
     cam_rgb.setFps(rgb_fps)
     cam_rgb.setIspScale(1, 2)              # 540p ISP for cheaper compression
     cam_rgb.setInterleaved(False)
+    # Bump the camera's internal frame pool so the sensor doesn't stall
+    # waiting on downstream consumers when one of them (encoder, host
+    # queue) is briefly behind. Default is small; with multiple
+    # consumers (rgb_jpeg + rgb_raw + the V0 path) at 60 Hz this is
+    # the kind of back-pressure that silently caps frame rate.
+    try:
+        cam_rgb.setNumFramesPool(2, 3, 4, 4, 4)  # raw, isp, preview, video, still
+    except Exception:
+        pass
     # Manual focus + manual exposure to deterministically hit 60 fps.
     # CONTINUOUS_VIDEO autofocus pauses the sensor while it refocuses
     # (well-documented FPS killer on OAK-D Pro AF); auto-exposure
