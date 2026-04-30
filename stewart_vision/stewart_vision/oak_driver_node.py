@@ -31,6 +31,7 @@ import numpy as np
 import yaml
 
 import rclpy
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
@@ -465,7 +466,7 @@ def _load_rgb_intrinsics(yaml_path: str) -> Tuple[Optional[np.ndarray],
 
 # --- DepthAI pipeline builder ------------------------------------------------
 
-def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 15,
+def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 60,
                     enable_depth: bool = False):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
@@ -686,8 +687,26 @@ class OakDriverNode(Node):
             f"Depth subsystem: {'ENABLED' if self.enable_depth else 'DISABLED'} "
             f"(set OAK_ENABLE_DEPTH=1 to enable)")
 
-        self.get_logger().info("Building OAK pipeline...")
-        pipeline = _build_pipeline(enable_depth=self.enable_depth)
+        # FPS — env-overridable so we can throttle back if Pi 5's
+        # USB-2.0 link can't sustain the higher rate. 60 Hz is the
+        # default after the 2026-04-30 latency push; the IMX378 sensor
+        # in the OAK-D Pro AF runs 60 Hz at 1080p natively, and the V0
+        # detector reads from the ISP-scaled 540p so per-frame Pi
+        # work stays cheap. Drop to 30 Hz first if you see USB
+        # brownouts (X_LINK_ERROR in the logs); the JPEG encoder
+        # tracks rgb_fps, so this also affects the GUI MJPEG rate.
+        try:
+            rgb_fps = max(5, min(120, int(os.environ.get('OAK_RGB_FPS', '60'))))
+        except Exception:
+            rgb_fps = 60
+        try:
+            mono_fps = max(5, min(120, int(os.environ.get('OAK_MONO_FPS', '60'))))
+        except Exception:
+            mono_fps = 60
+        self.get_logger().info(
+            f"Building OAK pipeline (rgb={rgb_fps} Hz, mono={mono_fps} Hz)…")
+        pipeline = _build_pipeline(rgb_fps=rgb_fps, mono_fps=mono_fps,
+                                   enable_depth=self.enable_depth)
 
         # USB speed cap. The Pi 5 caps total USB current at 600 mA
         # by default (raise to 1.2 A with `usb_max_current_enable=1`
@@ -1029,12 +1048,28 @@ class OakDriverNode(Node):
         if rgb_raw is not None:
             frame = rgb_raw.getCvFrame()  # BGR uint8
             self._last_rgb_bgr = frame
+            # Translate the OAK frame timestamp into ROS-clock space
+            # so /ball_xy_mono and /ball_state carry the actual capture
+            # time, not "now". The controller's lookahead becomes
+            # self-correcting: it can subtract the real age instead of
+            # assuming a fixed control_latency_s. dai.Clock and the ROS
+            # clock have different epochs (steady vs system), so we
+            # compute the live offset and apply it.
+            try:
+                capture_dai = rgb_raw.getTimestamp().total_seconds()
+                now_dai = dai.Clock.now().total_seconds()
+                age_s = max(0.0, now_dai - capture_dai)
+                ros_capture = self.get_clock().now() - Duration(
+                    seconds=age_s)
+                v0_stamp = ros_capture.to_msg()
+            except Exception:
+                v0_stamp = self.get_clock().now().to_msg()
             v0_mask = self._platform_mask if self.mask_v0_to_platform else None
             det = detect_ball_v0(frame, restrict_mask=v0_mask)
             if det is not None:
                 cx, cy, r, conf = det
                 p = PointStamped()
-                p.header.stamp = self.get_clock().now().to_msg()
+                p.header.stamp = v0_stamp
                 p.header.frame_id = 'oak_rgb'
                 p.point.x = cx
                 p.point.y = cy
@@ -1097,6 +1132,16 @@ class OakDriverNode(Node):
             if depth_msg is not None:
                 self._n_depth_frame += 1
                 depth_frame = depth_msg.getFrame()  # uint16 mm, (H, W)
+                # Capture-time stamp for the depth pixel publish (see V0
+                # block above for rationale).
+                try:
+                    capture_dai = depth_msg.getTimestamp().total_seconds()
+                    now_dai = dai.Clock.now().total_seconds()
+                    age_s = max(0.0, now_dai - capture_dai)
+                    depth_stamp = (self.get_clock().now()
+                                   - Duration(seconds=age_s)).to_msg()
+                except Exception:
+                    depth_stamp = self.get_clock().now().to_msg()
 
                 # Frame-wide depth distribution (for the rich
                 # diagnostic). Computed on every frame so the digest
@@ -1151,7 +1196,7 @@ class OakDriverNode(Node):
                          above_mask, eroded_mask) = det
                         blob_for_dbg = (cx_det, cy_det, area_det)
                         p = PointStamped()
-                        p.header.stamp = self.get_clock().now().to_msg()
+                        p.header.stamp = depth_stamp
                         p.header.frame_id = 'oak_rgb'
                         p.point.x = float(cx_det)
                         p.point.y = float(cy_det)

@@ -112,15 +112,33 @@ def _parse_control_cmd(raw: str) -> dict:
 
 
 def _last_demo_command(cmd_d: list) -> tuple:
-    """Walk /control_cmd messages in reverse for the most recent
-    'mode:BALL_TRACK_*' command — that's the one that started the
-    active demo run. Returns (mode_name, params_dict) or (None, None).
+    """Walk /control_cmd in reverse for the most recent
+    'mode:BALL_TRACK_*' command. For BALL_TRACK_GOTO, prefer
+    entries that carry x_mm/y_mm — the bare arming command (no
+    target yet) is published when the operator clicks Start, before
+    they click the SVG to set a goal, so naively picking the
+    literal-most-recent often returns the empty arming and loses the
+    click target. Fall back to the bare arming if no later
+    target-bearing command appears.
+
+    Returns (mode_name, params_dict) or (None, None).
     """
+    fallback = None
     for c in reversed(cmd_d):
-        m = c.get('mode', '') or ''
-        if m.startswith('BALL_TRACK_'):
-            return m, dict(c.get('params') or {})
-    return None, None
+        m = (c.get('mode') or '').upper()
+        if not m.startswith('BALL_TRACK_'):
+            continue
+        params = dict(c.get('params') or {})
+        if m == 'BALL_TRACK_GOTO':
+            # Latest GOTO with a target — best case, return immediately.
+            if 'x_mm' in params and 'y_mm' in params:
+                return m, params
+            if fallback is None:
+                fallback = (m, params)
+            continue
+        # TRAJECTORY / PATH / etc. — first reverse hit wins.
+        return m, params
+    return fallback if fallback else (None, None)
 
 
 def _open_bag(bag_dir: str):
