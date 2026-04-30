@@ -106,15 +106,57 @@ weights after seeing the first 10–20 hand-picked trials):
 
 | component | meaning | weight |
 |---|---|---|
-| `f_err` | `1 / (1 + rms_error_mm / 50)` — 1.0 at 0 mm, 0.5 at 50 mm | 0.30 |
-| `f_p95` | `1 / (1 + p95_error_mm / 100)` — punishes tail oscillations | 0.20 |
-| `f_settle` | `max(0, 1 − settling_time_s / 15)` — 1 if settled in 0 s, 0 if ≥ 15 s | 0.20 |
-| `f_hold` | `on_target_fraction` (frac of run with err < 25 mm tolerance) | 0.30 |
+| `f_err` | `1 / (1 + rms_error_mm / 50)` — 1.0 at 0 mm, 0.5 at 50 mm | 0.25 |
+| `f_p95` | `1 / (1 + p95_error_mm / 100)` — punishes tail oscillations | 0.15 |
+| `f_settle` | `max(0, 1 − settling_time_s / 15)` — 1 if settled in 0 s, 0 if ≥ 15 s | 0.15 |
+| `f_hold` | `on_target_fraction` (frac of run with err < 25 mm tolerance) | 0.25 |
+| `f_calm` | `1 / (1 + mean_speed_mm_per_s / 100)` — punishes a "tracking" ball that's actually orbiting fast through target | 0.20 |
 
-`fitness = 0.30·f_err + 0.20·f_p95 + 0.20·f_settle + 0.30·f_hold`
+`fitness = 0.25·f_err + 0.15·f_p95 + 0.15·f_settle + 0.25·f_hold + 0.20·f_calm`
 
-`on_target_fraction` is a new field that needs to be computed from the
-bag during digest. Today's digest has rms / p95 / settling already.
+`on_target_fraction` and `mean_speed_mm_per_s` are new fields that
+need to be computed from the bag during digest. Today's digest has
+rms / p95 / settling already.
+
+### Why `f_calm`?
+
+Without a velocity penalty, an out-of-tune controller that drives
+the ball in a tight circle that crosses the target 5 times per
+second can score a misleadingly low rms / high hold-fraction. The
+ball "looks like it's tracking" but the system is unstable. `f_calm`
+breaks the tie by rewarding the slower, more deliberate trajectory.
+A well-tuned controller settles at the target and stops, scoring
+near 1.0 on `f_calm`. A spinning controller drops below 0.5 and
+loses the optimization race even if its rms is low.
+
+### Trial protocol — fixed-distance random targets
+
+Each trial picks a target at a **fixed distance D from the current
+ball position** (D = 60 mm default), with a uniform-random direction.
+Standardizing the per-trial distance is critical:
+
+- **Without it**: a target generated 10 mm from the ball gets a
+  near-zero rms with almost any controller, while a 180 mm target is
+  hard for any controller. Mixing both into the same fitness pool
+  creates noise that no number of trials can average out.
+- **With it**: every trial has the same nominal difficulty, fitness
+  comparisons across trials are meaningful, and the optimizer
+  converges from clean signal.
+
+```
+ball_xy = read_current_ball_state()       # via /ball_state subscriber
+for attempt in 1..16:
+    θ = uniform(0, 2π)
+    target = ball_xy + D · (cos θ, sin θ)
+    if |target| < 0.7·R_platform:
+        break
+# 16 attempts all off-platform → ball is near the rim. Shrink D
+# for this trial only:  D_trial = D × 0.7  and retry once.
+```
+
+`D = 60 mm` is a sensible default — large enough that controller
+quality matters (the ball has room to oscillate), small enough that
+a reasonable PID can settle within the 25 s timeout.
 
 ### Sanity-check the fitness before unleashing the algorithm
 
@@ -310,7 +352,11 @@ In the order I'd ship if approved:
 1. **§0 investigation** — read the three files, run the empirical
    click-direction test, fix any frame mismatch found. **Estimated:
    1–2 hours. Blocking everything else.**
-2. **`on_target_fraction` field in `digest_demo_bag.py`.** ~15 min.
+2. **`on_target_fraction` and `mean_speed_mm_per_s` fields in
+   `digest_demo_bag.py`.** Both derived from /ball_state — first is
+   the fraction of state samples within `err_tol_mm` of the latest
+   ref, second is the mean speed from the KF velocity field. ~30 min
+   total.
 3. **Fitness sanity check** — 5 hand-picked trials, manually compute
    fitness, confirm ranking. ~30 min.
 4. **`auto_tune_node.py`** — new ROS node, trial loop, hill-climb
