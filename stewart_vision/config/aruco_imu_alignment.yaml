@@ -1,13 +1,13 @@
 matrix:
-- - -0.9500131888801553
-  - -0.3122097707531878
-- - 0.31220977075318784
-  - -0.9500131888801552
-rotation_deg: 161.80754788852664
-det: 0.9999999999999996
-post_alignment_rms_deg: 0.8007117151930988
-source_bag: 20260430T144332Z_imu_vs_camera
-captured_utc: '2026-04-30T14:46:33.906451Z'
+- - -0.9269155980434914
+  - -0.3752698683663218
+- - 0.37526986836632187
+  - -0.9269155980434914
+rotation_deg: 157.95900667179356
+det: 0.9999999999999999
+post_alignment_rms_deg: 0.4981787899082184
+source_bag: 20260430T171336Z_imu_vs_camera
+captured_utc: '2026-04-30T17:16:04.520708Z'
 description: 2D rotation that takes ArUco-derived (cam_roll, cam_pitch) into IMU body
   (roll, pitch). ball_localizer_node applies this to ball xy in platform frame so
   the BALL_TRACK loop sees the IMU-aligned x/y.
