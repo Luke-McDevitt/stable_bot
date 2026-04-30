@@ -49,7 +49,17 @@ if [ -n "$LOCAL_CHANGES" ]; then
     fi
     echo "  auto-committing yaml + tuning_data:"
     echo "$LOCAL_CHANGES" | sed 's/^/    /'
-    git add -A -- '*.yaml' '*.yml' tuning_data/ 2>/dev/null || true
+    # Stage by explicit paths from `git status --porcelain` rather than
+    # pathspec globs — `git add '*.yaml'` doesn't always match
+    # recursively from the repo root depending on git version, and
+    # silently no-ops which lands us right back at "cannot pull with
+    # unstaged changes". Loop over the porcelain output and add each
+    # safe path explicitly.
+    while IFS= read -r path; do
+        [ -n "$path" ] && git add -- "$path"
+    done < <(echo "$LOCAL_CHANGES" \
+              | awk '{print $2}' \
+              | grep -E '\.(yaml|yml)$|^tuning_data/')
     if ! git diff --cached --quiet; then
         git commit -m "Local: yaml/tuning_data snapshot (pi_deploy.sh)" >/dev/null
         echo "  ✓ committed local snapshot"
