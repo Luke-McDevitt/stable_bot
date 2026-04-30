@@ -1,0 +1,89 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T043945Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": "BALL_TRACK_GOTO",
+  "demo_params": {
+    "x_mm": 110.75863647460938,
+    "y_mm": 33.379310607910156
+  },
+  "duration_s": 126.285806792,
+  "topic_counts": {
+    "/ball_ref": 5684,
+    "/ball_state": 10080,
+    "/ball_xy_depth": 984,
+    "/ball_xy_mono": 7018,
+    "/control_cmd": 36,
+    "/control_result": 2,
+    "/leg_currents": 2469,
+    "/leg_encoders": 2469,
+    "/oak/ball/depth/diagnostic": 1041,
+    "/oak/ball/depth/rgb_pixel": 984,
+    "/oak/ball/v0/diagnostic": 1047,
+    "/oak/ball/v0/rgb_pixel": 1050,
+    "/odrive_errors": 252,
+    "/platform/imu/data": 39208,
+    "/platform_pose": 1047,
+    "/platform_pose/markers_visible": 1047,
+    "/platform_rpy": 2464,
+    "/status": 252
+  },
+  "gains_at_record": {
+    "kp": 0.01,
+    "kd": 0.015,
+    "ki": 0.005,
+    "max_tilt_deg": 4.0,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0
+  },
+  "ball_state_n": 10080,
+  "ball_ref_n": 5684,
+  "mono_n": 7018,
+  "depth_n": 984,
+  "error_mm": {
+    "n": 7704,
+    "mean": 57.506361624475474,
+    "std": 43.86276259820872,
+    "rms": 72.32512405818439,
+    "p50": 43.51143491633614,
+    "p95": 134.10262860107102,
+    "min": 14.877176450521187,
+    "max": 139.10112516096464
+  },
+  "error_x_mm": {
+    "n": 7704,
+    "mean": -18.715774157452636,
+    "std": 63.56307660117606,
+    "rms": 66.261187050337,
+    "p50": -10.922558409189191,
+    "p95": 40.01065381486387,
+    "min": -137.70165701095996,
+    "max": 45.93689050803955
+  },
+  "error_y_mm": {
+    "n": 7704,
+    "mean": -6.549114466660057,
+    "std": 28.239825785840093,
+    "rms": 28.989285274252886,
+    "p50": -12.451886964713577,
+    "p95": 22.547742458106402,
+    "min": -57.087657125985984,
+    "max": 50.28785696779778
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 1047,
+    "mean": 811.6520582554756,
+    "std": 1.157630671706304,
+    "rms": 811.6528837989316,
+    "p50": 811.4616294024535,
+    "p95": 813.3097930841337,
+    "min": 805.1921032956038,
+    "max": 817.5637991394791
+  },
+  "markers_visible": {
+    "n": 1047,
+    "mean": 7.9980897803247375,
+    "min": 6,
+    "max": 9
+  }
+}
