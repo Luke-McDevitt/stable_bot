@@ -4381,11 +4381,36 @@ class StewartControlNode(Node):
 
             self.ball_track_corr = [tilt_roll, tilt_pitch]
 
+            # Z compensation — rotate the platform UNDER the ball
+            # rather than about its geometric center. Without this,
+            # tilting by θ with the ball at platform-frame offset
+            # (px, py) physically moves the ball's world-frame z by
+            # px·sin(pitch) − py·sin(roll). For px=100 mm and 3°
+            # tilt that's ~5 mm of heave per tilt command, which
+            # the ball "feels" as vertical disturbance (briefly
+            # changes normal force / friction characteristics).
+            # Adjusting z_command keeps the ball's world height
+            # invariant so the only effect of a tilt command is the
+            # gravity-along-surface component the controller wants.
+            #
+            # Only valid when we have a fresh ball position; in the
+            # stale-state branch above, tilt is already 0 so
+            # z_comp = 0 and z_cmd = z_hold trivially.
+            if state_stale or ref_stale or state is None:
+                z_cmd = z_hold
+            else:
+                pitch_rad = math.radians(tilt_pitch)
+                roll_rad = math.radians(tilt_roll)
+                # px, py from `state` unpacked above in the fresh branch
+                z_comp = (px * math.sin(pitch_rad)
+                          - py * math.sin(roll_rad))
+                z_cmd = z_hold + z_comp
+
             # Command. allow_large=True so the small soft-limit guard
             # in _do_set_pose doesn't reject these tilts (spec §9 hard
             # cap is what we trust here).
             try:
-                self._do_set_pose(0.0, 0.0, z_hold,
+                self._do_set_pose(0.0, 0.0, z_cmd,
                                   tilt_roll, tilt_pitch, 0.0,
                                   allow_large=True)
             except Exception as e:
