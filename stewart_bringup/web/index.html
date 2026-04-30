@@ -1988,7 +1988,13 @@ function setupROSInterface() {
                         r.cmd === 'level_save_gains')) {
           populateGainInputs(r.gains);
         }
-        // Ball-track gains: same dirty-clear + status-line pattern.
+        return;
+      }
+      // Ball-track gain commands. SEPARATE handler block (outside
+      // the level_ gate above — earlier nesting bug meant
+      // ball_track_save_gains was never reaching this code, so the
+      // GUI Save button hung on "saving…" forever).
+      if (r.cmd && r.cmd.startsWith('ball_track_')) {
         if (r.cmd === 'ball_track_save_gains') {
           if (r.success) clearBtGainDirty();
           setBtGainsStatus(
@@ -2003,11 +2009,11 @@ function setupROSInterface() {
           setBtGainsStatus(
             r.success ? '✓ integrator zeroed' : `✗ ${r.message}`,
             r.success ? 'text-emerald-400' : 'text-red-400');
+        } else if (r.cmd === 'ball_track_get_gains') {
+          // Reply for the on-connect query — just populate the
+          // inputs (handled below).
         }
-        if (r.ball_track_gains && (
-                r.cmd === 'ball_track_get_gains' ||
-                r.cmd === 'ball_track_reload_gains' ||
-                r.cmd === 'ball_track_save_gains')) {
+        if (r.ball_track_gains) {
           populateBtGainInputs(r.ball_track_gains);
         }
         return;
@@ -5320,7 +5326,29 @@ function maybeRecordImages(prefix) {
   publishCmdRaw(`record_images:${checked ? 'on' : 'off'}`);
 }
 
+// Reject demo start if the platform isn't armed. Without this,
+// publishing mode:* with disarmed legs causes the BALL_TRACK loop
+// to spin commanding tilts to motors that aren't responding —
+// which masks problems and can confuse the operator about whether
+// the system is "broken" vs "just not armed". Surfaces a setD?Status
+// or toast where the user is already looking.
+function _ensureArmed(statusSetterId, demoLabel) {
+  const armed = !!(lastStatus && lastStatus.armed);
+  if (armed) return true;
+  const msg = `cannot start ${demoLabel} — platform is not armed. ` +
+              'Click Activate (right column) first.';
+  if (statusSetterId === 'd3') {
+    setD3Status(msg, false);
+  } else {
+    // Demo 1 / Demo 2 don't have a dedicated status line; fall
+    // back to a transient toast.
+    toast('demo-arm-msg', msg, false);
+  }
+  return false;
+}
+
 function startDemo1() {
+  if (!_ensureArmed('d1', 'Demo 1 (Orbit)')) return;
   maybeRecordImages('d1');
   publishBallConfig();   // ensure ball type is in the bag at run start
   const params = {
@@ -5340,6 +5368,7 @@ function reverseDemo1() {
 }
 
 function startDemo2() {
+  if (!_ensureArmed('d2', 'Demo 2 (Goto)')) return;
   maybeRecordImages('d2');
   publishBallConfig();
   // Goto mode armed but with no target yet — first click in the SVG sets one.
@@ -5358,6 +5387,7 @@ function cancelDemo2Target() {
 }
 
 function startDemo3() {
+  if (!_ensureArmed('d3', 'Demo 3 (Path)')) return;
   if (d3Path.length < 2) {
     setD3Status('draw a path with at least 2 points first.', false);
     return;
@@ -5462,6 +5492,7 @@ function onSvgMouseUp() {
 }
 
 function setDemo2Target(p) {
+  if (!_ensureArmed('d2', 'Demo 2 click-to-goto')) return;
   const r = Math.hypot(p.x, p.y);
   if (r > 200) return;     // off-platform
   if (r < 30) {
