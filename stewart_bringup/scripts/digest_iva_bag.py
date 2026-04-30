@@ -517,6 +517,52 @@ def digest(bag_dir: str):
         json.dump(summary, f, indent=2)
     print(f"[iva-digest] wrote {json_path}")
 
+    # Standalone alignment calibration. ball_localizer_node consumes
+    # this when it's copied to stewart_vision/config/. The matrix is
+    # the 2D rotation that maps ArUco-derived (cam_roll, cam_pitch)
+    # into IMU body (roll, pitch) frame — apply it to ball xy in
+    # platform frame and the BALL_TRACK loop's notion of x/y matches
+    # the platform's physical tilt axes. Removes the sign-convention
+    # guesswork from demo tuning.
+    if calibrated:
+        try:
+            import datetime
+            align_doc = {
+                'matrix': [[float(M[0, 0]), float(M[0, 1])],
+                           [float(M[1, 0]), float(M[1, 1])]],
+                'rotation_deg': float(math.degrees(
+                    math.atan2(M[1, 0], M[0, 0]))),
+                'det': float(np.linalg.det(M)),
+                'post_alignment_rms_deg': float(alignment_rms),
+                'source_bag': os.path.basename(bag_dir),
+                'captured_utc': (
+                    datetime.datetime.utcnow().isoformat() + 'Z'),
+                'description': (
+                    '2D rotation that takes ArUco-derived '
+                    '(cam_roll, cam_pitch) into IMU body '
+                    '(roll, pitch). ball_localizer_node applies '
+                    'this to ball xy in platform frame so the '
+                    'BALL_TRACK loop sees the IMU-aligned x/y.'),
+            }
+            try:
+                import yaml as _yaml
+            except ImportError:
+                _yaml = None
+            if _yaml is not None:
+                align_path = os.path.join(
+                    bag_dir, 'aruco_imu_alignment.yaml')
+                with open(align_path, 'w') as f:
+                    _yaml.safe_dump(
+                        align_doc, f, default_flow_style=False,
+                        sort_keys=False)
+                print(f"[iva-digest] wrote {align_path}")
+            else:
+                print("[iva-digest] PyYAML not available; "
+                      "skipping aruco_imu_alignment.yaml")
+        except Exception as e:
+            print(f"[iva-digest] failed to write alignment yaml: {e}",
+                  file=sys.stderr)
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__,

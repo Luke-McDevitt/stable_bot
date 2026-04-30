@@ -315,6 +315,42 @@ def _iva_bag_png_path(name):
     return p if os.path.isfile(p) else None
 
 
+def _apply_iva_alignment(name):
+    """Copy a named IVA bag's aruco_imu_alignment.yaml into the live
+    config locations so ball_localizer picks it up on next restart.
+    Writes both the in-repo path (so a future colcon build doesn't
+    lose it) and the install share dir (so the running node sees it
+    after a service restart, before any rebuild)."""
+    bag_dir = _resolve_iva_bag_path(name)
+    if bag_dir is None:
+        return False, f'no such IVA bag: {name}'
+    src = os.path.join(bag_dir, 'aruco_imu_alignment.yaml')
+    if not os.path.isfile(src):
+        return False, ('no aruco_imu_alignment.yaml in this bag — '
+                       'either the IVA sweep was too static to '
+                       'solve alignment (need ≥0.2° spread on both '
+                       'axes), or the digest predates the alignment '
+                       'export. Re-run digest on a varied sweep.')
+    repo_dst = os.path.expanduser(
+        '~/stable_bot_repo/stewart_vision/config/aruco_imu_alignment.yaml')
+    install_dst = os.path.expanduser(
+        '~/ros2_ws/install/stewart_vision/share/'
+        'stewart_vision/config/aruco_imu_alignment.yaml')
+    out_lines = [f'source: {src}']
+    import shutil
+    for dst in (repo_dst, install_dst):
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+            out_lines.append(f'wrote: {dst}')
+        except Exception as e:
+            out_lines.append(f'FAILED {dst}: {e}')
+    out_lines.append(
+        'restart stable_bot.service so ball_localizer reloads the '
+        'alignment')
+    return True, '\n'.join(out_lines)
+
+
 def _git_push_iva_bag(name):
     """git add tuning_data/<name> && git commit && git push, with the
     auto-generated commit message embedding the digest summary's
@@ -1529,6 +1565,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ok, msg = _git_push_iva_bag(name)
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 500)
+            return
+        if self.path == '/iva/bags/apply_alignment':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+                name = str(body.get('name', ''))
+            except Exception:
+                self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
+                return
+            ok, msg = _apply_iva_alignment(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 400)
             return
         # ----- Vision-debug bag recorder endpoints -----
         if self.path == '/vision/start':

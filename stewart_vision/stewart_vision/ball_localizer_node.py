@@ -89,6 +89,14 @@ class BallLocalizerNode(Node):
                 "No intrinsics yet; mono projection disabled until "
                 "calibrate_oak.py runs.")
 
+        # ArUco→IMU 2x2 rotation from the IVA Procrustes fit. When
+        # present, applied to ball xy in platform frame so the
+        # BALL_TRACK loop sees IMU-aligned x/y instead of
+        # ArUco-board-frame x/y. Solves the sign-convention chase
+        # that plagued Demo 1/2 tuning. None = identity (no cal yet).
+        self.M_aruco_to_imu: Optional[np.ndarray] = None
+        self._load_aruco_imu_alignment()
+
         self.last_v0: Optional[PointStamped] = None
         self.last_v1: Optional[PointStamped] = None
         self.last_depth_pixel: Optional[PointStamped] = None
@@ -139,6 +147,48 @@ class BallLocalizerNode(Node):
         # may not arrive at that rate but it's the ceiling. /ball_xy_oak
         # is published synchronously on each /oak/ball/spatial message.
         self.create_timer(1.0 / 60.0, self._tick)
+
+    def _load_aruco_imu_alignment(self):
+        """Load the 2x2 rotation that maps ArUco-derived (cam_roll,
+        cam_pitch) into IMU body frame. Computed by digest_iva_bag.py
+        from an IVA sweep and copied here by gui_server's "Apply"
+        button. Loaded once at startup; null when no calibration
+        has been applied yet (loop runs in the ArUco frame, with
+        whatever sign-misalignment that implies)."""
+        share = _share_dir()
+        path = os.path.join(share, 'config', 'aruco_imu_alignment.yaml')
+        if not os.path.isfile(path):
+            self.get_logger().info(
+                "no aruco_imu_alignment.yaml — running ArUco-frame; "
+                "Demo gains will need sign correction by hand. Run "
+                "an IVA sweep + Apply to remove sign assumptions.")
+            return
+        try:
+            with open(path) as f:
+                d = yaml.safe_load(f) or {}
+            m = d.get('matrix')
+            if (m and len(m) == 2 and len(m[0]) == 2):
+                self.M_aruco_to_imu = np.asarray(m, dtype=np.float64)
+                self.get_logger().info(
+                    f"loaded ArUco→IMU alignment: "
+                    f"rot={d.get('rotation_deg', 0):+.1f}° "
+                    f"det={d.get('det', 0):+.2f} "
+                    f"rms={d.get('post_alignment_rms_deg', 0):.2f}° "
+                    f"from {d.get('source_bag', '?')}")
+            else:
+                self.get_logger().warn(
+                    f"{path} present but no usable 'matrix' field")
+        except Exception as e:
+            self.get_logger().warn(f"failed to load alignment: {e}")
+
+    def _apply_aruco_imu_rotation(self, p_plat):
+        """Apply the 2x2 alignment to (x, y); leave z untouched.
+        Pass-through if no alignment is loaded."""
+        if self.M_aruco_to_imu is None:
+            return p_plat
+        xy = self.M_aruco_to_imu @ np.array(
+            [float(p_plat[0]), float(p_plat[1])])
+        return np.array([float(xy[0]), float(xy[1]), float(p_plat[2])])
 
     def _load_intrinsics(self, path: str):
         with open(path, 'r') as f:
@@ -318,6 +368,12 @@ class BallLocalizerNode(Node):
         # Express hit in platform frame.
         delta = hit_mono - t_pose
         p_plat = R_pose.T @ delta
+        # Apply the IVA-derived ArUco→IMU 2x2 rotation BEFORE the gate
+        # check so the on-platform gate operates on IMU-frame radius
+        # (which is the same magnitude as ArUco-frame radius for any
+        # rotation, but doing it after keeps everything self-consistent
+        # for any future affine corrections).
+        p_plat = self._apply_aruco_imu_rotation(p_plat)
         # On-platform gate. The ray-plane intersection extends infinitely;
         # an orange object on a desk next to the platform projects to a
         # platform-frame point well outside the disk. Reject anything
@@ -354,6 +410,7 @@ class BallLocalizerNode(Node):
         R_pose = _quat_to_rot(qw, qx, qy, qz)
         delta = P_mono - t_pose
         p_plat = R_pose.T @ delta
+        p_plat = self._apply_aruco_imu_rotation(p_plat)
         # Same on-platform gate as the mono path — see
         # _project_to_platform docstring.
         ON_PLATFORM_R_M = 0.220

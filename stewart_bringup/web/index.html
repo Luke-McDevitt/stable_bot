@@ -4574,6 +4574,9 @@ function _ivaRenderBag(e) {
           <button class="text-emerald-400 hover:text-emerald-300"
                   onclick="ivaDigestBag('${name}')">Digest</button>
           ${pngBtn}
+          <button class="text-cyan-400 hover:text-cyan-300"
+                  title="Copy this bag's aruco_imu_alignment.yaml to the live config so ball_localizer applies the rotation. Restart stable_bot.service after."
+                  onclick="ivaApplyAlignment('${name}')">Apply</button>
           <button class="text-purple-400 hover:text-purple-300"
                   title="git add + commit + push this bag to origin"
                   onclick="ivaPushBag('${name}')">Push</button>
@@ -4655,6 +4658,30 @@ function ivaPushBag(name) {
     _ivaSetBagsOut(head + (j.message || '(no output)'), !!j.ok);
   }).catch(e => {
     _ivaSetBagsOut('✗ push failed: ' + e, false);
+  });
+}
+
+// Copy a bag's aruco_imu_alignment.yaml into the live config
+// so ball_localizer applies the IMU-frame rotation. Operator
+// must restart stable_bot.service afterwards (the response
+// message says so).
+function ivaApplyAlignment(name) {
+  if (!confirm(
+        `Apply the ArUco→IMU alignment from "${name}" to the live ` +
+        `config? This will overwrite any existing alignment. ` +
+        `You'll need to restart stable_bot.service for ` +
+        `ball_localizer to pick it up.`)) {
+    return;
+  }
+  _ivaSetBagsOut(`applying alignment from ${name}…`, null);
+  fetch('/iva/bags/apply_alignment', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    const head = (j.ok ? '✓ ' : '✗ ') + 'apply ' + name + '\n';
+    _ivaSetBagsOut(head + (j.message || '(no output)'), !!j.ok);
+  }).catch(e => {
+    _ivaSetBagsOut('✗ apply failed: ' + e, false);
   });
 }
 
