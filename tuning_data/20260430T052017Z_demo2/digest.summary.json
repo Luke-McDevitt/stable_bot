@@ -1,0 +1,95 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T052017Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": "BALL_TRACK_GOTO",
+  "demo_params": {
+    "x_mm": -36.41377258300781,
+    "y_mm": 36.41379165649414
+  },
+  "duration_s": 77.592567547,
+  "topic_counts": {
+    "/ball_ref": 485,
+    "/ball_state": 6408,
+    "/ball_xy_depth": 132,
+    "/ball_xy_mono": 4413,
+    "/control_cmd": 27,
+    "/control_result": 8,
+    "/leg_currents": 1522,
+    "/leg_encoders": 1522,
+    "/oak/ball/depth/diagnostic": 699,
+    "/oak/ball/depth/rgb_pixel": 132,
+    "/oak/ball/v0/diagnostic": 701,
+    "/oak/ball/v0/rgb_pixel": 701,
+    "/odrive_errors": 154,
+    "/platform/imu/data": 24823,
+    "/platform_pose": 702,
+    "/platform_pose/markers_visible": 702,
+    "/platform_rpy": 1521,
+    "/status": 154
+  },
+  "gains_at_record": {
+    "kp": 0.01,
+    "kd": 0.015,
+    "ki": 0.005,
+    "max_tilt_deg": 4.0,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 50.0,
+    "v_coast_mm_s": 20.0,
+    "brake_horizon_mm": 80.0,
+    "algorithm": "bangbang"
+  },
+  "ball_state_n": 6408,
+  "ball_ref_n": 485,
+  "mono_n": 4413,
+  "depth_n": 132,
+  "error_mm": {
+    "n": 690,
+    "mean": 177.24252525100152,
+    "std": 79.07950677861967,
+    "rms": 194.08369624907107,
+    "p50": 222.9543641860011,
+    "p95": 225.4915139390641,
+    "min": 26.003729822472177,
+    "max": 241.1680041006254
+  },
+  "error_x_mm": {
+    "n": 690,
+    "mean": 162.07755092715286,
+    "std": 74.12161295851452,
+    "rms": 178.22218162202947,
+    "p50": 205.50011076765685,
+    "p95": 207.8183461740029,
+    "min": 21.076964574918275,
+    "max": 227.27106515023948
+  },
+  "error_y_mm": {
+    "n": 690,
+    "mean": 64.98319841780204,
+    "std": 41.018520828749836,
+    "rms": 76.84617835381285,
+    "p50": 86.50222005617914,
+    "p95": 88.67498315932826,
+    "min": -23.935894977723027,
+    "max": 116.72801782331479
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 702,
+    "mean": 811.103178561749,
+    "std": 1.145757089708495,
+    "rms": 811.1039878044498,
+    "p50": 811.1524509677841,
+    "p95": 812.4906120321305,
+    "min": 804.1957858297332,
+    "max": 817.4171537376526
+  },
+  "markers_visible": {
+    "n": 702,
+    "mean": 7.918803418803419,
+    "min": 6,
+    "max": 9
+  }
+}
