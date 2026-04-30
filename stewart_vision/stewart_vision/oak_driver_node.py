@@ -558,7 +558,16 @@ def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 15,
         dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
     stereo.setLeftRightCheck(True)        # required when depth-align
                                           # targets a non-input socket
-    stereo.setExtendedDisparity(False)
+    # Extended disparity DOUBLES the disparity range (95 → 190),
+    # which halves the minimum measurable distance from ~632 mm to
+    # ~316 mm. The user's platform sits at ~600 mm at center and
+    # ~508 mm at the closest point — without ExtendedDisparity, the
+    # entire platform + ball is BELOW the OAK's stereo minimum,
+    # which is why bag 20260430T000925Z showed every frame failing
+    # with "no_pixels_above" (depth_min=632 always, meas_center=4587
+    # — wrong-match to background past the platform). With it, the
+    # ball at 560 mm sits comfortably inside the measurable range.
+    stereo.setExtendedDisparity(True)
     stereo.setSubpixel(False)
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
     mono_l.out.link(stereo.left)
