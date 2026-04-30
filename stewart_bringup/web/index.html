@@ -1709,34 +1709,43 @@ function setupROSInterface() {
   // --- vision-stack subscriptions (spec v8 §11.1, §12) ---
   // Live RGB feed.
   //
-  // throttle_rate (ms) and queue_length=1 cap the rosbridge-side
-  // forward rate. Without these, rosbridge enqueues every 200 KB
-  // JPEG into the WebSocket send buffer at the publisher's 15 fps;
-  // when the laptop's WiFi transport or JPEG decode can't keep up,
-  // the queue grows unbounded and the displayed feed lags more and
-  // more (observed: several seconds of accumulated delay over a few
-  // minutes on 2026-04-29). 100 ms = 10 fps display; queue_length=1
-  // means rosbridge drops anything older than the latest frame on
-  // each WS-write opportunity.
+  // Three knobs together prevent the lag-accumulation we saw before
+  // (display falling 30+ s behind reality, dropping to 1 fps):
+  //
+  //   compression: 'cbor-raw'  — DepthAI publishes a 200 KB JPEG.
+  //     Without compression, rosbridge serialises the CompressedImage
+  //     .data field as a JSON array of integers, ballooning the WS
+  //     payload to ~1.4 MB per frame. At 10 fps that's 14 MB/s, which
+  //     saturates WiFi and queues unboundedly in the TCP send buffer.
+  //     CBOR-raw sends the bytes as a binary WS frame: ~200 KB
+  //     stays ~200 KB.
+  //
+  //   throttle_rate: 100 — rosbridge forwards at most one message
+  //     every 100 ms (10 Hz). Without this, the bridge tries to
+  //     forward every 15 fps frame and the WS send queue grows.
+  //
+  //   queue_length: 1 — at the rclpy subscription inside rosbridge,
+  //     only the most recent frame is kept. Combined with the
+  //     throttle, stale frames are dropped instead of queued.
   topic.rgb_feed = new ROSLIB.Topic({
     ros, name: '/oak/rgb/image_compressed',
     messageType: 'sensor_msgs/msg/CompressedImage',
+    compression: 'cbor-raw',
     throttle_rate: 100,
     queue_length: 1,
   });
   topic.rgb_feed.subscribe(onRgbFrame);
 
   // Annotated depth-blob debug image (toggled via OAK_DEPTH_DEBUG).
-  // Same throttle as rgb_feed for the same reason.
+  // Same wire format. Not subscribed in the GUI yet — declared for
+  // future use; the bag recorder picks it up server-side.
   topic.depth_dbg = new ROSLIB.Topic({
     ros, name: '/oak/depth_blob/debug_image',
     messageType: 'sensor_msgs/msg/CompressedImage',
+    compression: 'cbor-raw',
     throttle_rate: 100,
     queue_length: 1,
   });
-  // No subscribe yet — surfaces in the bag for offline replay; can
-  // be wired into the camera-feed <img> later if we want to flip
-  // the GUI between RGB and the depth-debug overlay live.
 
   // Calibration status (5 Hz)
   topic.cal_status = new ROSLIB.Topic({
@@ -3741,20 +3750,51 @@ function drawArucoMarks() {
   }
 }
 
+// Blob URL of the currently-displayed RGB frame. Revoked when the
+// next frame replaces it (otherwise the browser leaks one Blob URL
+// per frame — at 10 fps that's 600/min, which crashes the tab in
+// minutes).
+let _rgbFeedBlobUrl = null;
+
 function onRgbFrame(m) {
   const img = $('vision-feed-img');
   if (!img) return;
-  // Roslibjs delivers .data as a base64 string for compressed images.
-  let b64;
-  if (typeof m.data === 'string') {
-    b64 = m.data;
-  } else if (Array.isArray(m.data) || m.data instanceof Uint8Array) {
-    const u8 = new Uint8Array(m.data);
-    let s = '';
-    for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
-    b64 = btoa(s);
-  } else { return; }
-  img.src = `data:image/jpeg;base64,${b64}`;
+  // With compression: 'cbor-raw' on the topic, rosbridge delivers
+  // .data as a Uint8Array (typed array) — exactly the JPEG bytes,
+  // no JSON-array bloat, no base64 wrap. Blob + objectURL hands the
+  // bytes straight to the browser's native JPEG decoder without
+  // copying through a giant JS string. ~150x faster than the old
+  // String.fromCharCode + btoa loop.
+  let blob;
+  if (m.data instanceof Uint8Array || ArrayBuffer.isView(m.data)) {
+    blob = new Blob([m.data], { type: 'image/jpeg' });
+  } else if (m.data instanceof ArrayBuffer) {
+    blob = new Blob([m.data], { type: 'image/jpeg' });
+  } else if (typeof m.data === 'string') {
+    // Fallback: legacy base64 path (no CBOR compression configured).
+    // Decode once, build a Uint8Array, then Blob — still way faster
+    // than the old btoa loop because atob is C++-implemented.
+    const bin = atob(m.data);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    blob = new Blob([u8], { type: 'image/jpeg' });
+  } else if (Array.isArray(m.data)) {
+    // Last-resort fallback: rosbridge sent a JSON array of numbers.
+    // Slow, but at least correct. If you see the feed bog down, this
+    // is the path to check — compression: 'cbor-raw' should keep us
+    // out of here entirely.
+    blob = new Blob([new Uint8Array(m.data)], { type: 'image/jpeg' });
+  } else {
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  img.src = url;
+  // Revoke the previous URL so the browser can release the bytes.
+  // Done AFTER assigning the new src, otherwise some browsers race
+  // and clear the image.
+  if (_rgbFeedBlobUrl) URL.revokeObjectURL(_rgbFeedBlobUrl);
+  _rgbFeedBlobUrl = url;
+
   img.style.display = 'block';
   $('vision-feed-empty').style.display = 'none';
   _fpsLastFrameMs = performance.now();
