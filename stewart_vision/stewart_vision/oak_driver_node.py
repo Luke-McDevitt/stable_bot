@@ -1073,9 +1073,45 @@ class OakDriverNode(Node):
             depth_msg = self.q_depth.tryGet()
             if depth_msg is not None:
                 self._n_depth_frame += 1
+                depth_frame = depth_msg.getFrame()  # uint16 mm, (H, W)
+
+                # Frame-wide depth distribution (for the rich
+                # diagnostic). Computed on every frame so the digest
+                # can plot stereo health over time. ~3 ms on Pi 5
+                # for a 540×960 frame.
+                valid_all = depth_frame[depth_frame > 0]
+                if valid_all.size:
+                    d_min = float(np.min(valid_all))
+                    d_p25 = float(np.percentile(valid_all, 25))
+                    d_med = float(np.median(valid_all))
+                    d_p75 = float(np.percentile(valid_all, 75))
+                    d_max = float(np.max(valid_all))
+                    invalid_pct = (
+                        float(np.sum(depth_frame == 0))
+                        / float(depth_frame.size) * 100.0)
+                else:
+                    d_min = d_p25 = d_med = d_p75 = d_max = 0.0
+                    invalid_pct = 100.0
+
+                # Probe-style center-pixel measurement.
+                h_d, w_d = depth_frame.shape[:2]
+                ctr_patch = depth_frame[h_d // 2 - 5:h_d // 2 + 5,
+                                        w_d // 2 - 5:w_d // 2 + 5]
+                ctr_valid = ctr_patch[ctr_patch > 0]
+                meas_center_mm = (float(np.median(ctr_valid))
+                                  if ctr_valid.size else 0.0)
+                # Pose & expected — None when ArUco hasn't fired yet
+                pose_z_mm = exp_center_mm = 0.0
+                if (self._last_pose is not None
+                        and self._expected_depth is not None):
+                    pose_z_mm = float(self._last_pose.pose.position.z) * 1000.0
+                    cy_idx = self._expected_depth.shape[0] // 2
+                    cx_idx = self._expected_depth.shape[1] // 2
+                    exp_center_mm = float(
+                        self._expected_depth[cy_idx, cx_idx])
+
                 if (self._platform_depth_mask is not None
                         and self._expected_depth is not None):
-                    depth_frame = depth_msg.getFrame()  # uint16 mm, (H, W)
                     det, depth_stats = detect_ball_depth_blob(
                         depth_frame, self._platform_depth_mask,
                         self._expected_depth)
@@ -1084,33 +1120,65 @@ class OakDriverNode(Node):
                     eroded_mask = None
                     plane_offset_mm = 0.0
                     blob_for_dbg = None
+                    cx_det = cy_det = float('nan')
+                    area_det = conf_det = 0.0
                     if det is not None:
-                        (cx, cy, area_px, conf, plane_offset_mm,
+                        (cx_det, cy_det, area_det, conf_det,
+                         plane_offset_mm,
                          above_mask, eroded_mask) = det
-                        blob_for_dbg = (cx, cy, area_px)
+                        blob_for_dbg = (cx_det, cy_det, area_det)
                         p = PointStamped()
                         p.header.stamp = self.get_clock().now().to_msg()
                         p.header.frame_id = 'oak_rgb'
-                        p.point.x = cx
-                        p.point.y = cy
+                        p.point.x = float(cx_det)
+                        p.point.y = float(cy_det)
                         # piggy-back blob-area-derived radius proxy in
                         # z (sqrt(area / pi)) so the GUI overlay can
                         # size the cyan circle from a single
                         # PointStamped, like V0's radius piggy-back.
-                        p.point.z = float(np.sqrt(max(area_px, 1.0) / np.pi))
+                        p.point.z = float(np.sqrt(max(area_det, 1.0) / np.pi))
                         self.pub_depth_pixel.publish(p)
                         self._n_depth_blob += 1
-                        d = Float32MultiArray()
-                        # [cx, cy, area, confidence, plane_offset_mm]
-                        # The last field is the empirical median
-                        # height across the platform mask — large
-                        # absolute values mean the ArUco-derived
-                        # plane is biased and the self-cal is
-                        # absorbing it. Watch this in the GUI.
-                        d.data = [float(cx), float(cy),
-                                  float(area_px), float(conf),
-                                  float(plane_offset_mm)]
-                        self.pub_depth_diag.publish(d)
+
+                    # Map fail_reason → numeric code for Float32MultiArray.
+                    fail_code_map = {
+                        'ok': 0.0, 'no_pixels_above': 1.0,
+                        'no_components': 2.0, 'blob_below_min_area': 3.0,
+                        'cv2_missing': 4.0,
+                    }
+                    fail_code = fail_code_map.get(
+                        depth_stats.get('fail_reason', '?'), 9.0)
+                    # Rich 20-field diagnostic published on EVERY
+                    # depth frame so the digest can plot algorithm
+                    # internals as time series. Backwards-compat:
+                    # the first 5 fields preserve the old schema
+                    # ([cx, cy, area, conf, plane_offset_mm]).
+                    d = Float32MultiArray()
+                    d.data = [
+                        # 0-4: detection (NaN/0 when no detection)
+                        float(cx_det), float(cy_det),
+                        float(area_det), float(conf_det),
+                        float(plane_offset_mm),
+                        # 5-10: algo internals (every frame)
+                        float(depth_stats.get('mask_pixels', 0)),
+                        float(depth_stats.get('eroded_pixels', 0)),
+                        float(depth_stats.get('valid_in_eroded', 0)),
+                        float(depth_stats.get('n_above', 0)),
+                        float(depth_stats.get('max_height_mm', 0.0)),
+                        float(depth_stats.get('median_height_in_mask_mm', 0.0)),
+                        # 11-12: blob + fail code
+                        float(depth_stats.get('largest_blob_area', 0)),
+                        fail_code,
+                        # 13-15: probe-style pose vs measured
+                        pose_z_mm, exp_center_mm, meas_center_mm,
+                        # 16-19: frame-wide depth distribution
+                        d_min, d_p25, d_med, d_p75,
+                        # NB: d_max and invalid_pct go in fields 20-21
+                        # but we cap at 22 fields total for the
+                        # bag's wire format.
+                        d_max, invalid_pct,
+                    ]
+                    self.pub_depth_diag.publish(d)
 
                     # Debug overlay — render even on detection failure
                     # so we can see which platform pixels were eligible
