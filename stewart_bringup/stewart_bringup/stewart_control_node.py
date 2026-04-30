@@ -340,25 +340,41 @@ def _load_ball_track_gains():
     Falls back to historical defaults if the YAML is missing so the
     node still starts. See config/ball_track_gains.yaml for the
     physical meaning of each gain."""
-    defaults = {
+    defaults_float = {
         'kp': 0.03,
         'kd': 0.005,
         'ki': 0.0,
         'max_tilt_deg': 6.0,
         'pitch_sign': 1.0,
         'roll_sign': 1.0,
+        # Bang-bang thresholds (only used when algorithm='bangbang').
+        'accel_tilt_deg':   3.0,
+        'err_tol_mm':       15.0,
+        'v_brake_mm_s':     80.0,
+        'v_coast_mm_s':     30.0,
+        'brake_horizon_mm': 60.0,
     }
+    defaults_str = {
+        'algorithm': 'pid',     # 'pid' | 'bangbang'
+    }
+    out = dict(defaults_float)
+    out.update(defaults_str)
     if not os.path.exists(BALL_TRACK_GAINS_PATH):
-        return defaults
+        return out
     try:
         with open(BALL_TRACK_GAINS_PATH) as f:
             doc = yaml.safe_load(f) or {}
     except Exception:
-        return defaults
-    out = dict(defaults)
-    for k in defaults:
+        return out
+    for k in defaults_float:
         if k in doc:
-            out[k] = float(doc[k])
+            try:
+                out[k] = float(doc[k])
+            except (TypeError, ValueError):
+                pass
+    for k in defaults_str:
+        if k in doc:
+            out[k] = str(doc[k])
     return out
 
 
@@ -2008,9 +2024,14 @@ class StewartControlNode(Node):
             # panel can populate its inputs from /status without a
             # service round-trip.
             'ball_track_gains': {
-                k: float(v) for k, v in self.ball_track_gains.items()
-                if k in ('kp', 'kd', 'ki', 'max_tilt_deg',
-                         'pitch_sign', 'roll_sign')
+                **{k: float(v) for k, v in self.ball_track_gains.items()
+                   if k in ('kp', 'kd', 'ki', 'max_tilt_deg',
+                            'pitch_sign', 'roll_sign',
+                            'accel_tilt_deg', 'err_tol_mm',
+                            'v_brake_mm_s', 'v_coast_mm_s',
+                            'brake_horizon_mm')},
+                'algorithm': str(
+                    self.ball_track_gains.get('algorithm', 'pid')),
             },
             'imu_yaw_deg': float(cur_rpy[2]) if cur_rpy is not None else float('nan'),
             'recording': self.recording_t0 is not None,
@@ -3538,7 +3559,15 @@ class StewartControlNode(Node):
         'max_tilt_deg': (0.5, 15.0),    # platform tilt saturation
         'pitch_sign':   (-1.0, 1.0),    # ±1 only (clamped/snapped)
         'roll_sign':    (-1.0, 1.0),
+        # Bang-bang thresholds.
+        'accel_tilt_deg':   (0.5, 15.0),
+        'err_tol_mm':       (1.0, 100.0),
+        'v_brake_mm_s':     (10.0, 1000.0),
+        'v_coast_mm_s':     (5.0, 1000.0),
+        'brake_horizon_mm': (10.0, 200.0),
     }
+    _BALL_TRACK_STR_KEYS = ('algorithm',)
+    _BALL_TRACK_ALGORITHMS = ('pid', 'bangbang')
 
     def _do_ball_track_save_gains(self, gains_dict):
         """Persist ball-track gains to YAML + reload in-memory. Same
@@ -3549,15 +3578,25 @@ class StewartControlNode(Node):
         ~20 ms of the save reply."""
         if not isinstance(gains_dict, dict) or not gains_dict:
             return False, "gains: empty or not a dict"
-        unknown = [k for k in gains_dict
-                   if k not in self._BALL_TRACK_GAIN_BOUNDS]
+        known = set(self._BALL_TRACK_GAIN_BOUNDS) | set(
+            self._BALL_TRACK_STR_KEYS)
+        unknown = [k for k in gains_dict if k not in known]
         if unknown:
             return False, (
                 f"unknown gain keys: {unknown}. Known: "
-                f"{list(self._BALL_TRACK_GAIN_BOUNDS.keys())}")
+                f"{sorted(known)}")
         clamped_msgs = []
         clean = {}
         for k, v in gains_dict.items():
+            if k in self._BALL_TRACK_STR_KEYS:
+                # Validate string-typed fields.
+                v = str(v).strip().lower()
+                if k == 'algorithm' and v not in self._BALL_TRACK_ALGORITHMS:
+                    return False, (
+                        f"algorithm must be one of "
+                        f"{self._BALL_TRACK_ALGORITHMS!r}, got {v!r}")
+                clean[k] = v
+                continue
             try:
                 v = float(v)
             except (TypeError, ValueError):
@@ -4174,13 +4213,62 @@ class StewartControlNode(Node):
                 edot_x = vx
                 edot_y = vy
 
-                integ_x = max(-max_tilt, min(max_tilt,
-                                             integ_x + ex * period))
-                integ_y = max(-max_tilt, min(max_tilt,
-                                             integ_y + ey * period))
+                # Algorithm selector — read each tick so a live save
+                # via the GUI can switch PID ↔ bang-bang without
+                # restart.
+                algo = str(g.get('algorithm', 'pid')).lower()
 
-                tilt_pitch = ps * (kp * ex + kd * edot_x + ki * integ_x)
-                tilt_roll  = rs * (kp * ey + kd * edot_y + ki * integ_y)
+                if algo == 'bangbang':
+                    # Finite-state-machine controller. Discrete phases:
+                    #   ACCELERATE: full tilt toward target until ball
+                    #     starts moving with healthy velocity.
+                    #   COAST: zero tilt while ball coasts toward target.
+                    #   BRAKE: full tilt opposite when ball about to
+                    #     overshoot.
+                    #   SETTLE: zero tilt within err_tol_mm of target.
+                    accel_tilt = float(g.get('accel_tilt_deg', max_tilt))
+                    err_tol = float(g.get('err_tol_mm', 15.0))
+                    v_brake = float(g.get('v_brake_mm_s', 80.0))
+                    v_coast = float(g.get('v_coast_mm_s', 30.0))
+                    brake_horizon = float(g.get('brake_horizon_mm', 60.0))
+                    err_mag = math.hypot(ex, ey)
+                    if err_mag < err_tol:
+                        tilt_pitch = 0.0
+                        tilt_roll = 0.0
+                        integ_x = 0.0
+                        integ_y = 0.0
+                    else:
+                        # Unit vector from target toward ball; equals
+                        # the direction that ACCELERATE-phase tilt
+                        # should have (same sign as PID's ex term).
+                        ux = ex / err_mag
+                        uy = ey / err_mag
+                        # Velocity component TOWARD target (+ve =
+                        # closing). Equivalent to dot(-velocity, u_to_ball).
+                        v_toward = -(vx * ux + vy * uy)
+                        if (err_mag < brake_horizon
+                                and v_toward > v_brake):
+                            # BRAKE — tilt opposite of accelerate.
+                            tilt_pitch = -ps * ux * accel_tilt
+                            tilt_roll  = -rs * uy * accel_tilt
+                        elif v_toward > v_coast:
+                            # COAST — zero tilt, let ball roll.
+                            tilt_pitch = 0.0
+                            tilt_roll = 0.0
+                        else:
+                            # ACCELERATE.
+                            tilt_pitch = ps * ux * accel_tilt
+                            tilt_roll  = rs * uy * accel_tilt
+                        integ_x = 0.0
+                        integ_y = 0.0
+                else:
+                    integ_x = max(-max_tilt, min(max_tilt,
+                                                 integ_x + ex * period))
+                    integ_y = max(-max_tilt, min(max_tilt,
+                                                 integ_y + ey * period))
+
+                    tilt_pitch = ps * (kp * ex + kd * edot_x + ki * integ_x)
+                    tilt_roll  = rs * (kp * ey + kd * edot_y + ki * integ_y)
 
                 # Saturate.
                 tilt_pitch = max(-max_tilt, min(max_tilt, tilt_pitch))

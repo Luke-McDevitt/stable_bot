@@ -30,3 +30,25 @@ ki: 0.0                     # deg/(mm·s) — Ki on error integral
 max_tilt_deg: 6.0           # degrees — saturation on platform tilt
 pitch_sign: 1.0             # ±1 — flip if ball-direction confused
 roll_sign:  1.0             # ±1 — flip if ball-direction confused
+
+# Algorithm selector. 'pid' = the continuous PID above. 'bangbang'
+# = a finite-state-machine controller (accelerate → coast → brake →
+# settle) that's easier to tune and more interpretable. The thresholds
+# below only apply when algorithm='bangbang'.
+algorithm: pid
+
+# Bang-bang thresholds (only used when algorithm='bangbang').
+# accel_tilt_deg: tilt magnitude during ACCELERATE and BRAKE phases.
+#   Default = max_tilt_deg if not set.
+# err_tol_mm:    settling tolerance — under this, we sit level.
+# v_brake_mm_s:  ball velocity (toward target) above which we BRAKE
+#                if also within brake_horizon_mm.
+# v_coast_mm_s:  velocity (toward target) above which we COAST
+#                (zero tilt) instead of accelerating.
+# brake_horizon_mm: distance below which we consider braking. Above
+#                this we keep accelerating regardless of velocity.
+accel_tilt_deg:    3.0
+err_tol_mm:        15.0
+v_brake_mm_s:      80.0
+v_coast_mm_s:      30.0
+brake_horizon_mm:  60.0

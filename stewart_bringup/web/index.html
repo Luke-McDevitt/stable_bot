@@ -573,6 +573,48 @@
                  class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
         </label>
       </div>
+      <!-- Control algorithm + bang-bang thresholds. PID is
+           continuous (smooth analog control). Bang-bang is a
+           finite-state-machine with discrete ACCELERATE / COAST /
+           BRAKE / SETTLE phases — easier to tune for ball-on-plate
+           because each threshold has a physical meaning. -->
+      <div class="border-t border-slate-700 mt-3 pt-3">
+        <label class="flex items-center gap-2 text-xs">
+          <span class="text-slate-400">Algorithm</span>
+          <select id="bt-g-algorithm"
+                  class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs flex-1">
+            <option value="pid">PID (continuous)</option>
+            <option value="bangbang">bang-bang (state-machine)</option>
+          </select>
+        </label>
+        <div id="bt-bb-thresholds" class="grid grid-cols-2 gap-2 text-xs mt-2 mono">
+          <label class="flex flex-col">
+            <span class="text-slate-400">Accel tilt [deg]</span>
+            <input id="bt-g-accel_tilt_deg" type="number" step="0.5" min="0.5" max="15" value="3.0"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
+          <label class="flex flex-col">
+            <span class="text-slate-400">Arrival tol [mm]</span>
+            <input id="bt-g-err_tol_mm" type="number" step="1" min="1" max="100" value="15"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
+          <label class="flex flex-col">
+            <span class="text-slate-400">Brake threshold [mm/s]</span>
+            <input id="bt-g-v_brake_mm_s" type="number" step="10" min="10" max="500" value="80"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
+          <label class="flex flex-col">
+            <span class="text-slate-400">Coast threshold [mm/s]</span>
+            <input id="bt-g-v_coast_mm_s" type="number" step="5" min="5" max="500" value="30"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
+          <label class="flex flex-col col-span-2">
+            <span class="text-slate-400">Brake horizon [mm]</span>
+            <input id="bt-g-brake_horizon_mm" type="number" step="10" min="10" max="200" value="60"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
+        </div>
+      </div>
       <div class="grid grid-cols-3 gap-2 mt-3">
         <button id="bt-gains-save"
                 class="bg-emerald-600 hover:bg-emerald-500 rounded py-1 text-xs">Save</button>
@@ -3817,6 +3859,20 @@ function initVisionGUI() {
     el.addEventListener('input',  () => markBtGainDirty(k));
     el.addEventListener('change', () => markBtGainDirty(k));
   }
+  // Algorithm dropdown: separate handler since it's a string field.
+  // Repaint the bang-bang block opacity immediately on change so
+  // the operator sees which threshold set is live.
+  const algoEl = document.getElementById('bt-g-' + BT_ALGO_KEY);
+  if (algoEl) {
+    algoEl.addEventListener('change', () => {
+      markBtGainDirty(BT_ALGO_KEY);
+      const bbBlock = document.getElementById('bt-bb-thresholds');
+      if (bbBlock) {
+        bbBlock.style.opacity =
+          (algoEl.value === 'bangbang') ? '1.0' : '0.45';
+      }
+    });
+  }
   const btSave = $('bt-gains-save');
   if (btSave) btSave.addEventListener('click', () => {
     const payload = readBtGainInputs();
@@ -4862,7 +4918,14 @@ function vbagPushBag(name) {
 
 const BT_GAIN_KEYS = [
   'kp', 'kd', 'ki', 'max_tilt_deg', 'pitch_sign', 'roll_sign',
+  // Bang-bang thresholds (only meaningful when algorithm='bangbang')
+  'accel_tilt_deg', 'err_tol_mm', 'v_brake_mm_s',
+  'v_coast_mm_s', 'brake_horizon_mm',
 ];
+// Special: algorithm is a string-typed field. Dirty/populate handled
+// via a separate small wrapper so the numeric BT_GAIN_KEYS path stays
+// clean.
+const BT_ALGO_KEY = 'algorithm';
 const _btGainDirty = new Set();
 
 function markBtGainDirty(k) { _btGainDirty.add(k); }
@@ -4875,13 +4938,25 @@ function populateBtGainInputs(g) {
     const el = document.getElementById('bt-g-' + k);
     if (!el) continue;
     if (typeof g[k] === 'number' && isFinite(g[k])) {
-      // Only update if the value differs to avoid cursor-jump while
-      // typing.
       const cur = parseFloat(el.value);
       if (!isFinite(cur) || Math.abs(cur - g[k]) > 1e-9) {
         el.value = String(g[k]);
       }
     }
+  }
+  // Algorithm string field — same dirty-skip pattern.
+  if (!_btGainDirty.has(BT_ALGO_KEY)) {
+    const el = document.getElementById('bt-g-' + BT_ALGO_KEY);
+    if (el && typeof g[BT_ALGO_KEY] === 'string') {
+      if (el.value !== g[BT_ALGO_KEY]) el.value = g[BT_ALGO_KEY];
+    }
+  }
+  // Show/hide bang-bang threshold block based on selected algorithm.
+  const algoEl = document.getElementById('bt-g-' + BT_ALGO_KEY);
+  const bbBlock = document.getElementById('bt-bb-thresholds');
+  if (algoEl && bbBlock) {
+    bbBlock.style.opacity =
+      (algoEl.value === 'bangbang') ? '1.0' : '0.45';
   }
 }
 
@@ -4890,9 +4965,13 @@ function readBtGainInputs() {
   for (const k of BT_GAIN_KEYS) {
     const el = document.getElementById('bt-g-' + k);
     if (!el) continue;
-    if (!_btGainDirty.has(k)) continue;       // only send what changed
+    if (!_btGainDirty.has(k)) continue;
     const v = parseFloat(el.value);
     if (isFinite(v)) out[k] = v;
+  }
+  if (_btGainDirty.has(BT_ALGO_KEY)) {
+    const el = document.getElementById('bt-g-' + BT_ALGO_KEY);
+    if (el) out[BT_ALGO_KEY] = el.value;
   }
   return out;
 }
@@ -5402,6 +5481,12 @@ function setActiveDemo(n) {
 function stopAllDemos() {
   publishCmdRaw('mode:LEVEL_HOLD');
   setActiveDemo(0);
+  // Clear any GOTO target marker / predicted-path overlay so the
+  // SVG goes back to "no target set". Same as cancelDemo2Target.
+  const refMarker = $('ref-marker');
+  if (refMarker) refMarker.setAttribute('visibility', 'hidden');
+  const predPath = $('pred-path');
+  if (predPath) predPath.setAttribute('visibility', 'hidden');
 }
 
 function maybeRecordImages(prefix) {
