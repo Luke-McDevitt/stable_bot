@@ -153,6 +153,18 @@ class RefGeneratorNode(Node):
                 self.ball_cfg = self.params['ball']
             self.mode = mode
             self.t0 = time.monotonic()
+            # Force a waypoint-list rebuild on mode entry so the
+            # closest-waypoint snap fires every time the user
+            # presses Start, not only when the orbit params change.
+            # Without this, Stop → Start with identical params
+            # would keep _wp_idx wherever the loop ended, defeating
+            # the whole "restart from where the ball is" behavior.
+            if mode in ('BALL_TRACK_TRAJECTORY', 'BALL_TRACK_PATH'):
+                self._wp_signature = ()
+                self._wp_list = []
+                self._wp_idx = 0
+                self._wp_arrived_t = None
+                self._wp_started_t = None
             self.get_logger().info(
                 f"Mode → {mode} params={self.params} ball={self.ball_cfg.get('type')}")
 
