@@ -50,16 +50,22 @@ sudo systemctl restart stable_bot.service
 
 echo "==> [6/6] verify (5 s soak)"
 sleep 5
-EXPECTED=$(git -C "$REPO" rev-parse --short HEAD)
+EXPECTED=$(git -C "$REPO" rev-parse --short HEAD | tr -d '[:space:]')
 echo "  expected git sha: $EXPECTED"
+# Pull the last 500 lines once and inspect — running journalctl twice
+# sometimes raced when the journal hadn't flushed yet, and grep -q in
+# a pipeline interacts badly with pipefail in some bash versions.
+JOURNAL=$(journalctl -u stable_bot.service -n 500 --no-pager 2>/dev/null || true)
 echo "  recent oak_driver banner / config:"
-journalctl -u stable_bot.service -n 200 --no-pager \
-  | grep -E '\[boot\]|Building OAK|Depth subsystem' | tail -5 || true
-
-if journalctl -u stable_bot.service -n 200 --no-pager \
-        | grep -q "code sha=$EXPECTED"; then
+echo "$JOURNAL" | grep -E '\[boot\]|Building OAK|Depth subsystem' | tail -5 || true
+BOOT_LINE=$(echo "$JOURNAL" | grep '\[boot\] oak_driver' | tail -1 || true)
+if [ -n "$BOOT_LINE" ] && [[ "$BOOT_LINE" == *"code sha=$EXPECTED"* ]]; then
     echo "  ✓ live code SHA matches HEAD ($EXPECTED)"
+elif [ -n "$BOOT_LINE" ]; then
+    echo "  ! SHA mismatch — running code is older than HEAD."
+    echo "    expected: $EXPECTED"
+    echo "    line    : $BOOT_LINE"
 else
-    echo "  ! could not confirm SHA — service may still be starting up."
-    echo "    Re-run:  journalctl -u stable_bot.service -n 200 --no-pager | grep '\[boot\]'"
+    echo "  ! no [boot] banner found in last 500 lines — service may still be starting up."
+    echo "    Re-run:  journalctl -u stable_bot.service -n 500 --no-pager | grep '\[boot\]'"
 fi
