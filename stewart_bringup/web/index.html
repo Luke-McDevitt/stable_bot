@@ -5542,9 +5542,47 @@ function setCalStatus(msg, ok) {
 
 // --- Ball state / ref / method comparison renderers ---
 
+// ArUco→IMU 2×2 (the matrix the controller uses). Loaded once on page
+// load via /iva/alignment. _M_imu_to_aruco is the inverse (transpose,
+// since rotations are orthogonal) — we apply it to incoming IMU-frame
+// /ball_state and /ball_ref to render them in platform/ArUco frame on
+// the SVG, so what the operator sees matches their click and the
+// platform circle drawn on the canvas.
+let _M_aruco_to_imu = null;   // [[a,b],[c,d]] or null = identity
+let _M_imu_to_aruco = null;   // transpose of the above
+
+function _imuToPlatform(x, y) {
+  if (_M_imu_to_aruco === null) return [x, y];
+  const M = _M_imu_to_aruco;
+  return [M[0][0]*x + M[0][1]*y, M[1][0]*x + M[1][1]*y];
+}
+
+async function loadIvaAlignment() {
+  try {
+    const r = await fetch('/iva/alignment');
+    const j = await r.json();
+    if (j && j.matrix && j.matrix.length === 2) {
+      _M_aruco_to_imu = j.matrix;
+      // Transpose for the inverse (rotations are orthogonal).
+      _M_imu_to_aruco = [
+        [_M_aruco_to_imu[0][0], _M_aruco_to_imu[1][0]],
+        [_M_aruco_to_imu[0][1], _M_aruco_to_imu[1][1]],
+      ];
+      console.log(`[IVA] alignment loaded: rot=${j.rotation_deg?.toFixed?.(1)}°`);
+    } else {
+      console.log('[IVA] no alignment available; SVG runs identity.');
+    }
+  } catch (e) {
+    console.warn('[IVA] alignment fetch failed:', e);
+  }
+}
+// Fire on script eval; ROSLIB connect happens slightly later.
+loadIvaAlignment();
+
 function onBallState(m) {
-  const px = m.pose.position.x;
-  const py = m.pose.position.y;   // platform-frame mm
+  const ix = m.pose.position.x;
+  const iy = m.pose.position.y;   // /ball_state is IMU frame (post-§0)
+  const [px, py] = _imuToPlatform(ix, iy);   // → platform frame for SVG
   // Off-platform watchdog: only meaningful when a ball-tracking demo
   // is engaged. The stub ball_kf_node can publish garbage /ball_state
   // values (pixel-space coordinates rather than platform-frame mm)
@@ -5580,9 +5618,13 @@ function onBallState(m) {
 }
 
 function onBallRef(p) {
+  // /ball_ref arrives in IMU frame (ref_generator rotates the SVG
+  // click target). Display in platform frame so the marker shows up
+  // under the click point.
+  const [rx, ry] = _imuToPlatform(p.x, p.y);
   const m = $('ref-marker');
-  m.setAttribute('cx', p.x);
-  m.setAttribute('cy', p.y);
+  m.setAttribute('cx', rx);
+  m.setAttribute('cy', ry);
   m.setAttribute('visibility', 'visible');
 }
 

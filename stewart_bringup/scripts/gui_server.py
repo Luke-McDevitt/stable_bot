@@ -1398,6 +1398,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({'iva_dir': _iva_bags_root(),
                              'entries': _list_iva_bags()})
             return
+        if self.path == '/iva/alignment':
+            # Live ArUco→IMU alignment, read directly from the active
+            # config file. The GUI uses this to invert the rotation so
+            # /ball_state and /ball_ref (both in IMU frame post-§0)
+            # render in platform frame on the SVG — operator's click
+            # appears under the ball's actual physical position.
+            path = os.path.expanduser(
+                '~/stable_bot_repo/stewart_vision/config/'
+                'aruco_imu_alignment.yaml')
+            try:
+                import yaml as _yaml
+                with open(path) as f:
+                    d = _yaml.safe_load(f) or {}
+                self._send_json({
+                    'matrix': d.get('matrix'),
+                    'rotation_deg': d.get('rotation_deg'),
+                    'rms_deg': d.get('post_alignment_rms_deg'),
+                    'source_bag': d.get('source_bag'),
+                })
+            except Exception as e:
+                self._send_json(
+                    {'error': str(e), 'matrix': None}, status=200)
+            return
         if self.path == '/vision/status':
             self._send_json(_vision_status())
             return
