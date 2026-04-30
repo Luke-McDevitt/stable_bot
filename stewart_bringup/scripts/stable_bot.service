@@ -15,6 +15,13 @@ Environment=HOME=/home/sorak
 # again with X_LINK_ERROR, set this to 'high' (USB 2.0) to halve
 # its draw — the bandwidth fits comfortably in USB2.
 Environment=OAK_USB_SPEED=super
+# Depth subsystem (StereoDepth + mono right + IR projector + SLC) is
+# explicitly OFF. Mono is no longer used for ArUco (RGB has the IR-cut
+# filter, so platform_pose subscribes to /oak/rgb/image_compressed),
+# and the depth-blob detector was only ever a backup to V0 — turning
+# it off frees ~30 MB/s of USB bandwidth so RGB can run at full 60 Hz
+# for the lowest-latency V0 path.
+Environment=OAK_ENABLE_DEPTH=0
 ExecStart=/bin/bash -c 'source /opt/ros/kilted/setup.bash && \
                         source /home/sorak/ros2_ws/install/local_setup.bash && \
                         exec ros2 launch stewart_bringup stewart_gui_launch.py'

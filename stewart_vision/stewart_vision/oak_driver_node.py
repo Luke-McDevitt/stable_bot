@@ -475,7 +475,7 @@ def _load_rgb_intrinsics(yaml_path: str) -> Tuple[Optional[np.ndarray],
 
 # --- DepthAI pipeline builder ------------------------------------------------
 
-def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 15,
+def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
                     enable_depth: bool = False):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
@@ -721,22 +721,27 @@ class OakDriverNode(Node):
             f"(check matches `git -C ~/stable_bot_repo rev-parse "
             f"--short HEAD` to confirm restart picked up new code)")
 
-        # FPS — env-overridable. Default rolled back to 15 Hz (the
-        # pre-Phase-1 baseline) on 2026-04-30 because empirical bag
-        # data showed rgb_fps=60 collapsed V0 to <2 Hz despite the
-        # IMX378 sensor's nominal 60 Hz cap at 1080p. Likely the OAK
-        # was throttling internally when depth subsystem was also
-        # active. Bump back up via OAK_RGB_FPS=30 (or 60) only after
-        # the 15 Hz baseline is verified healthy in [health] logs.
+        # FPS — env-overridable. Default RGB 60 Hz to push V0 latency
+        # as low as the IMX378 sensor allows. Earlier 60 Hz attempts
+        # collapsed V0 because depth subsystem was simultaneously
+        # consuming mono+stereo bandwidth on USB; with depth now
+        # explicitly OFF (Environment=OAK_ENABLE_DEPTH=0 in the
+        # systemd unit), RGB has the bus to itself and 60 Hz at
+        # 540p ISP is well within USB-3 SuperSpeed budget (~93 MB/s
+        # vs ~400 MB/s sustained ceiling).
         #
-        # Mono stays at 15 Hz: the OV9282 mono cameras ship raw
-        # uncompressed frames (1 MB each), so 60 Hz mono = 61 MB/s
-        # per camera. ArUco only needs ~10 Hz pose, so the mono
-        # fast-path would just burn USB for no controller benefit.
+        # Mono stays at 15 Hz: it's used only for vision-debug bag
+        # recording and (rarely) calibration sessions now that
+        # ArUco runs on RGB.
+        #
+        # Drop OAK_RGB_FPS to 30 first if you see the [health] log's
+        # v0_arr falling below the configured rate — that's the
+        # signal the OAK is throttling under whatever the next
+        # bottleneck is.
         try:
-            rgb_fps = max(5, min(120, int(os.environ.get('OAK_RGB_FPS', '15'))))
+            rgb_fps = max(5, min(120, int(os.environ.get('OAK_RGB_FPS', '60'))))
         except Exception:
-            rgb_fps = 15
+            rgb_fps = 60
         try:
             mono_fps = max(5, min(60, int(os.environ.get('OAK_MONO_FPS', '15'))))
         except Exception:
