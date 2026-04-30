@@ -475,7 +475,7 @@ def _load_rgb_intrinsics(yaml_path: str) -> Tuple[Optional[np.ndarray],
 
 # --- DepthAI pipeline builder ------------------------------------------------
 
-def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
+def _build_pipeline(rgb_fps: int = 15, mono_fps: int = 15,
                     enable_depth: bool = False):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
@@ -703,29 +703,40 @@ class OakDriverNode(Node):
         self.get_logger().info(
             f"Depth subsystem: {'ENABLED' if self.enable_depth else 'DISABLED'} "
             f"(set OAK_ENABLE_DEPTH=1 to enable)")
-
-        # FPS — env-overridable so we can throttle back if Pi 5's
-        # USB-2.0 link can't sustain the higher rate. 60 Hz is the
-        # default after the 2026-04-30 latency push; the IMX378 sensor
-        # in the OAK-D Pro AF runs 60 Hz at 1080p natively, and the V0
-        # detector reads from the ISP-scaled 540p so per-frame Pi
-        # work stays cheap. Drop to 30 Hz first if you see USB
-        # brownouts (X_LINK_ERROR in the logs); the JPEG encoder
-        # tracks rgb_fps, so this also affects the GUI MJPEG rate.
-        #
-        # Mono is intentionally LEFT at 15 Hz: the OV9282 mono cameras
-        # ship raw uncompressed frames over USB (1.28×0.8 MB/frame =
-        # 1.0 MB), so 60 Hz mono = 61 MB/s per camera. That alone is
-        # 2× USB-2's ~35 MB/s sustained ceiling; with depth enabled
-        # (mono right + depth-aligned 540p uint16) it's >5×. The OAK
-        # silently throttles itself to fit, dragging RGB and V0 down
-        # with it. ArUco doesn't need fast pose updates — /platform_pose
-        # was already 10 Hz before any FPS bump — so the mono fast-path
-        # would just burn USB for no controller benefit.
+        # Boot banner — prints the git sha of the running code so
+        # we can verify a `git pull` actually took effect after a
+        # restart. If the SHA in the journal doesn't match `git
+        # rev-parse HEAD` on disk, the service didn't restart.
         try:
-            rgb_fps = max(5, min(120, int(os.environ.get('OAK_RGB_FPS', '60'))))
+            import subprocess
+            sha = subprocess.run(
+                ['git', '-C', os.path.expanduser('~/stable_bot_repo'),
+                 'rev-parse', '--short', 'HEAD'],
+                capture_output=True, text=True, timeout=2.0)
+            sha_str = sha.stdout.strip() or '?'
         except Exception:
-            rgb_fps = 60
+            sha_str = '?'
+        self.get_logger().info(
+            f"[boot] oak_driver code sha={sha_str} "
+            f"(check matches `git -C ~/stable_bot_repo rev-parse "
+            f"--short HEAD` to confirm restart picked up new code)")
+
+        # FPS — env-overridable. Default rolled back to 15 Hz (the
+        # pre-Phase-1 baseline) on 2026-04-30 because empirical bag
+        # data showed rgb_fps=60 collapsed V0 to <2 Hz despite the
+        # IMX378 sensor's nominal 60 Hz cap at 1080p. Likely the OAK
+        # was throttling internally when depth subsystem was also
+        # active. Bump back up via OAK_RGB_FPS=30 (or 60) only after
+        # the 15 Hz baseline is verified healthy in [health] logs.
+        #
+        # Mono stays at 15 Hz: the OV9282 mono cameras ship raw
+        # uncompressed frames (1 MB each), so 60 Hz mono = 61 MB/s
+        # per camera. ArUco only needs ~10 Hz pose, so the mono
+        # fast-path would just burn USB for no controller benefit.
+        try:
+            rgb_fps = max(5, min(120, int(os.environ.get('OAK_RGB_FPS', '15'))))
+        except Exception:
+            rgb_fps = 15
         try:
             mono_fps = max(5, min(60, int(os.environ.get('OAK_MONO_FPS', '15'))))
         except Exception:
