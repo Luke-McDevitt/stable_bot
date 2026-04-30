@@ -1,0 +1,84 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T022354Z_demo1",
+  "demo_label": "demo1",
+  "duration_s": 18.760696087,
+  "topic_counts": {
+    "/ball_ref": 442,
+    "/ball_state": 1290,
+    "/ball_xy_depth": 163,
+    "/ball_xy_mono": 974,
+    "/control_cmd": 7,
+    "/control_result": 0,
+    "/leg_currents": 364,
+    "/leg_encoders": 365,
+    "/oak/ball/depth/diagnostic": 137,
+    "/oak/ball/depth/rgb_pixel": 137,
+    "/oak/ball/v0/diagnostic": 137,
+    "/oak/ball/v0/rgb_pixel": 140,
+    "/odrive_errors": 38,
+    "/platform/imu/data": 5404,
+    "/platform_pose": 125,
+    "/platform_pose/markers_visible": 124,
+    "/platform_rpy": 364,
+    "/status": 38
+  },
+  "gains_at_record": {
+    "kp": 0.03,
+    "kd": 0.005,
+    "ki": 0.0,
+    "max_tilt_deg": 6.0,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0
+  },
+  "ball_state_n": 1290,
+  "ball_ref_n": 442,
+  "mono_n": 974,
+  "depth_n": 163,
+  "error_mm": {
+    "n": 589,
+    "mean": 94.57184840338489,
+    "std": 48.64796781522784,
+    "rms": 106.35064307743635,
+    "p50": 106.28355995459653,
+    "p95": 150.2938657657919,
+    "min": 9.150479520535933,
+    "max": 150.7278248172876
+  },
+  "error_x_mm": {
+    "n": 589,
+    "mean": 64.24834745808535,
+    "std": 58.45700212884498,
+    "rms": 86.86236957962088,
+    "p50": 67.25951507032897,
+    "p95": 144.1378520590736,
+    "min": -15.176960837417752,
+    "max": 145.26558298081454
+  },
+  "error_y_mm": {
+    "n": 589,
+    "mean": 28.102370019303017,
+    "std": 54.54947143003121,
+    "rms": 61.36275771180441,
+    "p50": 23.227152089615622,
+    "p95": 106.51732960381136,
+    "min": -52.5131471425496,
+    "max": 107.98007267865603
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 125,
+    "mean": 811.5493980182328,
+    "std": 0.20873447967480363,
+    "rms": 811.5494248619975,
+    "p50": 811.5775498886077,
+    "p95": 811.8853773588468,
+    "min": 811.0281874030601,
+    "max": 811.9757667835328
+  },
+  "markers_visible": {
+    "n": 124,
+    "mean": 8.008064516129032,
+    "min": 8,
+    "max": 9
+  }
+}
