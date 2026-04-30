@@ -16,6 +16,10 @@ setup(
         (os.path.join('share', package_name, 'config'),
             glob('config/*.yaml.template')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        # Phase 2B on-device V0 blobs — installed alongside config so
+        # oak_driver_node can resolve them via get_package_share_directory.
+        (os.path.join('share', package_name, 'blobs'),
+            glob('blobs/*.blob')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

@@ -498,7 +498,8 @@ def _load_rgb_intrinsics(yaml_path: str) -> Tuple[Optional[np.ndarray],
 # --- DepthAI pipeline builder ------------------------------------------------
 
 def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
-                    enable_depth: bool = False):
+                    enable_depth: bool = False,
+                    v0_blob_path: Optional[str] = None):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
     Two configurations, selected by `enable_depth`:
@@ -661,6 +662,28 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
     add_out('rgb_raw',  cam_rgb.video)             # uncompressed for V0
     add_out('left',     mono_l.out)                # raw mono left for ArUco
 
+    # Phase 2B — on-device V0 detection. When a compiled .blob path is
+    # supplied, fan out cam_rgb.video into an ImageManip downscaler ->
+    # NeuralNetwork that produces (cx_norm, cy_norm, conf) per frame.
+    # The host then reads NNData (~16 B) instead of doing cv2 work on
+    # 1.5 MB raw frames. See stewart_vision/scripts/build_v0_blob.py
+    # for the model + how to compile the blob; pass a path here via
+    # the OAK_V0_BACKEND=nn env switch.
+    if v0_blob_path:
+        v0_manip = pipeline.create(dai.node.ImageManip)
+        v0_manip.initialConfig.setResize(V0_W, V0_H)
+        v0_manip.initialConfig.setFrameType(
+            dai.RawImgFrame.Type.BGR888p)
+        v0_manip.setMaxOutputFrameSize(V0_W * V0_H * 3)
+        cam_rgb.video.link(v0_manip.inputImage)
+        v0_nn = pipeline.create(dai.node.NeuralNetwork)
+        v0_nn.setBlobPath(v0_blob_path)
+        v0_nn.setNumInferenceThreads(2)
+        v0_nn.input.setBlocking(False)
+        v0_nn.input.setQueueSize(1)
+        v0_manip.out.link(v0_nn.input)
+        add_out('v0_nn', v0_nn.out)
+
     if not enable_depth:
         return pipeline
 
@@ -803,6 +826,48 @@ class OakDriverNode(Node):
         self.get_logger().info(
             f"Depth subsystem: {'ENABLED' if self.enable_depth else 'DISABLED'} "
             f"(set OAK_ENABLE_DEPTH=1 to enable)")
+        # V0 backend selection (Phase 2B). 'cv2' (default) runs HSV
+        # detection on the host. 'nn' runs an on-device NN that
+        # produces (cx_norm, cy_norm, conf) via XLink — Pi receives
+        # ~16 B per detection instead of a 1.5 MB raw frame. Falls
+        # back to cv2 silently if the requested .blob isn't on disk.
+        self.v0_backend = os.environ.get('OAK_V0_BACKEND', 'cv2').lower()
+        if self.v0_backend not in ('cv2', 'nn'):
+            self.get_logger().warn(
+                f"OAK_V0_BACKEND={self.v0_backend!r} unknown, "
+                f"falling back to cv2.")
+            self.v0_backend = 'cv2'
+        self._v0_blob_path = None
+        if self.v0_backend == 'nn':
+            # Search the package's installed share dir + the source
+            # repo so we work both in colcon-symlink-installed mode
+            # and in the dev-machine direct-import case.
+            candidates = []
+            try:
+                from ament_index_python.packages import (
+                    get_package_share_directory)
+                candidates.append(os.path.join(
+                    get_package_share_directory('stewart_vision'),
+                    'blobs', f'v0_{V0_W}x{V0_H}.blob'))
+            except Exception:
+                pass
+            candidates.append(os.path.expanduser(
+                f'~/stable_bot_repo/stewart_vision/blobs/v0_{V0_W}x{V0_H}.blob'))
+            for p in candidates:
+                if os.path.isfile(p):
+                    self._v0_blob_path = p
+                    break
+            if self._v0_blob_path is None:
+                self.get_logger().warn(
+                    f"OAK_V0_BACKEND=nn requested but no blob found at "
+                    f"any of: {candidates}. Falling back to cv2 backend. "
+                    f"Build with stewart_vision/scripts/build_v0_blob.py.")
+                self.v0_backend = 'cv2'
+            else:
+                self.get_logger().info(
+                    f"V0 backend: NN  blob={self._v0_blob_path}")
+        if self.v0_backend == 'cv2':
+            self.get_logger().info("V0 backend: cv2 (host HSV+contour)")
         # Boot banner — prints the git sha of the running code so
         # we can verify a `git pull` actually took effect after a
         # restart. If the SHA in the journal doesn't match `git
@@ -859,7 +924,8 @@ class OakDriverNode(Node):
         self.get_logger().info(
             f"Building OAK pipeline (rgb={rgb_fps} Hz, mono={mono_fps} Hz)…")
         pipeline = _build_pipeline(rgb_fps=rgb_fps, mono_fps=mono_fps,
-                                   enable_depth=self.enable_depth)
+                                   enable_depth=self.enable_depth,
+                                   v0_blob_path=self._v0_blob_path)
 
         # USB speed cap. The Pi 5 caps total USB current at 600 mA
         # by default (raise to 1.2 A with `usb_max_current_enable=1`
@@ -920,6 +986,11 @@ class OakDriverNode(Node):
         self.q_rgb_jpeg = self.device.getOutputQueue('rgb_jpeg', 1, False)
         self.q_rgb_raw  = self.device.getOutputQueue('rgb_raw',  1, False)
         self.q_left     = self.device.getOutputQueue('left',     1, False)
+        # Phase 2B: NN backend output queue, only present when the
+        # blob loaded successfully and the pipeline added the NN node.
+        self.q_v0_nn = (
+            self.device.getOutputQueue('v0_nn', 1, False)
+            if self.v0_backend == 'nn' else None)
         # Spatial output / SLC config queues — only present when depth
         # is enabled. _tick guards on these being non-None.
         if self.enable_depth:
@@ -1045,6 +1116,9 @@ class OakDriverNode(Node):
                 'focus_pos': int(os.environ.get('OAK_FOCUS_POS', '145')),
                 'exp_us':    int(os.environ.get('OAK_EXP_US', '8000')),
                 'iso':       int(os.environ.get('OAK_ISO', '800')),
+                'v0_backend': str(self.v0_backend),
+                'v0_blob': (os.path.basename(self._v0_blob_path)
+                            if self._v0_blob_path else None),
                 'enable_depth': bool(self.enable_depth),
                 'mask_v0_to_platform': bool(self.mask_v0_to_platform),
                 'usb_speed': os.environ.get('OAK_USB_SPEED', '?'),
@@ -1311,13 +1385,68 @@ class OakDriverNode(Node):
             except Exception:
                 pass
 
-        # RGB raw → V0 detector → /oak/ball/v0/rgb_pixel.
-        # TODO(phase2b): replace this Pi-side cv2 detector with an
-        # on-device NeuralNetwork node so V0 doesn't depend on the host
-        # CPU at all. See docs/oak_phase2b_on_device_v0.md.
+        # Phase 2B — NN backend reads (cx_norm, cy_norm, conf) from the
+        # on-device NeuralNetwork. Three FP16 floats per detection vs
+        # 1.5 MB raw frame for the cv2 path. When this fires we still
+        # drain rgb_raw below so /oak/latency_ms keeps publishing and
+        # the depth-blob debug overlay still has a recent BGR cache —
+        # but the V0 detection itself is the NN's output.
+        if self.q_v0_nn is not None:
+            nn_msg = self.q_v0_nn.tryGet()
+            if nn_msg is not None:
+                self._n_v0_attempts += 1
+                try:
+                    out = nn_msg.getFirstLayerFp16()  # list[float] len 3
+                    cx_n, cy_n, conf = float(out[0]), float(out[1]), float(out[2])
+                except Exception:
+                    cx_n, cy_n, conf = float('nan'), float('nan'), 0.0
+                # NN normalised coords (V0_W × V0_H frame) → 540p coords
+                # for parity with the cv2 path. ball_localizer_node's
+                # K_rgb is calibrated at 540p, so downstream sees the
+                # same coordinate space regardless of backend.
+                cx = cx_n * float(RGB_W)
+                cy = cy_n * float(RGB_H)
+                # Capture-time stamp from the NNData (it inherits the
+                # input frame's timestamp through the NN node).
+                try:
+                    capture_dai = nn_msg.getTimestamp().total_seconds()
+                    now_dai = dai.Clock.now().total_seconds()
+                    age_s = max(0.0, now_dai - capture_dai)
+                    v0_stamp = (self.get_clock().now()
+                                - Duration(seconds=age_s)).to_msg()
+                    self._v0_last_age_s = age_s
+                except Exception:
+                    v0_stamp = self.get_clock().now().to_msg()
+                    self._v0_last_age_s = float('nan')
+                # Confidence floor: model emits ~0 when nothing matches
+                # (centroid sits at frame center). Reject low-confidence
+                # outputs so downstream doesn't track a phantom ball.
+                if conf > 1e-4:
+                    p = PointStamped()
+                    p.header.stamp = v0_stamp
+                    p.header.frame_id = 'oak_rgb'
+                    p.point.x = cx
+                    p.point.y = cy
+                    # Radius proxy: sqrt(area) where area = conf * H * W.
+                    p.point.z = float((conf * V0_W * V0_H) ** 0.5
+                                      * (RGB_W / V0_W))
+                    self.pub_v0.publish(p)
+                    self._n_v0 += 1
+                    d = Float32MultiArray()
+                    d.data = [float(cx), float(cy), float(p.point.z),
+                              float(conf)]
+                    self.pub_v0_diag.publish(d)
+
+        # RGB raw → cv2 V0 detector → /oak/ball/v0/rgb_pixel.
+        # When OAK_V0_BACKEND=nn we still pull from this queue (depth
+        # debug overlay + latency reporting use _last_rgb_bgr and
+        # rgb_raw timestamps) but skip the cv2 detection block.
         rgb_raw = self.q_rgb_raw.tryGet()
         if rgb_raw is not None:
-            self._n_v0_attempts += 1
+            # Only count this as a V0 attempt when cv2 is the active
+            # backend — the NN backend block above already counts.
+            if self.v0_backend == 'cv2':
+                self._n_v0_attempts += 1
             frame = rgb_raw.getCvFrame()  # BGR uint8
             self._last_rgb_bgr = frame
             # Translate the OAK frame timestamp into ROS-clock space
@@ -1339,64 +1468,66 @@ class OakDriverNode(Node):
                 v0_stamp = self.get_clock().now().to_msg()
                 v0_age_s = float('nan')
             self._v0_last_age_s = v0_age_s
-            # Pre-crop to the platform-mask bbox so HSV+morph+contour
-            # only run on ~25 % of the frame area. Falls back to full-
-            # frame if bbox isn't ready yet (no pose received).
-            bbox = (self._platform_bbox
-                    if (self.mask_v0_to_platform
-                        and self._platform_bbox is not None)
-                    else None)
-            if bbox is not None:
-                x0, y0, x1, y1 = bbox
-                v0_frame = frame[y0:y1, x0:x1]
-                v0_mask = (self._platform_mask[y0:y1, x0:x1]
-                           if self._platform_mask is not None else None)
-                det = detect_ball_v0(v0_frame, restrict_mask=v0_mask)
+            if self.v0_backend == 'cv2':
+                # Pre-crop to the platform-mask bbox so HSV+morph+contour
+                # only run on ~25 % of the frame area. Falls back to full-
+                # frame if bbox isn't ready yet (no pose received).
+                bbox = (self._platform_bbox
+                        if (self.mask_v0_to_platform
+                            and self._platform_bbox is not None)
+                        else None)
+                if bbox is not None:
+                    x0, y0, x1, y1 = bbox
+                    v0_frame = frame[y0:y1, x0:x1]
+                    v0_mask = (self._platform_mask[y0:y1, x0:x1]
+                               if self._platform_mask is not None else None)
+                    det = detect_ball_v0(v0_frame, restrict_mask=v0_mask)
+                    if det is not None:
+                        cx, cy, r, conf = det
+                        cx += x0
+                        cy += y0
+                        det = (cx, cy, r, conf)
+                else:
+                    v0_mask = (self._platform_mask
+                               if self.mask_v0_to_platform else None)
+                    det = detect_ball_v0(frame, restrict_mask=v0_mask)
                 if det is not None:
                     cx, cy, r, conf = det
-                    cx += x0
-                    cy += y0
-                    det = (cx, cy, r, conf)
-            else:
-                v0_mask = (self._platform_mask
-                           if self.mask_v0_to_platform else None)
-                det = detect_ball_v0(frame, restrict_mask=v0_mask)
-            if det is not None:
-                cx, cy, r, conf = det
-                p = PointStamped()
-                p.header.stamp = v0_stamp
-                p.header.frame_id = 'oak_rgb'
-                p.point.x = cx
-                p.point.y = cy
-                p.point.z = r           # radius in pixels piggy-backed in z
-                self.pub_v0.publish(p)
-                self._n_v0 += 1
-                # diagnostic with confidence + radius for debug strip
-                d = Float32MultiArray()
-                d.data = [float(cx), float(cy), float(r), float(conf)]
-                self.pub_v0_diag.publish(d)
+                    p = PointStamped()
+                    p.header.stamp = v0_stamp
+                    p.header.frame_id = 'oak_rgb'
+                    p.point.x = cx
+                    p.point.y = cy
+                    p.point.z = r       # radius in pixels piggy-backed in z
+                    self.pub_v0.publish(p)
+                    self._n_v0 += 1
+                    # diagnostic with confidence + radius for debug strip
+                    d = Float32MultiArray()
+                    d.data = [float(cx), float(cy), float(r), float(conf)]
+                    self.pub_v0_diag.publish(d)
 
-                # Push a fresh ROI to the SpatialLocationCalculator so
-                # depth is sampled exactly where the ball was seen.
-                # Skip when depth subsystem is disabled.
-                if self.q_slc_cfg is not None:
-                    cx_n = float(np.clip(cx / RGB_W, 0.0, 1.0))
-                    cy_n = float(np.clip(cy / RGB_H, 0.0, 1.0))
-                    hr = self._slc_roi_half_norm
-                    tl = dai.Point2f(
-                        max(0.0, cx_n - hr), max(0.0, cy_n - hr))
-                    br = dai.Point2f(
-                        min(1.0, cx_n + hr), min(1.0, cy_n + hr))
-                    roi_cfg = dai.SpatialLocationCalculatorConfigData()
-                    roi_cfg.depthThresholds.lowerThreshold = 100   # mm
-                    roi_cfg.depthThresholds.upperThreshold = 5000  # mm
-                    roi_cfg.roi = dai.Rect(tl, br)
-                    cfg = dai.SpatialLocationCalculatorConfig()
-                    cfg.addROI(roi_cfg)
-                    try:
-                        self.q_slc_cfg.send(cfg)
-                    except Exception:
-                        pass
+                    # Push a fresh ROI to the SpatialLocationCalculator
+                    # so depth is sampled exactly where the ball was
+                    # seen. Skip when depth subsystem is disabled.
+                    # Inside `if det is not None:` so cx/cy are defined.
+                    if self.q_slc_cfg is not None:
+                        cx_n = float(np.clip(cx / RGB_W, 0.0, 1.0))
+                        cy_n = float(np.clip(cy / RGB_H, 0.0, 1.0))
+                        hr = self._slc_roi_half_norm
+                        tl = dai.Point2f(
+                            max(0.0, cx_n - hr), max(0.0, cy_n - hr))
+                        br = dai.Point2f(
+                            min(1.0, cx_n + hr), min(1.0, cy_n + hr))
+                        roi_cfg = dai.SpatialLocationCalculatorConfigData()
+                        roi_cfg.depthThresholds.lowerThreshold = 100   # mm
+                        roi_cfg.depthThresholds.upperThreshold = 5000  # mm
+                        roi_cfg.roi = dai.Rect(tl, br)
+                        cfg = dai.SpatialLocationCalculatorConfig()
+                        cfg.addROI(roi_cfg)
+                        try:
+                            self.q_slc_cfg.send(cfg)
+                        except Exception:
+                            pass
 
         # Spatial output → /oak/ball/spatial. Coordinates in metres
         # in the RGB-camera frame (because depth was aligned to CAM_A).
