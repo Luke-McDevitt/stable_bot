@@ -625,7 +625,22 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
             int(os.environ.get('OAK_ISO', '800'))))
     except Exception:
         iso = 800
-    cam_rgb.initialControl.setManualFocus(focus_pos)
+    # Initial focus mode. Defaults to CONTINUOUS_VIDEO autofocus so a
+    # fresh deploy doesn't sit at a stale OAK_FOCUS_POS guess until the
+    # operator manually clicks Auto in the GUI. Set OAK_FOCUS_MODE=
+    # manual (with OAK_FOCUS_POS=N) to lock it from boot, or
+    # =auto_one_shot to refocus once at startup.
+    focus_mode_env = (os.environ.get('OAK_FOCUS_MODE', 'auto')
+                      .strip().lower())
+    if focus_mode_env == 'manual':
+        cam_rgb.initialControl.setManualFocus(focus_pos)
+    elif focus_mode_env == 'auto_one_shot':
+        cam_rgb.initialControl.setAutoFocusMode(
+            dai.RawCameraControl.AutoFocusMode.AUTO)
+        cam_rgb.initialControl.setAutoFocusTrigger()
+    else:
+        cam_rgb.initialControl.setAutoFocusMode(
+            dai.RawCameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
     cam_rgb.initialControl.setManualExposure(exp_us, iso)
 
     # Runtime camera-control input. Allows the GUI to flip auto-focus
@@ -1056,7 +1071,12 @@ class OakDriverNode(Node):
                 int(os.environ.get('OAK_FOCUS_POS', '145'))))
         except Exception:
             _initial_focus = 145
-        self._focus_mode: str = 'manual'   # 'manual' | 'auto'
+        # Match the boot-time focus mode picked in _build_pipeline so
+        # the GUI's button highlight reflects reality on first /oak/config.
+        self._focus_mode: str = (
+            os.environ.get('OAK_FOCUS_MODE', 'auto').strip().lower())
+        if self._focus_mode not in ('auto', 'auto_one_shot', 'manual'):
+            self._focus_mode = 'auto'
         self._focus_pos: int = _initial_focus
         # Live HSV bounds for cv2 V0. Start at the module defaults;
         # operator can adjust via /oak/cmd_hsv at runtime.
@@ -1633,10 +1653,25 @@ class OakDriverNode(Node):
                 except Exception:
                     v0_stamp = self.get_clock().now().to_msg()
                     self._v0_last_age_s = float('nan')
-                # Confidence floor: model emits ~0 when nothing matches
-                # (centroid sits at frame center). Reject low-confidence
-                # outputs so downstream doesn't track a phantom ball.
-                if conf > 1e-4:
+                # Confidence floor. The NN's m_avg is the average of
+                # ReLU(score - SCORE_FLOOR) across the frame. With
+                # SCORE_FLOOR=0.30 baked into the blob, only pixels
+                # with strong orange contribute. When the ball is
+                # absent, sensor noise occasionally bumps a few
+                # pixels above SCORE_FLOOR and m_avg lands ~1e-4 to
+                # ~1e-3 — the soft-argmax then degenerates to
+                # (0,0) (top-left corner) because both numerator and
+                # denominator are tiny. The 1e-4 floor we used to
+                # have was right on this noise band, so the GUI
+                # showed a persistent emerald circle in the corner.
+                # Bump to a level that requires a real detection
+                # (~1 % of frame area = orange ball typically covers
+                # 0.5–3 % at 60 cm range, score ≥ ~0.5 over that area).
+                # Override via OAK_NN_CONF_MIN if your ball is much
+                # smaller / further.
+                NN_CONF_MIN = float(
+                    os.environ.get('OAK_NN_CONF_MIN', '0.005'))
+                if conf > NN_CONF_MIN:
                     p = PointStamped()
                     p.header.stamp = v0_stamp
                     p.header.frame_id = 'oak_rgb'

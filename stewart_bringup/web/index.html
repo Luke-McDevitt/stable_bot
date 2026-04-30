@@ -145,7 +145,7 @@
           <label class="flex items-center gap-2"><input id="vis-show-stereo" type="checkbox"> stereo pair</label>
           <label class="flex items-center gap-2"><input id="vis-show-disparity" type="checkbox"> disparity</label>
           <label class="flex items-center gap-2"
-                 title="Draw a circle around the ball detection. Use the detector dropdown below to choose V0 (HSV color), depth-blob (above-platform stereo), or both at once for direct comparison.">
+                 title="Draw a circle around the ball as the ACTIVE backend sees it. The detector dropdown below picks V0 (orange) vs depth-blob (cyan); use the cv2/NN toggles for per-detector comparison.">
             <input id="vis-show-ball-circle" type="checkbox"> ball circle
           </label>
           <label class="flex items-center gap-2 text-slate-600 cursor-not-allowed"
@@ -155,6 +155,16 @@
           <label class="flex items-center gap-2"
                  title="Replace the live RGB feed with the V0 detector's debug image: lime tint shows pixels passing HSV+morph, cyan = projected platform mask, red circle = picked blob. Use while tuning HSV sliders.">
             <input id="vis-show-v0-debug" type="checkbox"> V0 debug overlay
+          </label>
+          <label class="flex items-center gap-2"
+                 title="Show what the cv2 (HSV+contour) detector picks up, BLUE circle. Independent of the active-backend ball-circle and the detector dropdown.">
+            <input id="vis-show-cv2-circle" type="checkbox">
+            <span class="text-blue-400">cv2 circle</span>
+          </label>
+          <label class="flex items-center gap-2"
+                 title="Show what the on-device NN picks up, EMERALD circle. Updates whenever the NN blob produces a confident-enough detection.">
+            <input id="vis-show-nn-circle" type="checkbox">
+            <span class="text-emerald-400">NN circle</span>
           </label>
         </div>
         <!-- Detector toggle for option 2 (V0 + platform mask) vs
@@ -4060,6 +4070,13 @@ function initVisionGUI() {
   // --- Camera-feed overlay toggles + stale tick ---
   const ballCb = $('vis-show-ball-circle');
   if (ballCb) ballCb.addEventListener('change', renderBallOverlays);
+  // Per-backend ball-circle toggles. Repaint on flip so the operator
+  // sees the change immediately even if no fresh detection has
+  // arrived this tick.
+  const cv2Cb = $('vis-show-cv2-circle');
+  const nnCb  = $('vis-show-nn-circle');
+  if (cv2Cb) cv2Cb.addEventListener('change', renderBallOverlays);
+  if (nnCb)  nnCb.addEventListener('change',  renderBallOverlays);
   const detSel = $('vis-detector-mode');
   if (detSel) detSel.addEventListener('change', renderBallOverlays);
   setInterval(renderBallOverlays, V0_OVERLAY_TICK_MS);
@@ -5689,16 +5706,21 @@ function renderBallOverlays() {
   _renderOneOverlay('vis-overlay-ball-depth', 'vis-overlay-ball-depth-center',
                     _depthLatest, _depthLastMs, _ballDepthLastMs,
                     showDepth, DEPTH_STALE_MS);
-  // Per-backend overlays (cv2 blue + NN emerald). These are gated
-  // only on freshness, NOT on the ball_xy_mono freshness, since
-  // they show RAW detector output (whether or not the localizer
-  // accepted the projection). Lets the operator see a detector
-  // mis-firing OFF the platform — extremely useful for HSV tuning.
+  // Per-backend overlays (cv2 blue + NN emerald). Each has its own
+  // checkbox so the operator can show them independently of the
+  // master "ball circle" toggle (which gates the V0 / depth circles
+  // via the detector dropdown). Per-backend overlays are gated only
+  // on freshness, NOT on ball_xy_mono freshness — they show RAW
+  // detector output, including detections OFF the platform that
+  // the localizer would reject. That's the point: catch a detector
+  // mis-firing during HSV tuning.
   const now2 = performance.now();
   const cv2Fresh = _v0Cv2Latest && (now2 - _v0Cv2LastMs) < V0_STALE_MS;
   const nnFresh  = _v0NnLatest  && (now2 - _v0NnLastMs)  < V0_STALE_MS;
-  const showCv2  = cb.checked && cv2Fresh;
-  const showNn   = cb.checked && nnFresh;
+  const cv2Cb = $('vis-show-cv2-circle');
+  const nnCb  = $('vis-show-nn-circle');
+  const showCv2 = !!(cv2Cb && cv2Cb.checked) && cv2Fresh;
+  const showNn  = !!(nnCb && nnCb.checked)  && nnFresh;
   const renderRaw = (ring, dot, latest, on) => {
     const r = $(ring), d = $(dot);
     if (!r || !d) return;
