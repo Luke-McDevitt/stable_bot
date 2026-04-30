@@ -78,6 +78,10 @@ V0_W, V0_H = 320, 180
 # Saturated orange foam ball on a black-and-white platform — wide HSV
 # tolerance so paint variation and shadows don't drop detections. Tune
 # in the GUI's vision-debug panel.
+# Default HSV bounds for "saturated orange foam ball." These are
+# loaded at boot but can be overridden at runtime via /oak/cmd_hsv —
+# the GUI's Vision Debug panel exposes live sliders so the operator
+# can dial them in against the actual lighting and ball variant.
 # Loosened S/V floors (was 140/90) so motion-blurred ball pixels still
 # pass the threshold. At 8 ms exposure + ISO 1600 the blurred orange
 # can drop to S≈80, V≈55, which the previous bounds rejected — the
@@ -92,7 +96,10 @@ MIN_CONTOUR_AREA_PX = 60
 
 
 def detect_ball_v0(rgb_bgr: np.ndarray,
-                   restrict_mask: Optional[np.ndarray] = None) -> Optional[tuple]:
+                   restrict_mask: Optional[np.ndarray] = None,
+                   hsv_lo: Optional[np.ndarray] = None,
+                   hsv_hi: Optional[np.ndarray] = None,
+                   return_mask: bool = False):
     """Return (cx, cy, radius_px, confidence) or None.
 
     Confidence is a heuristic in [0, 1] derived from the contour's
@@ -107,11 +114,21 @@ def detect_ball_v0(rgb_bgr: np.ndarray,
     foam pads, table edges, or bench clutter — which we observed
     repeatedly on 2026-04-29 (V0 locking onto pixel (138, 177), well
     outside the platform).
+
+    `hsv_lo` and `hsv_hi` override the module-level defaults at
+    runtime (the GUI's HSV sliders publish to /oak/cmd_hsv and the
+    node passes the live values in). Both must be uint8 arrays of
+    shape (3,) for H, S, V.
+
+    If `return_mask=True`, also returns the post-morphology mask so
+    a debug-overlay topic can render exactly what passed the filter.
     """
     if cv2 is None:
-        return None
+        return (None, None) if return_mask else None
+    lo = hsv_lo if hsv_lo is not None else HSV_LO
+    hi = hsv_hi if hsv_hi is not None else HSV_HI
     hsv = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, HSV_LO, HSV_HI)
+    mask = cv2.inRange(hsv, lo, hi)
     if restrict_mask is not None:
         # Defensive: resize the platform mask to the frame's shape if
         # they differ. This happens during the OAK_ISP_SCALE=full probe
@@ -129,17 +146,18 @@ def detect_ball_v0(rgb_bgr: np.ndarray,
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        return None
+        return (None, mask) if return_mask else None
     c = max(contours, key=cv2.contourArea)
     area = float(cv2.contourArea(c))
     if area < MIN_CONTOUR_AREA_PX:
-        return None
+        return (None, mask) if return_mask else None
     (cx, cy), r = cv2.minEnclosingCircle(c)
     # Circularity: 1.0 = perfect circle, < ~0.7 = misshapen (probably noise).
     perim = cv2.arcLength(c, True)
     circ = 4.0 * np.pi * area / max(perim * perim, 1.0)
     confidence = float(np.clip(circ, 0.0, 1.0))
-    return float(cx), float(cy), float(r), confidence
+    det = (float(cx), float(cy), float(r), confidence)
+    return (det, mask) if return_mask else det
 
 
 # --- Platform-mask projection (RGB image space) -----------------------------
@@ -1029,6 +1047,10 @@ class OakDriverNode(Node):
             _initial_focus = 145
         self._focus_mode: str = 'manual'   # 'manual' | 'auto'
         self._focus_pos: int = _initial_focus
+        # Live HSV bounds for cv2 V0. Start at the module defaults;
+        # operator can adjust via /oak/cmd_hsv at runtime.
+        self._hsv_lo = HSV_LO.copy()
+        self._hsv_hi = HSV_HI.copy()
         # Spatial output / SLC config queues — only present when depth
         # is enabled. _tick guards on these being non-None.
         if self.enable_depth:
@@ -1133,6 +1155,19 @@ class OakDriverNode(Node):
         # current state on its 5 s tick.
         self.create_subscription(
             String, '/oak/cmd_focus', self._on_focus_cmd, 1)
+        # Runtime HSV bound update. Payload: Float32MultiArray of
+        # length 6 = [H_lo, H_hi, S_lo, S_hi, V_lo, V_hi]. Operator
+        # drags the GUI sliders; cv2 detector picks up the new bounds
+        # on its next frame.
+        self.create_subscription(
+            Float32MultiArray, '/oak/cmd_hsv', self._on_hsv_cmd, 1)
+        # Debug overlay: live RGB tinted lime where HSV passes, with
+        # the detected blob outlined red. Lets the operator see what
+        # the detector is actually picking up while they tune the
+        # sliders. Published only when there's at least one
+        # subscriber (saves ~3 ms per frame of cv2 work).
+        self.pub_v0_debug = self.create_publisher(
+            CompressedImage, '/oak/v0/debug_image', 1)
 
         # Half-width of the depth ROI around the V0 pixel, in
         # normalized RGB coordinates. 24 px (48 px wide ROI) covers
@@ -1172,6 +1207,10 @@ class OakDriverNode(Node):
                 'v0_backend': str(self.v0_backend),
                 'v0_blob': (os.path.basename(self._v0_blob_path)
                             if self._v0_blob_path else None),
+                # Live HSV bounds — operator sliders push to /oak/cmd_hsv
+                # and these values reflect the latest accepted values.
+                'hsv_lo': [int(v) for v in self._hsv_lo],
+                'hsv_hi': [int(v) for v in self._hsv_hi],
                 'enable_depth': bool(self.enable_depth),
                 'mask_v0_to_platform': bool(self.mask_v0_to_platform),
                 'usb_speed': os.environ.get('OAK_USB_SPEED', '?'),
@@ -1269,6 +1308,34 @@ class OakDriverNode(Node):
         self._publish_config_snapshot()
         self.get_logger().info(
             f"  ✓ focus → mode={self._focus_mode} pos={self._focus_pos}")
+
+    def _on_hsv_cmd(self, msg: Float32MultiArray):
+        """Live HSV-bound update from the GUI sliders. Payload is
+        a Float32MultiArray of length 6: [H_lo, H_hi, S_lo, S_hi,
+        V_lo, V_hi]. Values are clipped to OpenCV's HSV ranges
+        (H ≤ 179 since cv2 uses 8-bit half-degree hue). Updates take
+        effect on the next V0 detection tick — no restart, no
+        rebuild."""
+        try:
+            d = list(msg.data)
+            if len(d) != 6:
+                self.get_logger().warn(
+                    f"/oak/cmd_hsv: expected 6 values, got {len(d)}")
+                return
+            h_lo = max(0, min(179, int(round(d[0]))))
+            h_hi = max(0, min(179, int(round(d[1]))))
+            s_lo = max(0, min(255, int(round(d[2]))))
+            s_hi = max(0, min(255, int(round(d[3]))))
+            v_lo = max(0, min(255, int(round(d[4]))))
+            v_hi = max(0, min(255, int(round(d[5]))))
+            self._hsv_lo = np.array([h_lo, s_lo, v_lo], dtype=np.uint8)
+            self._hsv_hi = np.array([h_hi, s_hi, v_hi], dtype=np.uint8)
+            self.get_logger().info(
+                f"HSV updated: lo={list(self._hsv_lo)} "
+                f"hi={list(self._hsv_hi)}")
+            self._publish_config_snapshot()
+        except Exception as e:
+            self.get_logger().warn(f"/oak/cmd_hsv parse failed: {e}")
 
     def _log_pipeline_health(self):
         """Periodic snapshot so we can tell which stage of the V0 /
@@ -1613,12 +1680,29 @@ class OakDriverNode(Node):
                         if (self.mask_v0_to_platform
                             and self._platform_bbox is not None)
                         else None)
+                # Whether anyone is subscribed to the debug overlay; we
+                # only do the extra cv2 work if so.
+                debug_subs = (
+                    self.pub_v0_debug.get_subscription_count() > 0)
+                hsv_mask_full = None  # post-morphology mask in full coords
                 if bbox is not None:
                     x0, y0, x1, y1 = bbox
                     v0_frame = frame[y0:y1, x0:x1]
                     v0_mask = (self._platform_mask[y0:y1, x0:x1]
                                if self._platform_mask is not None else None)
-                    det = detect_ball_v0(v0_frame, restrict_mask=v0_mask)
+                    if debug_subs:
+                        det, hsv_mask_crop = detect_ball_v0(
+                            v0_frame, restrict_mask=v0_mask,
+                            hsv_lo=self._hsv_lo, hsv_hi=self._hsv_hi,
+                            return_mask=True)
+                        if hsv_mask_crop is not None:
+                            hsv_mask_full = np.zeros(
+                                frame.shape[:2], dtype=np.uint8)
+                            hsv_mask_full[y0:y1, x0:x1] = hsv_mask_crop
+                    else:
+                        det = detect_ball_v0(
+                            v0_frame, restrict_mask=v0_mask,
+                            hsv_lo=self._hsv_lo, hsv_hi=self._hsv_hi)
                     if det is not None:
                         cx, cy, r, conf = det
                         cx += x0
@@ -1627,7 +1711,15 @@ class OakDriverNode(Node):
                 else:
                     v0_mask = (self._platform_mask
                                if self.mask_v0_to_platform else None)
-                    det = detect_ball_v0(frame, restrict_mask=v0_mask)
+                    if debug_subs:
+                        det, hsv_mask_full = detect_ball_v0(
+                            frame, restrict_mask=v0_mask,
+                            hsv_lo=self._hsv_lo, hsv_hi=self._hsv_hi,
+                            return_mask=True)
+                    else:
+                        det = detect_ball_v0(
+                            frame, restrict_mask=v0_mask,
+                            hsv_lo=self._hsv_lo, hsv_hi=self._hsv_hi)
                 if det is not None:
                     cx, cy, r, conf = det
                     p = PointStamped()
@@ -1665,6 +1757,41 @@ class OakDriverNode(Node):
                             self.q_slc_cfg.send(cfg)
                         except Exception:
                             pass
+
+                # Debug overlay: emit live RGB tinted lime where the
+                # post-morphology HSV mask passes, with the detected
+                # blob outlined red. Operator sees this side-by-side
+                # with the live feed while tuning the HSV sliders.
+                if debug_subs and hsv_mask_full is not None:
+                    try:
+                        dbg = frame.copy()
+                        m = hsv_mask_full > 0
+                        if np.any(m):
+                            tint = dbg.copy()
+                            tint[m] = (0, 255, 0)   # lime BGR
+                            dbg = cv2.addWeighted(dbg, 0.55, tint, 0.45, 0)
+                        if self._platform_mask is not None:
+                            cnts, _ = cv2.findContours(
+                                self._platform_mask,
+                                cv2.RETR_EXTERNAL,
+                                cv2.CHAIN_APPROX_SIMPLE)
+                            cv2.drawContours(
+                                dbg, cnts, -1, (255, 200, 0), 1)
+                        if det is not None:
+                            cv2.circle(dbg, (int(det[0]), int(det[1])),
+                                       max(int(det[2]), 6),
+                                       (0, 0, 255), 2)
+                            cv2.circle(dbg, (int(det[0]), int(det[1])),
+                                       3, (0, 0, 255), -1)
+                        ok, buf = cv2.imencode(
+                            '.jpg', dbg,
+                            [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+                        if ok:
+                            self._publish_compressed(
+                                self.pub_v0_debug,
+                                buf.tobytes(), 'jpeg')
+                    except Exception:
+                        pass
 
         # Spatial output → /oak/ball/spatial. Coordinates in metres
         # in the RGB-camera frame (because depth was aligned to CAM_A).

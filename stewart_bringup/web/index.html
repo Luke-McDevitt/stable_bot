@@ -207,6 +207,55 @@
           <span id="focus-pos-val" class="text-xs text-slate-400 mono w-8 text-right">145</span>
           <span id="focus-status" class="text-xs text-slate-400 mono"></span>
         </div>
+        <!-- HSV tuning sliders (CV2 V0 backend). Live updates via
+             /oak/cmd_hsv; the V0 debug overlay below shows exactly
+             which pixels currently pass. -->
+        <details class="mt-2 bg-slate-900 rounded p-2 border border-slate-700">
+          <summary class="text-xs text-slate-400 cursor-pointer select-none">
+            HSV sliders (cv2 detector)
+          </summary>
+          <div class="grid grid-cols-2 gap-x-3 gap-y-1 mt-2">
+            <label class="text-xs text-slate-400">H low <span id="hsv-h-lo-val" class="mono text-slate-300 ml-1">5</span>
+              <input id="hsv-h-lo" type="range" min="0" max="179" step="1" value="5" class="w-full">
+            </label>
+            <label class="text-xs text-slate-400">H high <span id="hsv-h-hi-val" class="mono text-slate-300 ml-1">22</span>
+              <input id="hsv-h-hi" type="range" min="0" max="179" step="1" value="22" class="w-full">
+            </label>
+            <label class="text-xs text-slate-400">S low <span id="hsv-s-lo-val" class="mono text-slate-300 ml-1">100</span>
+              <input id="hsv-s-lo" type="range" min="0" max="255" step="1" value="100" class="w-full">
+            </label>
+            <label class="text-xs text-slate-400">S high <span id="hsv-s-hi-val" class="mono text-slate-300 ml-1">255</span>
+              <input id="hsv-s-hi" type="range" min="0" max="255" step="1" value="255" class="w-full">
+            </label>
+            <label class="text-xs text-slate-400">V low <span id="hsv-v-lo-val" class="mono text-slate-300 ml-1">60</span>
+              <input id="hsv-v-lo" type="range" min="0" max="255" step="1" value="60" class="w-full">
+            </label>
+            <label class="text-xs text-slate-400">V high <span id="hsv-v-hi-val" class="mono text-slate-300 ml-1">255</span>
+              <input id="hsv-v-hi" type="range" min="0" max="255" step="1" value="255" class="w-full">
+            </label>
+          </div>
+          <div class="text-xs text-slate-500 mt-2">
+            Values commit on release. Watch the <b>V0 debug overlay</b>
+            below — green tint shows pixels passing HSV+morph;
+            red circle is the chosen blob.
+          </div>
+        </details>
+        <!-- V0 detector debug overlay (live). Subscribed only when
+             this <details> is open so we don't burn CPU + bandwidth
+             when not actively tuning. -->
+        <details id="v0-debug-panel"
+                 class="mt-2 bg-slate-900 rounded p-2 border border-slate-700">
+          <summary class="text-xs text-slate-400 cursor-pointer select-none">
+            V0 debug overlay (live)
+          </summary>
+          <img id="v0-debug-img" alt="(no overlay yet)"
+               class="mt-2 w-full rounded bg-slate-950"/>
+          <div class="text-xs text-slate-500 mt-1">
+            Lime tint = pixels that passed HSV+morph (the lit-up
+            region the contour finder ranks). Cyan outline = projected
+            platform mask. Red circle = picked blob.
+          </div>
+        </details>
         <!-- Vision-debug bag recorder. Captures everything the
              depth-blob detector sees (RGB, /oak/depth_blob/debug_image
              overlay, V0/depth pixel topics + diagnostics, /platform_pose,
@@ -1995,6 +2044,27 @@ function setupROSInterface() {
   topic.oak_focus_cmd = new ROSLIB.Topic({
     ros, name: '/oak/cmd_focus',
     messageType: 'std_msgs/msg/String' });
+  // Live HSV-bound update for cv2 V0. Float32MultiArray of length 6.
+  topic.oak_hsv_cmd = new ROSLIB.Topic({
+    ros, name: '/oak/cmd_hsv',
+    messageType: 'std_msgs/msg/Float32MultiArray' });
+  // V0 detector debug overlay (live RGB tinted by HSV mask). Lazy
+  // subscribe — we only attach when the operator opens the panel.
+  topic.v0_debug = new ROSLIB.Topic({
+    ros, name: '/oak/v0/debug_image',
+    messageType: 'sensor_msgs/msg/CompressedImage',
+    throttle_rate: 100,
+    queue_length: 1,
+  });
+  let _v0DebugUrl = null;
+  topic.v0_debug._cb = (m) => {
+    const img = document.getElementById('v0-debug-img');
+    if (!img) return;
+    const blob = new Blob([new Uint8Array(m.data)], {type: 'image/jpeg'});
+    if (_v0DebugUrl) URL.revokeObjectURL(_v0DebugUrl);
+    _v0DebugUrl = URL.createObjectURL(blob);
+    img.src = _v0DebugUrl;
+  };
 
   // Annotated depth-blob debug image (toggled via OAK_DEPTH_DEBUG).
   // Not subscribed in the GUI yet — declared for future use; the
@@ -4003,6 +4073,36 @@ function initVisionGUI() {
     });
   }
 
+  // --- HSV slider tuning + V0 debug overlay ---
+  const HSV_IDS = [
+    ['hsv-h-lo','hsv-h-lo-val'], ['hsv-h-hi','hsv-h-hi-val'],
+    ['hsv-s-lo','hsv-s-lo-val'], ['hsv-s-hi','hsv-s-hi-val'],
+    ['hsv-v-lo','hsv-v-lo-val'], ['hsv-v-hi','hsv-v-hi-val'],
+  ];
+  for (const [sId, vId] of HSV_IDS) {
+    const s = $(sId), v = $(vId);
+    if (!s) continue;
+    s.addEventListener('input', () => { if (v) v.innerText = s.value; });
+    s.addEventListener('change', () => publishHsvFromSliders());
+  }
+  // Lazy-subscribe to the V0 debug overlay only while the panel is
+  // open. The OAK driver only renders the overlay when there's a
+  // subscriber, so this saves ~3 ms / frame of cv2 work otherwise.
+  const v0Panel = $('v0-debug-panel');
+  let _v0DebugSubbed = false;
+  function syncV0DebugSub() {
+    const want = v0Panel && v0Panel.open && topic.v0_debug;
+    if (want && !_v0DebugSubbed) {
+      topic.v0_debug.subscribe(topic.v0_debug._cb);
+      _v0DebugSubbed = true;
+    } else if (!want && _v0DebugSubbed) {
+      topic.v0_debug.unsubscribe(topic.v0_debug._cb);
+      _v0DebugSubbed = false;
+    }
+  }
+  if (v0Panel) v0Panel.addEventListener('toggle', syncV0DebugSub);
+  syncV0DebugSub();
+
   // --- Ball-track gains panel (Demos column) ---
   for (const k of BT_GAIN_KEYS) {
     const el = document.getElementById('bt-g-' + k);
@@ -5737,6 +5837,14 @@ function publishFocus(payload) {
   topic.oak_focus_cmd.publish(new ROSLIB.Message({ data: String(payload) }));
 }
 
+// HSV-bound publish from the 6 slider values.
+function publishHsvFromSliders() {
+  if (!topic.oak_hsv_cmd) return;
+  const ids = ['hsv-h-lo','hsv-h-hi','hsv-s-lo','hsv-s-hi','hsv-v-lo','hsv-v-hi'];
+  const data = ids.map(i => parseFloat(document.getElementById(i)?.value || 0));
+  topic.oak_hsv_cmd.publish(new ROSLIB.Message({ data }));
+}
+
 function onOakConfig(cfg) {
   const status = document.getElementById('v0-backend-status');
   const cv2Btn = document.getElementById('v0-backend-cv2-btn');
@@ -5783,6 +5891,22 @@ function onOakConfig(cfg) {
   if (fVal) fVal.innerText = focusPos;
   const fStatus = document.getElementById('focus-status');
   if (fStatus) fStatus.innerText = `mode=${focusMode} pos=${focusPos}`;
+  // Sync HSV sliders from the live config (don't fight a drag).
+  const lo = cfg.hsv_lo, hi = cfg.hsv_hi;
+  if (Array.isArray(lo) && lo.length === 3 && Array.isArray(hi) && hi.length === 3) {
+    const setIf = (id, val, valId) => {
+      const el = document.getElementById(id);
+      const valEl = document.getElementById(valId);
+      if (el && document.activeElement !== el) el.value = val;
+      if (valEl) valEl.innerText = val;
+    };
+    setIf('hsv-h-lo', lo[0], 'hsv-h-lo-val');
+    setIf('hsv-h-hi', hi[0], 'hsv-h-hi-val');
+    setIf('hsv-s-lo', lo[1], 'hsv-s-lo-val');
+    setIf('hsv-s-hi', hi[1], 'hsv-s-hi-val');
+    setIf('hsv-v-lo', lo[2], 'hsv-v-lo-val');
+    setIf('hsv-v-hi', hi[2], 'hsv-v-hi-val');
+  }
 }
 
 function setActiveDemo(n) {

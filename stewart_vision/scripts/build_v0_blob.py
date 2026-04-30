@@ -53,19 +53,39 @@ NN_W, NN_H = 320, 180
 # Linear color-score weights tuned for saturated orange ball. Input
 # order is BGR (the format ImageManip emits with BGR888p):
 #   score = w_b * B + w_g * G + w_r * R + bias
-# Picked so:
-#   - bright orange (R≈1, G≈0.6, B≈0.1) → score ≈ 0.55
-#   - white (R=G=B≈1)                    → score ≈ 0.10
-#   - dark platform (R=G=B≈0.05)         → score ≈ 0.005
-#   - blue / green objects                → score < 0
-W_B = -0.50
-W_G = -0.40
+#
+# 2026-04-30 retune: previous weights (W_R=+1, W_G=-0.4, W_B=-0.5,
+# BIAS=-0.10) had a fatal flaw — pure red scored 0.90, which is
+# HIGHER than orange's 0.64, so the soft-argmax pulled the centroid
+# toward red bench tape / ArUco edge highlights instead of the
+# orange ball. The fix is to *reward* a moderate G component (orange
+# has G ≈ 0.65, red has G = 0) and penalise B more aggressively so
+# white / sky / blue noise doesn't survive the floor.
+#
+# Sanity table at saturated colours:
+#   orange (1.00, 0.65, 0.00)  →  1.00 + 0.26 - 0.00 - 0.50 = 0.76 ✓
+#   red    (1.00, 0.00, 0.00)  →  1.00 + 0.00 - 0.00 - 0.50 = 0.50 ✓ (lower)
+#   yellow (1.00, 1.00, 0.00)  →  1.00 + 0.40 - 0.00 - 0.50 = 0.90 ✗
+#                                  (yellow remains a false-positive risk
+#                                   if there's actual saturated yellow
+#                                   nearby; not common in our demo lighting)
+#   white  (1.00, 1.00, 1.00)  →  1.00 + 0.40 - 1.50 - 0.50 = -0.60 ✓ (rejected)
+#   dark   (0.05, 0.05, 0.05)  →  0.05 + 0.02 - 0.075 - 0.50 = -0.51 ✓
+#   blue   (0.00, 0.00, 1.00)  →  0.00 + 0.00 - 1.50 - 0.50 = -2.00 ✓
+#
+# If yellow becomes an issue (shouldn't be in this room with the
+# IKEA panel + foam ball), bump W_G down to ~+0.2 — narrows the
+# acceptable hue band.
+W_B = -1.50
+W_G = +0.40
 W_R = +1.00
-BIAS = -0.10
+BIAS = -0.50
 
-# Confidence floor: count a pixel as "ball" only if score > 0.10.
-# Same value used in the area-fraction confidence numerator.
-SCORE_FLOOR = 0.10
+# Confidence floor: count a pixel as "ball" only if score > 0.30.
+# Higher than before (was 0.10) so noise from sensor grain at high
+# ISO doesn't accumulate spurious mass at the centroid. With these
+# weights, orange pixels score ~0.76, well above 0.30.
+SCORE_FLOOR = 0.30
 
 
 class V0Detector(nn.Module):
