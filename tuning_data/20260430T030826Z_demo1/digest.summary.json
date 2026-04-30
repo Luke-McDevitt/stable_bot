@@ -1,0 +1,86 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T030826Z_demo1",
+  "demo_label": "demo1",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 52.207804862,
+  "topic_counts": {
+    "/ball_ref": 2628,
+    "/ball_state": 3808,
+    "/ball_xy_depth": 383,
+    "/ball_xy_mono": 2741,
+    "/control_cmd": 12,
+    "/control_result": 0,
+    "/leg_currents": 1017,
+    "/leg_encoders": 1017,
+    "/oak/ball/depth/diagnostic": 388,
+    "/oak/ball/depth/rgb_pixel": 388,
+    "/oak/ball/v0/diagnostic": 391,
+    "/oak/ball/v0/rgb_pixel": 391,
+    "/odrive_errors": 105,
+    "/platform/imu/data": 15283,
+    "/platform_pose": 393,
+    "/platform_pose/markers_visible": 390,
+    "/platform_rpy": 1018,
+    "/status": 105
+  },
+  "gains_at_record": {
+    "kp": 0.03,
+    "kd": 0.005,
+    "ki": 0.0,
+    "max_tilt_deg": 1.5,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0
+  },
+  "ball_state_n": 3808,
+  "ball_ref_n": 2628,
+  "mono_n": 2741,
+  "depth_n": 383,
+  "error_mm": {
+    "n": 3490,
+    "mean": 67.09871981138907,
+    "std": 18.985408036180296,
+    "rms": 69.73294715288861,
+    "p50": 71.40722155942673,
+    "p95": 93.00828881700843,
+    "min": 34.65078143234847,
+    "max": 102.46568115326932
+  },
+  "error_x_mm": {
+    "n": 3490,
+    "mean": 41.54840969355501,
+    "std": 16.38299590551871,
+    "rms": 44.6617610815308,
+    "p50": 42.68256873974002,
+    "p95": 66.5802487758415,
+    "min": 18.028026393926254,
+    "max": 79.34757180101661
+  },
+  "error_y_mm": {
+    "n": 3490,
+    "mean": -52.30734390544158,
+    "std": 11.487070526539007,
+    "rms": 53.553814203320925,
+    "p50": -57.19444478281541,
+    "p95": -29.815339424887334,
+    "min": -65.47385125425001,
+    "max": -29.30130686401243
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 393,
+    "mean": 812.4849499005157,
+    "std": 0.8391850968740332,
+    "rms": 812.4853832817366,
+    "p50": 812.6664801321685,
+    "p95": 813.2283012189299,
+    "min": 806.4859830459518,
+    "max": 818.7489648667591
+  },
+  "markers_visible": {
+    "n": 390,
+    "mean": 8.005128205128205,
+    "min": 8,
+    "max": 9
+  }
+}
