@@ -75,6 +75,20 @@ class BallKFNode(Node):
         self.R = np.eye(2) * (1.0 ** 2)
 
         self.have_meas = False
+        # Time of last accepted measurement. Used to gate /ball_state
+        # publication: when the ball falls off the platform, the
+        # localizer's on-platform gate drops /ball_xy_mono publication,
+        # but the KF would otherwise keep extrapolating forever and
+        # /ball_state would keep arriving at downstream consumers
+        # (BALL_TRACK loop, GUI SVG). Without this gate, the controller
+        # reacts to a phantom ball indefinitely until the operator
+        # presses Stop.
+        self._last_meas_t = None
+        # Ball is "lost" if no measurement received in this many
+        # seconds. Tuned to be longer than the typical V0 detection
+        # interval (~70 ms at 14 fps) plus a generous margin, but
+        # shorter than the BALL_TRACK ball-fall recovery (3 s).
+        self._meas_stale_s = 0.4
 
         self.create_subscription(
             PointStamped, '/ball_xy_mono', self._on_meas, 10)
@@ -89,8 +103,15 @@ class BallKFNode(Node):
         # Predict
         self.x = self.F @ self.x
         self.P = self.F @ self.P @ self.F.T + self.Q
-        if self.have_meas:
-            self._publish()
+        # Publish only when measurements are reasonably fresh. KF still
+        # predicts internally so the next measurement sees a sensible
+        # prior, but /ball_state stops broadcasting → BALL_TRACK loop
+        # sees stale state, fires the existing 0.5 s zero-tilt branch,
+        # then the 3 s ball-fall recovery.
+        if self.have_meas and self._last_meas_t is not None:
+            now = self.get_clock().now().nanoseconds * 1e-9
+            if (now - self._last_meas_t) <= self._meas_stale_s:
+                self._publish()
 
     def _on_meas(self, msg: PointStamped):
         z = np.array([msg.point.x, msg.point.y])  # mm in platform frame
@@ -101,6 +122,7 @@ class BallKFNode(Node):
         self.x = self.x + K @ y
         self.P = (np.eye(4) - K @ self.H) @ self.P
         self.have_meas = True
+        self._last_meas_t = self.get_clock().now().nanoseconds * 1e-9
 
     def _publish(self):
         msg = PoseStamped()

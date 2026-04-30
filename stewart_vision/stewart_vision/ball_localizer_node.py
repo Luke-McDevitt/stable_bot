@@ -41,6 +41,7 @@ Bridging:
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional
 
 import numpy as np
@@ -98,6 +99,18 @@ class BallLocalizerNode(Node):
         self._load_aruco_imu_alignment()
 
         self.last_v0: Optional[PointStamped] = None
+        # Receipt-time of the last v0/v1 detection so _select_pixel
+        # can drop stale cache. When the ball falls off the platform,
+        # the V0 detector stops firing — but without this freshness
+        # check, _select_pixel returns the cached last_v0 forever and
+        # the loop reacts to a ball that's long gone.
+        self._last_v0_t = 0.0
+        self._last_v1_t = 0.0
+        # Ball-loss timeout. Older than this, we treat the cache as
+        # invalid. Slightly longer than the typical V0 publish gap
+        # (~70 ms at 14 fps) but well under the controller's 0.5 s
+        # state-stale threshold.
+        self._pixel_stale_s = 0.4
         self.last_v1: Optional[PointStamped] = None
         self.last_depth_pixel: Optional[PointStamped] = None
         self.last_pose: Optional[PoseStamped] = None
@@ -224,9 +237,11 @@ class BallLocalizerNode(Node):
 
     def _on_v0(self, msg: PointStamped):
         self.last_v0 = msg
+        self._last_v0_t = time.monotonic()
 
     def _on_v1(self, msg: PointStamped):
         self.last_v1 = msg
+        self._last_v1_t = time.monotonic()
 
     def _on_pose(self, msg: PoseStamped):
         self.last_pose = msg
@@ -277,8 +292,16 @@ class BallLocalizerNode(Node):
         TODO: subscribe to /oak/ball/v0/diagnostic and v1/diagnostic
         for real confidence values.
         """
+        # Drop stale cache: if the detector hasn't fired recently,
+        # treat the slot as None so we don't keep "seeing" a ball
+        # that fell off the platform minutes ago.
+        now = time.monotonic()
         v0 = self.last_v0
         v1 = self.last_v1
+        if v0 is not None and (now - self._last_v0_t) > self._pixel_stale_s:
+            v0 = None
+        if v1 is not None and (now - self._last_v1_t) > self._pixel_stale_s:
+            v1 = None
         if v0 is None and v1 is None:
             return None, None, None
         if v0 is None:

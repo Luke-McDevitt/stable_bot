@@ -3735,6 +3735,27 @@ function initBallConfig() {
 
 // Ball state + ref
 const ballTrail = [];           // [[x,y], ...] in SVG coords (mm, y-flipped)
+// Last /ball_state arrival time (performance.now()). Used to hide
+// the SVG ball indicator when the KF stops publishing — which now
+// happens whenever the ball falls off the platform (the KF gates
+// on measurement freshness as of 2026-04-30).
+let _lastBallStateMs = 0;
+const BALL_STATE_STALE_MS = 800;
+// Periodic check: when /ball_state is stale, hide the ball dot
+// and clear the trail so the GUI doesn't show a phantom ball
+// that's been off the platform for a while.
+function _tickBallStateStale() {
+  if (_lastBallStateMs === 0) return;       // never received
+  const age = performance.now() - _lastBallStateMs;
+  if (age > BALL_STATE_STALE_MS) {
+    const dot = document.getElementById('ball-dot');
+    if (dot) dot.setAttribute('visibility', 'hidden');
+    ballTrail.length = 0;
+    const tr = document.getElementById('ball-trail');
+    if (tr) tr.setAttribute('points', '');
+  }
+}
+setInterval(_tickBallStateStale, 200);
 const TRAIL_MAX = 120;
 let lastFrameTime = 0;
 
@@ -5386,6 +5407,11 @@ function onBallState(m) {
   const dot = $('ball-dot');
   dot.setAttribute('cx', px);
   dot.setAttribute('cy', py);
+  dot.setAttribute('visibility', 'visible');
+  // Track receipt time so the staleness-tick can hide the dot when
+  // /ball_state stops publishing (which now happens whenever the ball
+  // falls off and the KF runs out of fresh measurements).
+  _lastBallStateMs = performance.now();
 
   ballTrail.push([px, py]);
   if (ballTrail.length > TRAIL_MAX) ballTrail.shift();
