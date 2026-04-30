@@ -1,11 +1,14 @@
-# BALL_TRACK gains — drive Demos 1, 2, 3.
-# See stewart_control_node._load_ball_track_gains() for full docs.
-kp: 0.01
+accel_tilt_deg: 3.0
+algorithm: bangbang
+brake_horizon_mm: 80.0
+err_tol_mm: 15.0
 kd: 0.015
 ki: 0.005
+kp: 0.01
 max_tilt_deg: 4.0
 pitch_sign: 1.0
 roll_sign: 1.0
+<<<<<<< Updated upstream
 
 # Algorithm selector. 'pid' = continuous PID. 'bangbang' = state-
 # machine controller (accelerate → coast → brake → settle).
@@ -40,3 +43,7 @@ brake_tilt_deg:    6.0
 # velocity so phase decisions (especially BRAKE) fire on
 # "where the ball will be" not "where the ball was 100 ms ago".
 control_latency_s: 0.10
+=======
+v_brake_mm_s: 50.0
+v_coast_mm_s: 20.0
+>>>>>>> Stashed changes
