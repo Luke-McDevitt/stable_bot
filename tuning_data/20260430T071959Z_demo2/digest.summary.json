@@ -1,0 +1,99 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T071959Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 10.031238786000001,
+  "topic_counts": {
+    "/ball_ref": 592,
+    "/ball_state": 214,
+    "/ball_xy_depth": 10,
+    "/ball_xy_mono": 97,
+    "/control_cmd": 3,
+    "/control_result": 0,
+    "/leg_currents": 198,
+    "/leg_encoders": 198,
+    "/oak/ball/depth/diagnostic": 109,
+    "/oak/ball/depth/rgb_pixel": 18,
+    "/oak/ball/v0/diagnostic": 16,
+    "/oak/ball/v0/rgb_pixel": 17,
+    "/odrive_errors": 20,
+    "/platform/imu/data": 3215,
+    "/platform_pose": 113,
+    "/platform_pose/markers_visible": 113,
+    "/platform_rpy": 199,
+    "/status": 20
+  },
+  "gains_at_record": {
+    "kp": 0.01,
+    "kd": 0.015,
+    "ki": 0.005,
+    "max_tilt_deg": 4.0,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 60.0,
+    "stiction_v_threshold_mm_s": 20.0,
+    "stiction_break_s": 0.6,
+    "brake_tilt_deg": 6.0,
+    "control_latency_s": 0.1,
+    "algorithm": "bangbang"
+  },
+  "ball_state_n": 214,
+  "ball_ref_n": 592,
+  "mono_n": 97,
+  "depth_n": 10,
+  "error_mm": {
+    "n": 212,
+    "mean": 139.17543282781483,
+    "std": 70.79179391203104,
+    "rms": 156.14505816097116,
+    "p50": 161.0480498053427,
+    "p95": 220.8990532625916,
+    "min": 34.839668225418556,
+    "max": 221.2561747792298
+  },
+  "error_x_mm": {
+    "n": 212,
+    "mean": -87.22061926469205,
+    "std": 90.80168761108139,
+    "rms": 125.9062464611537,
+    "p50": -41.54595911922635,
+    "p95": -2.7488797671438037,
+    "min": -220.47210447077572,
+    "max": 3.482985870238892
+  },
+  "error_y_mm": {
+    "n": 212,
+    "mean": -40.379357638826356,
+    "std": 83.05662987884861,
+    "rms": 92.352023746945,
+    "p50": -18.983888369506552,
+    "p95": 49.09073094680635,
+    "min": -198.8724356351684,
+    "max": 83.61911080030205
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 113,
+    "mean": 814.1399587321444,
+    "std": 3.0940791160280816,
+    "rms": 814.145838121128,
+    "p50": 812.6978800457714,
+    "p95": 820.5810083167191,
+    "min": 811.2850034631368,
+    "max": 822.2346376504748
+  },
+  "oak_latency_ms": {
+    "n": 0
+  },
+  "markers_visible": {
+    "n": 113,
+    "mean": 7.9734513274336285,
+    "min": 7,
+    "max": 8
+  }
+}
