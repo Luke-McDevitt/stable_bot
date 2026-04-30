@@ -69,6 +69,60 @@ except ImportError as e:
     sys.exit(2)
 
 
+def _parse_control_cmd(raw: str) -> dict:
+    """The /control_cmd topic carries two interleaved formats from
+    the GUI:
+
+      "<key>:<value>"            e.g. "record_images:on"
+      "<key>:<MODE_NAME> <json>" e.g. "mode:BALL_TRACK_TRAJECTORY {..}"
+      "{<json>}"                 e.g. "{\\"cmd\\": \\"activate\\"}"
+
+    The digest needs to find the latest "mode:..." with its full
+    JSON payload (the demo's start parameters) and turn that into
+    a structured row. Failed parses are kept verbatim so nothing
+    silently disappears.
+    """
+    if not isinstance(raw, str):
+        return {'raw': raw}
+    s = raw.strip()
+    # JSON object form (uncommon but used for some control commands).
+    if s.startswith('{'):
+        try:
+            return json.loads(s)
+        except Exception:
+            pass
+    if ':' not in s:
+        return {'raw': s}
+    key, _, payload = s.partition(':')
+    key = key.strip()
+    payload = payload.strip()
+    out: dict = {'cmd': key, 'raw': s}
+    if key == 'mode':
+        # "mode:NAME" or "mode:NAME {json}"
+        parts = payload.split(maxsplit=1)
+        out['mode'] = parts[0].upper() if parts else ''
+        if len(parts) > 1:
+            try:
+                out['params'] = json.loads(parts[1])
+            except Exception:
+                out['params_raw'] = parts[1]
+    else:
+        out['payload'] = payload
+    return out
+
+
+def _last_demo_command(cmd_d: list) -> tuple:
+    """Walk /control_cmd messages in reverse for the most recent
+    'mode:BALL_TRACK_*' command — that's the one that started the
+    active demo run. Returns (mode_name, params_dict) or (None, None).
+    """
+    for c in reversed(cmd_d):
+        m = c.get('mode', '') or ''
+        if m.startswith('BALL_TRACK_'):
+            return m, dict(c.get('params') or {})
+    return None, None
+
+
 def _open_bag(bag_dir: str):
     storage = StorageOptions(uri=bag_dir, storage_id='')
     converter = ConverterOptions('', '')
@@ -165,10 +219,7 @@ def _read_bag(bag_dir: str):
                 rpy_data.append([float(d[0]), float(d[1]), float(d[2])])
         elif topic == '/control_cmd':
             cmd_t.append(t_ns)
-            try:
-                cmd_d.append(json.loads(msg.data))
-            except Exception:
-                cmd_d.append({'raw': msg.data})
+            cmd_d.append(_parse_control_cmd(msg.data))
         elif topic == '/control_result':
             res_t.append(t_ns)
             try:
@@ -344,9 +395,17 @@ def digest(bag_dir: str):
     label = _demo_label_from_dir(bag_dir)
     gains_at_record = _gains_at_record(status_d)
 
+    # Demo-side params (radius, n_waypoints, arrival_tol_mm, dwell_s,
+    # max_wait_s, dir, mode='waypoint'/'continuous', period_s, ...)
+    # extracted from the latest mode:BALL_TRACK_* /control_cmd in the
+    # bag — that's the command that started this demo run.
+    demo_mode, demo_params = _last_demo_command(data['cmd'][1])
+
     summary = {
         'bag': os.path.abspath(bag_dir),
         'demo_label': label,
+        'demo_mode': demo_mode,
+        'demo_params': demo_params,
         'duration_s': duration_s,
         'topic_counts': dict(sorted(data['counts'].items())),
         'gains_at_record': gains_at_record,
@@ -369,6 +428,10 @@ def digest(bag_dir: str):
 
     print(f"[demo-digest] label={label} duration={duration_s:.1f}s "
           f"state={summary['ball_state_n']} ref={summary['ball_ref_n']}")
+    if demo_mode:
+        print(f"  demo_mode: {demo_mode}")
+    if demo_params:
+        print(f"  demo_params: {demo_params}")
     em = summary['error_mm']
     if em.get('n'):
         print(f"  error_mm: rms={em['rms']:.1f} p50={em['p50']:.1f} "
@@ -499,21 +562,52 @@ def digest(bag_dir: str):
         ax.legend(fontsize=7, loc='upper right', ncol=6)
         ax.set_title('Per-leg current (effort)', fontsize=10)
 
-        # Suptitle
+        # Suptitle — three lines: name+mode, error/settling, params.
         title = (f"Demo digest — {os.path.basename(bag_dir)} "
-                 f"({label})")
+                 f"({label}{', ' + demo_mode if demo_mode else ''})")
         sub_bits = [f"duration={duration_s:.1f}s"]
         if em.get('n'):
             sub_bits.append(f"|err| rms={em['rms']:.1f} "
                             f"p95={em['p95']:.1f} max={em['max']:.1f} mm")
         if settling is not None:
             sub_bits.append(f"settled={settling:.2f}s")
+
+        # Params line — gains + demo-side params on one row, so two
+        # bags side-by-side make their differences obvious.
+        param_bits = []
         if gains_at_record:
-            sub_bits.append(
-                f"kp={gains_at_record.get('kp')} "
-                f"kd={gains_at_record.get('kd')} "
-                f"ki={gains_at_record.get('ki')}")
-        fig.suptitle(title + '\n' + '  |  '.join(sub_bits), fontsize=10)
+            g = gains_at_record
+            param_bits.append(
+                f"kp={g.get('kp')} kd={g.get('kd')} ki={g.get('ki')} "
+                f"max_tilt={g.get('max_tilt_deg')}° "
+                f"signs(p/r)={int(g.get('pitch_sign', 1))}/"
+                f"{int(g.get('roll_sign', 1))}")
+        if demo_params:
+            p = demo_params
+            short = {
+                'mode':           'orbit',
+                'radius_mm':      'R',
+                'n_waypoints':    'N',
+                'arrival_tol_mm': 'tol',
+                'dwell_s':        'dwell',
+                'max_wait_s':     'maxwait',
+                'period_s':       'T',
+                'dir':            'dir',
+                'phase_rad':      'phase',
+            }
+            d_bits = []
+            for k in ('mode', 'radius_mm', 'n_waypoints',
+                      'arrival_tol_mm', 'dwell_s', 'max_wait_s',
+                      'period_s', 'dir'):
+                if k in p:
+                    d_bits.append(f"{short[k]}={p[k]}")
+            if d_bits:
+                param_bits.append(' '.join(d_bits))
+
+        full_sub = '  |  '.join(sub_bits)
+        if param_bits:
+            full_sub += '\n' + '  |  '.join(param_bits)
+        fig.suptitle(title + '\n' + full_sub, fontsize=9)
         png = os.path.join(bag_dir, 'digest.png')
         fig.savefig(png, dpi=110, bbox_inches='tight')
         plt.close(fig)

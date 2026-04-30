@@ -814,6 +814,8 @@ def _list_demo_bags():
                 entry['summary'] = {
                     'duration_s': s.get('duration_s'),
                     'demo_label': s.get('demo_label'),
+                    'demo_mode': s.get('demo_mode'),
+                    'demo_params': s.get('demo_params'),
                     'gains_at_record': s.get('gains_at_record'),
                     'p95_error_mm': (s.get('error_mm') or {}).get('p95'),
                     'rms_error_mm': (s.get('error_mm') or {}).get('rms'),
@@ -994,16 +996,28 @@ def _push_demo_bag_to_git(name):
             s = json.load(f)
         em = s.get('error_mm') or {}
         gn = s.get('gains_at_record') or {}
-        headline = (
-            f"\nlabel={s.get('demo_label', '?')}  "
+        dp = s.get('demo_params') or {}
+        dm = s.get('demo_mode') or ''
+        headline_lines = [
+            f"label={s.get('demo_label', '?')}  "
+            f"mode={dm}  "
             f"duration={s.get('duration_s', 0):.1f}s  "
-            f"settling={s.get('settling_time_s', 'n/a')}\n"
+            f"settling={s.get('settling_time_s', 'n/a')}",
             f"error_mm: rms={em.get('rms', 0):.1f} "
             f"p95={em.get('p95', 0):.1f} "
-            f"max={em.get('max', 0):.1f}\n"
+            f"max={em.get('max', 0):.1f}",
             f"gains: kp={gn.get('kp', '?')} "
             f"kd={gn.get('kd', '?')} "
-            f"ki={gn.get('ki', '?')}")
+            f"ki={gn.get('ki', '?')} "
+            f"max_tilt={gn.get('max_tilt_deg', '?')}deg "
+            f"signs(p/r)={gn.get('pitch_sign', '?')}/"
+            f"{gn.get('roll_sign', '?')}",
+        ]
+        if dp:
+            param_str = ' '.join(f"{k}={v}" for k, v in dp.items()
+                                 if k != 'ball')
+            headline_lines.append(f"demo_params: {param_str}")
+        headline = '\n' + '\n'.join(headline_lines)
     except Exception:
         pass
 

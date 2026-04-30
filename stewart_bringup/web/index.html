@@ -4907,10 +4907,39 @@ function _dbagFmtAge(mtime) {
 }
 
 function _dbagRenderBag(e) {
+  // Demo params (radius, n_waypoints, arrival_tol_mm, dwell_s,
+  // max_wait_s, dir, mode='waypoint'|'continuous', period_s, ...)
+  // are surfaced compactly so two bags side-by-side reveal what
+  // actually differed between them.
+  let paramsLine = '';
+  const dp = e.summary && e.summary.demo_params;
+  if (dp) {
+    const short = {
+      mode: 'orbit', radius_mm: 'R', n_waypoints: 'N',
+      arrival_tol_mm: 'tol', dwell_s: 'dwell', max_wait_s: 'maxwait',
+      period_s: 'T', dir: 'dir',
+    };
+    const order = ['mode', 'radius_mm', 'n_waypoints',
+                   'arrival_tol_mm', 'dwell_s', 'max_wait_s',
+                   'period_s', 'dir'];
+    const bits = [];
+    for (const k of order) {
+      if (dp[k] !== undefined) bits.push(`${short[k]}=${dp[k]}`);
+    }
+    if (bits.length) paramsLine = bits.join(' ');
+  }
+  const gn = e.summary && e.summary.gains_at_record;
+  let gainsLine = '';
+  if (gn) {
+    gainsLine = `kp=${gn.kp} kd=${gn.kd} ki=${gn.ki} ` +
+                `max_tilt=${gn.max_tilt_deg}° ` +
+                `sign(p/r)=${gn.pitch_sign}/${gn.roll_sign}`;
+  }
   const stats = e.summary ? `
     <div class="text-xs text-slate-400 mt-1">
       ${(e.summary.duration_s || 0).toFixed(1)}s
       ${e.summary.demo_label ? ' | ' + e.summary.demo_label : ''}
+      ${e.summary.demo_mode ? ' | ' + e.summary.demo_mode : ''}
       ${e.summary.rms_error_mm != null
         ? ' | rms=' + e.summary.rms_error_mm.toFixed(1) + 'mm' : ''}
       ${e.summary.p95_error_mm != null
@@ -4918,12 +4947,10 @@ function _dbagRenderBag(e) {
       ${e.summary.settling_time_s != null
         ? ' | settled ' + Number(e.summary.settling_time_s).toFixed(2) + 's'
         : ''}
-      ${e.summary.gains_at_record
-        ? ' | kp=' + e.summary.gains_at_record.kp
-          + ' kd=' + e.summary.gains_at_record.kd
-          + ' ki=' + e.summary.gains_at_record.ki
-        : ''}
-    </div>` : '';
+    </div>
+    ${gainsLine ? `<div class="text-xs text-slate-500 mt-0.5 font-mono">${gainsLine}</div>` : ''}
+    ${paramsLine ? `<div class="text-xs text-slate-500 mt-0.5 font-mono">${paramsLine}</div>` : ''}
+  ` : '';
   const pngLink = e.has_png
     ? `<a class="text-cyan-400 underline" target="_blank"
           href="/demo/bags/png?name=${encodeURIComponent(e.name)}">PNG</a>`
