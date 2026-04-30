@@ -524,7 +524,26 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
     cam_rgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
     cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     cam_rgb.setFps(rgb_fps)
-    cam_rgb.setIspScale(1, 2)              # 540p ISP for cheaper compression
+    # ISP downscale mode — env-toggleable. Investigating a 20 Hz cap
+    # that survived USB-3 verification (5000M lsusb), depthai 2.32,
+    # manual focus + manual exposure. Suspect the ISP scaler block
+    # is rate-limiting at 1080p→540p. OAK_ISP_SCALE values:
+    #   half (default): setIspScale(1, 2) → 540p out, half-area
+    #   full          : skip ISP scale entirely → native 1080p out
+    #   2x3           : setIspScale(2, 3) → 720p out (less work for
+    #                   the scaler, larger frames downstream)
+    isp_mode = os.environ.get('OAK_ISP_SCALE', 'half').lower()
+    if isp_mode == 'full':
+        # No ISP downscale — RGB output at native 1080p. ~6 MB raw
+        # frame; at 60 fps that's 360 MB/s, fine on USB-3 SuperSpeed
+        # (~400 MB/s sustained). cv2 V0 work scales with bbox area,
+        # so HSV+contour at 1080p with bbox crop is ~12 ms vs ~3 ms
+        # at 540p — still well under the 16.7 ms tick budget.
+        pass
+    elif isp_mode == '2x3':
+        cam_rgb.setIspScale(2, 3)          # → 720p
+    else:
+        cam_rgb.setIspScale(1, 2)          # → 540p (legacy default)
     cam_rgb.setInterleaved(False)
     # Bump the camera's internal frame pool so the sensor doesn't stall
     # waiting on downstream consumers when one of them (encoder, host
