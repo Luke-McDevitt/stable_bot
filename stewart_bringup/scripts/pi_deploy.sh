@@ -22,16 +22,60 @@ ROS_DISTRO=${ROS_DISTRO:-kilted}
 
 cd "$REPO"
 
-echo "==> [1/6] git pull --rebase"
+echo "==> [1/8] check local changes"
+# Most local diffs on the Pi are just GUI-saved gain YAMLs, IVA
+# alignment YAMLs, or new tuning_data/ bag dirs — auto-commit those
+# so `git pull --rebase` doesn't die on dirty-tree. Anything else
+# (Python edits, manual config tweaks) is reported and the deploy
+# stops so the user can resolve it explicitly.
+LOCAL_CHANGES=$(git status --porcelain || true)
+if [ -n "$LOCAL_CHANGES" ]; then
+    # Files in the porcelain output that are NOT yaml and NOT under
+    # tuning_data/. awk index 2 is the path; works for the standard
+    # ' M file' / '?? file' formats. Repo has no spaces in filenames
+    # so this is safe.
+    UNSAFE=$(echo "$LOCAL_CHANGES" \
+              | awk '{print $2}' \
+              | grep -vE '\.(yaml|yml)$|^tuning_data/' || true)
+    if [ -n "$UNSAFE" ]; then
+        echo "  ! cannot auto-commit. Non-yaml/non-tuning_data changes:"
+        echo "$UNSAFE" | sed 's/^/    /'
+        echo
+        echo "  Resolve manually before re-running:"
+        echo "    git checkout -- <file>             # discard"
+        echo "    git stash                          # set aside"
+        echo "    git add <file> && git commit -m 'msg'   # keep"
+        exit 1
+    fi
+    echo "  auto-committing yaml + tuning_data:"
+    echo "$LOCAL_CHANGES" | sed 's/^/    /'
+    git add -A -- '*.yaml' '*.yml' tuning_data/ 2>/dev/null || true
+    if ! git diff --cached --quiet; then
+        git commit -m "Local: yaml/tuning_data snapshot (pi_deploy.sh)" >/dev/null
+        echo "  ✓ committed local snapshot"
+    else
+        echo "  (nothing actually staged — skipping commit)"
+    fi
+else
+    echo "  no local changes"
+fi
+
+echo "==> [2/8] git pull --rebase"
 git pull --rebase
 
-echo "==> [2/6] copy systemd unit files + daemon-reload"
+echo "==> [3/8] git push (auto-committed snapshot ↑)"
+# Push so any local snapshot we just made lands on origin too. If
+# there's nothing to push or push fails (e.g., no creds), keep going
+# — the live deploy doesn't depend on origin being current.
+git push 2>&1 | sed 's/^/  /' || echo "  (push skipped/failed — push manually if needed)"
+
+echo "==> [4/8] copy systemd unit files + daemon-reload"
 sudo cp "$REPO/stewart_bringup/scripts/stable_bot.service" \
         "$REPO/stewart_bringup/scripts/stable_bot_gui.service" \
         /etc/systemd/system/
 sudo systemctl daemon-reload
 
-echo "==> [3/6] source ROS overlay"
+echo "==> [5/8] source ROS overlay"
 # shellcheck source=/dev/null
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
 if [ -f "$WS/install/local_setup.bash" ]; then
@@ -39,16 +83,16 @@ if [ -f "$WS/install/local_setup.bash" ]; then
     source "$WS/install/local_setup.bash"
 fi
 
-echo "==> [4/6] colcon build (--symlink-install)"
+echo "==> [6/8] colcon build (--symlink-install)"
 cd "$WS"
 colcon build --symlink-install \
   --packages-select stewart_vision stewart_bringup jugglebot_interfaces
 
-echo "==> [5/6] restart services"
+echo "==> [7/8] restart services"
 sudo systemctl restart stable_bot_gui.service
 sudo systemctl restart stable_bot.service
 
-echo "==> [6/6] verify (5 s soak)"
+echo "==> [8/8] verify (5 s soak)"
 sleep 5
 EXPECTED=$(git -C "$REPO" rev-parse --short HEAD | tr -d '[:space:]')
 echo "  expected git sha: $EXPECTED"
