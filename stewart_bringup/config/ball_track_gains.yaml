@@ -17,3 +17,11 @@ err_tol_mm:        15.0
 v_brake_mm_s:      80.0
 v_coast_mm_s:      30.0
 brake_horizon_mm:  60.0
+
+# Stiction breakthrough (bang-bang only). In ACCEL phase, if the
+# ball's speed stays under stiction_v_threshold_mm_s for more than
+# stiction_break_s, the controller bumps tilt to max_tilt_deg to
+# break the ball loose. Foam-on-vinyl static friction otherwise
+# pins the ball at accel_tilt=3° indefinitely.
+stiction_v_threshold_mm_s: 20.0
+stiction_break_s:          0.6

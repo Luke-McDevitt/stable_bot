@@ -102,6 +102,10 @@ DEMO_TOPICS = [
     '/ball_ref',
     '/ball_xy_mono',
     '/ball_xy_depth',
+    # BALL_TRACK loop's per-tick FSM diagnostic (phase, commanded
+    # tilt, error/velocity quantities). Lets the digest color-code
+    # trajectories by which phase the bang-bang controller was in.
+    '/ball_track/diagnostic',
     '/oak/ball/v0/rgb_pixel',
     '/oak/ball/v0/diagnostic',
     '/oak/ball/depth/rgb_pixel',

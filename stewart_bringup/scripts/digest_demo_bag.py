@@ -178,6 +178,7 @@ def _read_bag(bag_dir: str):
     mark_t,  mark_n   = [], []
     enc_t,   enc_data = [], []
     cur_t,   cur_data = [], []
+    bt_diag_t, bt_diag = [], []   # ball_track FSM diagnostic
 
     while reader.has_next():
         topic, raw, t_ns = reader.read_next()
@@ -246,6 +247,14 @@ def _read_bag(bag_dir: str):
             if len(d) >= 6:
                 cur_t.append(t_ns)
                 cur_data.append([float(x) for x in d[:6]])
+        elif topic == '/ball_track/diagnostic':
+            d = list(msg.data)
+            # Field layout (see stewart_control_node._ball_track_run):
+            # [t_rel, phase_code, tilt_pitch, tilt_roll, ex, ey,
+            #  err_mag, v_toward, vel_mag, ux, uy]
+            if len(d) >= 11:
+                bt_diag_t.append(t_ns)
+                bt_diag.append([float(x) for x in d[:11]])
 
     return {
         'topic_types': topic_types,
@@ -273,6 +282,8 @@ def _read_bag(bag_dir: str):
                   np.array(enc_data) if enc_data else np.zeros((0, 6))),
         'cur':   (np.array(cur_t, dtype=np.int64),
                   np.array(cur_data) if cur_data else np.zeros((0, 6))),
+        'bt_diag': (np.array(bt_diag_t, dtype=np.int64),
+                    np.array(bt_diag) if bt_diag else np.zeros((0, 11))),
     }
 
 
@@ -452,10 +463,16 @@ def digest(bag_dir: str):
               file=sys.stderr)
         plt = None
 
+    bt_diag_t, bt_diag = data['bt_diag']
     if plt is not None:
-        fig = plt.figure(figsize=(13, 14))
-        gs = GridSpec(6, 2, figure=fig,
-                      height_ratios=[2.4, 1.2, 1.2, 1.2, 1.2, 1.2],
+        # Add a row for the bang-bang phase strip when we have data.
+        nrows = 7 if bt_diag.size else 6
+        height_ratios = [2.4, 1.2, 1.2, 1.2, 1.2, 1.2]
+        if bt_diag.size:
+            height_ratios.append(1.0)
+        fig = plt.figure(figsize=(13, 14 if not bt_diag.size else 16))
+        gs = GridSpec(nrows, 2, figure=fig,
+                      height_ratios=height_ratios,
                       hspace=0.6, wspace=0.25)
 
         # Row 0 left: 2D ball trajectory + reference + dead-zone
@@ -561,6 +578,53 @@ def digest(bag_dir: str):
         ax.grid(alpha=0.3)
         ax.legend(fontsize=7, loc='upper right', ncol=6)
         ax.set_title('Per-leg current (effort)', fontsize=10)
+
+        # Row 6 (only if bang-bang diagnostic was bagged): phase
+        # strip + commanded tilts + ball-velocity-toward-target.
+        # Shows whether the FSM was stuck in one phase, chattering,
+        # or transitioning cleanly.
+        if bt_diag.size:
+            ax = fig.add_subplot(gs[6, :])
+            t_rel = (bt_diag_t - t0) * 1e-9
+            phase = bt_diag[:, 1]
+            # Color-code each phase. -1 stale, 0 settle, 1 accel,
+            # 2 coast, 3 brake, 4 stiction_break, 5 pid.
+            phase_colors = {
+                -1: '#94a3b8',  # slate
+                0: '#22c55e',   # green
+                1: '#3b82f6',   # blue
+                2: '#fbbf24',   # yellow
+                3: '#ef4444',   # red
+                4: '#a855f7',   # purple
+                5: '#f97316',   # orange
+            }
+            phase_names = {
+                -1: 'stale', 0: 'settle', 1: 'accel',
+                2: 'coast', 3: 'brake', 4: 'stiction',
+                5: 'pid',
+            }
+            # Scatter the phase strip near the bottom; commanded
+            # tilts as line plots above.
+            for code, color in phase_colors.items():
+                m = phase == code
+                if not m.any():
+                    continue
+                ax.scatter(
+                    t_rel[m], np.full(m.sum(), -8.0),
+                    s=6, c=color, marker='s',
+                    label=f"{phase_names[code]} ({int(m.sum())})")
+            ax.plot(t_rel, bt_diag[:, 2], color='#0ea5e9', lw=0.6,
+                    label='cmd pitch [deg]')
+            ax.plot(t_rel, bt_diag[:, 3], color='#7c3aed', lw=0.6,
+                    label='cmd roll [deg]')
+            ax.set_ylabel('phase / cmd tilt')
+            ax.set_xlabel('time [s]')
+            ax.set_ylim(-10, 8)
+            ax.grid(alpha=0.3)
+            ax.legend(fontsize=7, loc='upper right', ncol=4)
+            ax.set_title(
+                'BALL_TRACK FSM phase + commanded tilts',
+                fontsize=10)
 
         # Suptitle — three lines: name+mode, error/settling, params.
         title = (f"Demo digest — {os.path.basename(bag_dir)} "

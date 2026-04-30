@@ -353,6 +353,13 @@ def _load_ball_track_gains():
         'v_brake_mm_s':     80.0,
         'v_coast_mm_s':     30.0,
         'brake_horizon_mm': 60.0,
+        # Stiction breakthrough: in ACCEL phase, if the ball's
+        # speed stays under stiction_v_threshold_mm_s for more
+        # than stiction_break_s, bump the tilt to max_tilt to
+        # break it loose. Without this, foam-on-vinyl static
+        # friction often pins the ball at accel_tilt=3°.
+        'stiction_v_threshold_mm_s': 20.0,
+        'stiction_break_s':          0.6,
     }
     defaults_str = {
         'algorithm': 'pid',     # 'pid' | 'bangbang'
@@ -1126,6 +1133,15 @@ class StewartControlNode(Node):
         self.pub_rpy = self.create_publisher(
             Float32MultiArray, 'platform_rpy', 10)
         self.pub_status = self.create_publisher(String, 'status', 10)
+        # Per-tick BALL_TRACK diagnostic. Carries the FSM phase
+        # (when algorithm=bangbang), the commanded tilt, and the
+        # error/velocity quantities the loop saw — so digest plots
+        # can color-code trajectories by phase and we can tell at
+        # a glance whether the controller was stuck in ACCEL forever
+        # (stiction) vs rapidly cycling phases (thresholds wrong) vs
+        # transitioning cleanly.
+        self.pub_ball_track_diag = self.create_publisher(
+            Float32MultiArray, 'ball_track/diagnostic', 10)
         self.pub_homing_out = self.create_publisher(
             String, 'homing_output', 100)
         # Topic-based command bus. Primary path the GUI uses because
@@ -2029,7 +2045,9 @@ class StewartControlNode(Node):
                             'pitch_sign', 'roll_sign',
                             'accel_tilt_deg', 'err_tol_mm',
                             'v_brake_mm_s', 'v_coast_mm_s',
-                            'brake_horizon_mm')},
+                            'brake_horizon_mm',
+                            'stiction_v_threshold_mm_s',
+                            'stiction_break_s')},
                 'algorithm': str(
                     self.ball_track_gains.get('algorithm', 'pid')),
             },
@@ -3565,6 +3583,8 @@ class StewartControlNode(Node):
         'v_brake_mm_s':     (10.0, 1000.0),
         'v_coast_mm_s':     (5.0, 1000.0),
         'brake_horizon_mm': (10.0, 200.0),
+        'stiction_v_threshold_mm_s': (1.0, 200.0),
+        'stiction_break_s':          (0.05, 5.0),
     }
     _BALL_TRACK_STR_KEYS = ('algorithm',)
     _BALL_TRACK_ALGORITHMS = ('pid', 'bangbang')
@@ -4109,6 +4129,15 @@ class StewartControlNode(Node):
         integ_x = 0.0
         integ_y = 0.0
         z_hold = float(self.current_xyz[2]) if self.current_xyz else 50.0
+        # Stiction-break tracker. Bang-bang's ACCELERATE phase commands
+        # accel_tilt (typ. 3°), but on a foam-on-vinyl deck that's
+        # often below the stiction threshold and the ball just sits.
+        # If we've been in ACCEL with very low velocity for more than
+        # stiction_break_s, override to max_tilt to break the ball
+        # loose. Reset whenever ball moves or phase changes.
+        stiction_started_t = None
+        # Time origin for the diagnostic topic.
+        diag_t0 = time.monotonic()
         # Ball-fall recovery state. The loop normally goes flat (zero
         # tilt) when state goes stale, but it sits there indefinitely
         # waiting for the ball to reappear. After BALL_FALL_TIMEOUT_S
@@ -4218,6 +4247,17 @@ class StewartControlNode(Node):
                 # restart.
                 algo = str(g.get('algorithm', 'pid')).lower()
 
+                # Phase code for the diagnostic topic. -1 reserved
+                # for "stale state branch" (set above outside this
+                # else-block — populated below for live ticks).
+                phase_code = 0   # 0=SETTLE/PID, 1=ACCEL, 2=COAST,
+                                 # 3=BRAKE, 4=STICTION_BREAK
+                err_mag = math.hypot(ex, ey)
+                vel_mag = math.hypot(vx, vy)
+                ux = ex / err_mag if err_mag > 1e-6 else 0.0
+                uy = ey / err_mag if err_mag > 1e-6 else 0.0
+                v_toward = -(vx * ux + vy * uy)
+
                 if algo == 'bangbang':
                     # Finite-state-machine controller. Discrete phases:
                     #   ACCELERATE: full tilt toward target until ball
@@ -4226,39 +4266,56 @@ class StewartControlNode(Node):
                     #   BRAKE: full tilt opposite when ball about to
                     #     overshoot.
                     #   SETTLE: zero tilt within err_tol_mm of target.
+                    #   STICTION_BREAK: ACCEL but tilt bumped to
+                    #     max_tilt because ball isn't moving.
                     accel_tilt = float(g.get('accel_tilt_deg', max_tilt))
                     err_tol = float(g.get('err_tol_mm', 15.0))
                     v_brake = float(g.get('v_brake_mm_s', 80.0))
                     v_coast = float(g.get('v_coast_mm_s', 30.0))
                     brake_horizon = float(g.get('brake_horizon_mm', 60.0))
-                    err_mag = math.hypot(ex, ey)
+                    stiction_v = float(g.get('stiction_v_threshold_mm_s', 20.0))
+                    stiction_break_s = float(g.get('stiction_break_s', 0.6))
                     if err_mag < err_tol:
                         tilt_pitch = 0.0
                         tilt_roll = 0.0
                         integ_x = 0.0
                         integ_y = 0.0
+                        stiction_started_t = None
+                        phase_code = 0   # SETTLE
                     else:
-                        # Unit vector from target toward ball; equals
-                        # the direction that ACCELERATE-phase tilt
-                        # should have (same sign as PID's ex term).
-                        ux = ex / err_mag
-                        uy = ey / err_mag
-                        # Velocity component TOWARD target (+ve =
-                        # closing). Equivalent to dot(-velocity, u_to_ball).
-                        v_toward = -(vx * ux + vy * uy)
                         if (err_mag < brake_horizon
                                 and v_toward > v_brake):
                             # BRAKE — tilt opposite of accelerate.
                             tilt_pitch = -ps * ux * accel_tilt
                             tilt_roll  = -rs * uy * accel_tilt
+                            stiction_started_t = None
+                            phase_code = 3   # BRAKE
                         elif v_toward > v_coast:
                             # COAST — zero tilt, let ball roll.
                             tilt_pitch = 0.0
                             tilt_roll = 0.0
+                            stiction_started_t = None
+                            phase_code = 2   # COAST
                         else:
-                            # ACCELERATE.
-                            tilt_pitch = ps * ux * accel_tilt
-                            tilt_roll  = rs * uy * accel_tilt
+                            # ACCELERATE — possibly with stiction
+                            # breakthrough if the ball has been
+                            # stuck below threshold velocity for too
+                            # long.
+                            applied_tilt = accel_tilt
+                            phase_code = 1   # ACCEL
+                            if vel_mag < stiction_v:
+                                if stiction_started_t is None:
+                                    stiction_started_t = now
+                                elif (now - stiction_started_t) > stiction_break_s:
+                                    # Ramp tilt up to break the ball
+                                    # loose. Capped by max_tilt so
+                                    # the safety gate still applies.
+                                    applied_tilt = max_tilt
+                                    phase_code = 4   # STICTION_BREAK
+                            else:
+                                stiction_started_t = None
+                            tilt_pitch = ps * ux * applied_tilt
+                            tilt_roll  = rs * uy * applied_tilt
                         integ_x = 0.0
                         integ_y = 0.0
                 else:
@@ -4269,6 +4326,8 @@ class StewartControlNode(Node):
 
                     tilt_pitch = ps * (kp * ex + kd * edot_x + ki * integ_x)
                     tilt_roll  = rs * (kp * ey + kd * edot_y + ki * integ_y)
+                    stiction_started_t = None
+                    phase_code = 5   # PID
 
                 # Saturate.
                 tilt_pitch = max(-max_tilt, min(max_tilt, tilt_pitch))
@@ -4285,6 +4344,46 @@ class StewartControlNode(Node):
                                   allow_large=True)
             except Exception as e:
                 self.get_logger().warn(f"ball_track set_pose failed: {e}")
+
+            # Per-tick diagnostic. Field layout:
+            #   0: t_rel_s              — seconds since loop start
+            #   1: phase_code           — 0 settle / 1 accel / 2 coast
+            #                             / 3 brake / 4 stiction_break
+            #                             / 5 pid / -1 stale-state
+            #   2: tilt_pitch_cmd_deg
+            #   3: tilt_roll_cmd_deg
+            #   4: ex_mm  (px - rx)
+            #   5: ey_mm  (py - ry)
+            #   6: err_mag_mm
+            #   7: v_toward_mm_s        — ball-velocity component
+            #                             toward target (+ve = closing)
+            #   8: vel_mag_mm_s
+            #   9: ux                   — unit error vector
+            #  10: uy
+            try:
+                if state_stale or ref_stale:
+                    diag_data = [
+                        float(time.monotonic() - diag_t0),
+                        -1.0,   # stale-state code
+                        float(tilt_pitch), float(tilt_roll),
+                        float('nan'), float('nan'), float('nan'),
+                        float('nan'), float('nan'),
+                        float('nan'), float('nan'),
+                    ]
+                else:
+                    diag_data = [
+                        float(time.monotonic() - diag_t0),
+                        float(phase_code),
+                        float(tilt_pitch), float(tilt_roll),
+                        float(ex), float(ey), float(err_mag),
+                        float(v_toward), float(vel_mag),
+                        float(ux), float(uy),
+                    ]
+                msg = Float32MultiArray()
+                msg.data = diag_data
+                self.pub_ball_track_diag.publish(msg)
+            except Exception:
+                pass
 
             elapsed = time.monotonic() - t0
             sleep_s = max(0.0, period - elapsed)
