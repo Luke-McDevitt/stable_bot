@@ -3976,13 +3976,35 @@ class StewartControlNode(Node):
         self.get_logger().warn(f"unknown mode '{mode}' on /control_cmd")
 
     def _start_ball_track_loop(self):
-        """Start the ball-tracking PID thread. Stops the level loop
-        first because they're mutually exclusive: both want exclusive
-        write access to the tilt commands. The level loop's IMU
-        feedback isn't useful when the controller is intentionally
-        tilting to drive the ball."""
-        if self.level_enabled:
-            self._stop_level_loop()
+        """Start the ball-tracking PID thread.
+
+        IMU is the ground truth for platform tilt. The BALL_TRACK PID
+        writes a desired tilt setpoint into self.current_rpy; the
+        level PI loop reads that setpoint (via its existing
+        target_r = level_ref + current_rpy[0] formula) and uses IMU
+        feedback to actually achieve it. Without the level loop in
+        the inner position, BALL_TRACK is open-loop on tilt — it
+        commands +2° pitch, the platform achieves something near
+        +2° but with bias from plant asymmetry / IK approx / gravity
+        sag, and the ball drifts into one corner where commanded =
+        actual minus that bias. So we keep the level loop running.
+
+        Auto-enables the level loop if it isn't already running. If
+        the operator never enabled level (e.g., never captured a
+        level reference), we log and run BALL_TRACK open-loop —
+        better than refusing to start, but tracking will be biased.
+        """
+        if not self.level_enabled:
+            ok, msg = self._do_enable_level(True)
+            if not ok:
+                self.get_logger().warn(
+                    f"BALL_TRACK: level loop unavailable "
+                    f"({msg}) — running open-loop on tilt; "
+                    f"static bias likely")
+        else:
+            self.get_logger().info(
+                "BALL_TRACK: level loop already running, "
+                "using as inner tilt loop")
         self._stop_ball_track_loop()
         self.ball_track_corr = [0.0, 0.0]
         self.ball_track_stop.clear()
