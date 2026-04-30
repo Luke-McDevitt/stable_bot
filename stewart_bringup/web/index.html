@@ -1709,40 +1709,38 @@ function setupROSInterface() {
   // --- vision-stack subscriptions (spec v8 §11.1, §12) ---
   // Live RGB feed.
   //
-  // Three knobs together prevent the lag-accumulation we saw before
-  // (display falling 30+ s behind reality, dropping to 1 fps):
+  // We tried compression: 'cbor-raw' to halve bandwidth, but the
+  // rosbridge build on Pi/Kilted didn't honor it (zero frames
+  // arrived in the GUI). Falling back to the default JSON-array
+  // wire format. The huge speedup actually comes from the
+  // browser-side change: Blob+createObjectURL replaced the old
+  // String.fromCharCode + btoa loop. On the wire we still pay
+  // ~1.4 MB/frame, so:
   //
-  //   compression: 'cbor-raw'  — DepthAI publishes a 200 KB JPEG.
-  //     Without compression, rosbridge serialises the CompressedImage
-  //     .data field as a JSON array of integers, ballooning the WS
-  //     payload to ~1.4 MB per frame. At 10 fps that's 14 MB/s, which
-  //     saturates WiFi and queues unboundedly in the TCP send buffer.
-  //     CBOR-raw sends the bytes as a binary WS frame: ~200 KB
-  //     stays ~200 KB.
+  //   throttle_rate: 100  — at most one frame every 100 ms (10 Hz).
+  //   queue_length: 1     — rosbridge keeps only the latest message
+  //                         in the rclpy subscription queue. Old
+  //                         frames are dropped on every WS-write
+  //                         opportunity instead of accumulating.
   //
-  //   throttle_rate: 100 — rosbridge forwards at most one message
-  //     every 100 ms (10 Hz). Without this, the bridge tries to
-  //     forward every 15 fps frame and the WS send queue grows.
-  //
-  //   queue_length: 1 — at the rclpy subscription inside rosbridge,
-  //     only the most recent frame is kept. Combined with the
-  //     throttle, stale frames are dropped instead of queued.
+  // If the lag-accumulation reappears, the next thing to try is
+  // dropping the OAK MJPEG quality (oak_driver_node enc_rgb) so the
+  // per-frame payload is smaller — that's a publisher-side fix that
+  // doesn't depend on rosbridge feature support.
   topic.rgb_feed = new ROSLIB.Topic({
     ros, name: '/oak/rgb/image_compressed',
     messageType: 'sensor_msgs/msg/CompressedImage',
-    compression: 'cbor-raw',
     throttle_rate: 100,
     queue_length: 1,
   });
   topic.rgb_feed.subscribe(onRgbFrame);
 
   // Annotated depth-blob debug image (toggled via OAK_DEPTH_DEBUG).
-  // Same wire format. Not subscribed in the GUI yet — declared for
-  // future use; the bag recorder picks it up server-side.
+  // Not subscribed in the GUI yet — declared for future use; the
+  // bag recorder picks it up server-side.
   topic.depth_dbg = new ROSLIB.Topic({
     ros, name: '/oak/depth_blob/debug_image',
     messageType: 'sensor_msgs/msg/CompressedImage',
-    compression: 'cbor-raw',
     throttle_rate: 100,
     queue_length: 1,
   });
@@ -3755,8 +3753,29 @@ function drawArucoMarks() {
 // per frame — at 10 fps that's 600/min, which crashes the tab in
 // minutes).
 let _rgbFeedBlobUrl = null;
+// Diagnostic counter so the browser console can confirm frames
+// are arriving even when the <img> doesn't update for some reason
+// (image-decode failure, blob URL revoked too early, etc).
+let _rgbFeedFrames = 0;
+let _rgbFeedLastLog = 0;
 
 function onRgbFrame(m) {
+  _rgbFeedFrames += 1;
+  // Throttled console line so the dev tools confirms data flow
+  // without spamming.
+  const now = performance.now();
+  if (now - _rgbFeedLastLog > 2000) {
+    _rgbFeedLastLog = now;
+    console.log(
+      `[rgb_feed] frames=${_rgbFeedFrames} `
+      + `data_type=${typeof m.data === 'string' ? 'string'
+                     : (m.data instanceof Uint8Array ? 'Uint8Array'
+                     : (Array.isArray(m.data) ? 'Array'
+                     : (m.data instanceof ArrayBuffer ? 'ArrayBuffer'
+                     : typeof m.data)))} `
+      + `len=${(typeof m.data === 'string' ? m.data.length
+                : (m.data && m.data.length) || 'n/a')}`);
+  }
   const img = $('vision-feed-img');
   if (!img) return;
   // With compression: 'cbor-raw' on the topic, rosbridge delivers
