@@ -1,0 +1,89 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T042925Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": "BALL_TRACK_GOTO",
+  "demo_params": {
+    "x_mm": 75.86209106445312,
+    "y_mm": 136.55172729492188
+  },
+  "duration_s": 68.592965643,
+  "topic_counts": {
+    "/ball_ref": 1816,
+    "/ball_state": 5339,
+    "/ball_xy_depth": 293,
+    "/ball_xy_mono": 3849,
+    "/control_cmd": 28,
+    "/control_result": 11,
+    "/leg_currents": 1310,
+    "/leg_encoders": 1309,
+    "/oak/ball/depth/diagnostic": 586,
+    "/oak/ball/depth/rgb_pixel": 287,
+    "/oak/ball/v0/diagnostic": 591,
+    "/oak/ball/v0/rgb_pixel": 590,
+    "/odrive_errors": 133,
+    "/platform/imu/data": 21195,
+    "/platform_pose": 592,
+    "/platform_pose/markers_visible": 588,
+    "/platform_rpy": 1310,
+    "/status": 133
+  },
+  "gains_at_record": {
+    "kp": 0.01,
+    "kd": 0.015,
+    "ki": 0.0,
+    "max_tilt_deg": 4.0,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0
+  },
+  "ball_state_n": 5339,
+  "ball_ref_n": 1816,
+  "mono_n": 3849,
+  "depth_n": 293,
+  "error_mm": {
+    "n": 2411,
+    "mean": 82.297464788503,
+    "std": 38.444301518043886,
+    "rms": 90.83411820359773,
+    "p50": 68.92523986350271,
+    "p95": 188.01717701851052,
+    "min": 62.14344850200562,
+    "max": 306.8367694653633
+  },
+  "error_x_mm": {
+    "n": 2411,
+    "mean": 2.6652864203870674,
+    "std": 63.35383265072539,
+    "rms": 63.40987196989771,
+    "p50": 7.575634716662179,
+    "p95": 92.80336993780861,
+    "min": -296.7495385865557,
+    "max": 295.80632929028735
+  },
+  "error_y_mm": {
+    "n": 2411,
+    "mean": 8.601365119753979,
+    "std": 64.46736914643738,
+    "rms": 65.03864364042616,
+    "p50": 65.26598551224453,
+    "p95": 73.97322768979888,
+    "min": -105.90726636837724,
+    "max": 77.17509621375629
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 592,
+    "mean": 815.2933204937559,
+    "std": 2.0166296138724578,
+    "rms": 815.2958145585771,
+    "p50": 816.1363692226582,
+    "p95": 817.5037911298278,
+    "min": 805.2384936215992,
+    "max": 821.593865988246
+  },
+  "markers_visible": {
+    "n": 588,
+    "mean": 7.586734693877551,
+    "min": 5,
+    "max": 9
+  }
+}
