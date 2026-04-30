@@ -7,7 +7,10 @@ Subscribes to:
   /ball_path/upload (nav_msgs/Path) — full polyline for Demo 3 (one-shot)
 
 Publishes:
-  /ball_ref          (geometry_msgs/PointStamped) — current target (mm, platform frame)
+  /ball_ref          (geometry_msgs/PointStamped) — current target (mm, IMU body frame).
+                     The SVG click is in ArUco/platform-frame mm; we apply the same
+                     2×2 ArUco→IMU rotation that ball_localizer applies to /ball_state
+                     so the BALL_TRACK loop's err = ref - state is a coherent vector.
   /ball_path/active  (nav_msgs/Path) — the validated polyline being followed (Demo 3)
 
 Mode dispatcher follows the /control_cmd payloads documented in the
@@ -30,6 +33,7 @@ import os
 import time
 from typing import Optional
 
+import numpy as np
 import yaml
 
 import rclpy
@@ -90,6 +94,18 @@ class RefGeneratorNode(Node):
         # just track + log here so the bag has the value at run start.
         self.ball_cfg: dict = get_preset('foam')
 
+        # ArUco→IMU 2×2 rotation. /ball_state is published in IMU frame
+        # (ball_localizer_node applies this same rotation to the V0/depth
+        # ball positions). For the controller's err = ref - state to make
+        # sense, /ball_ref must be in the same frame. We therefore load
+        # the same calibration here and rotate every published ref into
+        # IMU frame. Pass-through (identity) if the YAML is missing.
+        # See stewart_bringup/docs/auto_tuning_plan.md §0 for the bug
+        # this fixes — pre-fix, click direction never matched tilt
+        # direction because /ball_ref stayed in ArUco/platform frame.
+        self.M_aruco_to_imu: Optional[np.ndarray] = None
+        self._load_aruco_imu_alignment()
+
         self.create_subscription(String, '/control_cmd',
                                  self._on_control_cmd, 10)
         self.create_subscription(Path, '/ball_path/upload',
@@ -102,6 +118,44 @@ class RefGeneratorNode(Node):
         self.pub_active = self.create_publisher(Path, '/ball_path/active', 10)
 
         self.create_timer(1.0 / self.REF_RATE, self._tick)
+
+    def _load_aruco_imu_alignment(self):
+        """Mirror ball_localizer's loader: read the same 2×2 ArUco→IMU
+        rotation from stewart_vision/config/aruco_imu_alignment.yaml.
+        Both nodes apply this rotation in lockstep so /ball_ref and
+        /ball_state are guaranteed to live in the same frame."""
+        share = _share_dir()
+        path = os.path.join(share, 'config', 'aruco_imu_alignment.yaml')
+        if not os.path.isfile(path):
+            self.get_logger().info(
+                "no aruco_imu_alignment.yaml — /ball_ref will publish "
+                "in raw ArUco frame. Run an IVA sweep + Apply to "
+                "guarantee ref/state-frame agreement.")
+            return
+        try:
+            with open(path) as f:
+                d = yaml.safe_load(f) or {}
+            m = d.get('matrix')
+            if m and len(m) == 2 and len(m[0]) == 2:
+                self.M_aruco_to_imu = np.asarray(m, dtype=np.float64)
+                self.get_logger().info(
+                    f"ref_generator loaded ArUco→IMU alignment: "
+                    f"rot={d.get('rotation_deg', 0):+.1f}° "
+                    f"rms={d.get('post_alignment_rms_deg', 0):.2f}°")
+            else:
+                self.get_logger().warn(
+                    f"{path} present but no usable 'matrix' field")
+        except Exception as e:
+            self.get_logger().warn(f"failed to load alignment: {e}")
+
+    def _apply_aruco_imu_rotation(self, x_mm: float,
+                                  y_mm: float) -> tuple:
+        """Apply the loaded 2×2 to (x, y). Identity passthrough if
+        no alignment was loaded."""
+        if self.M_aruco_to_imu is None:
+            return (x_mm, y_mm)
+        v = self.M_aruco_to_imu @ np.array([float(x_mm), float(y_mm)])
+        return (float(v[0]), float(v[1]))
 
     def _on_state(self, msg: PoseStamped):
         self.last_state = msg
@@ -201,14 +255,23 @@ class RefGeneratorNode(Node):
             return
         x_mm, y_mm = ref
         # Last-line safety on the generator side: clamp out of dead-zone.
+        # Performed in the source (ArUco/platform) frame because the
+        # safety geometry (dead_zone_mm) is defined there.
         r = math.hypot(x_mm, y_mm)
         if r < self.min_radius_mm:
             scale = (self.min_radius_mm + 1e-3) / max(r, 1e-3)
             x_mm *= scale
             y_mm *= scale
+        # Rotate to IMU frame so /ball_ref matches /ball_state's frame.
+        # Without this, the BALL_TRACK loop computed err = ref - state
+        # across two different rotations of the platform plane and the
+        # commanded tilt direction was off by the rotation angle.
+        x_mm, y_mm = self._apply_aruco_imu_rotation(x_mm, y_mm)
         msg = PointStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'platform'
+        # Frame_id reflects the new convention — /ball_ref and
+        # /ball_state now both live in IMU body frame.
+        msg.header.frame_id = 'imu'
         msg.point.x = float(x_mm)
         msg.point.y = float(y_mm)
         msg.point.z = 0.0
