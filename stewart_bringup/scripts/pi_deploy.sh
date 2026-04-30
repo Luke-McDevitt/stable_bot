@@ -23,22 +23,28 @@ ROS_DISTRO=${ROS_DISTRO:-kilted}
 cd "$REPO"
 
 echo "==> [1/8] check local changes"
-# Most local diffs on the Pi are just GUI-saved gain YAMLs, IVA
-# alignment YAMLs, or new tuning_data/ bag dirs — auto-commit those
-# so `git pull --rebase` doesn't die on dirty-tree. Anything else
-# (Python edits, manual config tweaks) is reported and the deploy
+# Most local diffs on the Pi are just GUI-saved artifacts: gain YAMLs,
+# IVA alignment YAMLs, new tuning_data/ bag dirs, or V0 NN weight
+# tunings (v0_weights.json + the rebuilt v0_*.blob/.onnx pair). All
+# of those are operator-tuned data, not source edits, so we auto-
+# commit them rather than block on a dirty tree. Anything else
+# (Python edits, manual config tweaks) gets reported and the deploy
 # stops so the user can resolve it explicitly.
+#
+# The allowlist regex below is the single source of truth — keep it
+# in sync with the operator's tuning surface as new GUI-writable
+# artifacts get added.
+SAFE_RE='\.(yaml|yml)$|^tuning_data/|^stewart_vision/blobs/'
 LOCAL_CHANGES=$(git status --porcelain || true)
 if [ -n "$LOCAL_CHANGES" ]; then
-    # Files in the porcelain output that are NOT yaml and NOT under
-    # tuning_data/. awk index 2 is the path; works for the standard
-    # ' M file' / '?? file' formats. Repo has no spaces in filenames
-    # so this is safe.
+    # Files in the porcelain output that don't match the allowlist.
+    # awk index 2 is the path; works for the standard ' M file' /
+    # '?? file' formats. Repo has no spaces in filenames so this is safe.
     UNSAFE=$(echo "$LOCAL_CHANGES" \
               | awk '{print $2}' \
-              | grep -vE '\.(yaml|yml)$|^tuning_data/' || true)
+              | grep -vE "$SAFE_RE" || true)
     if [ -n "$UNSAFE" ]; then
-        echo "  ! cannot auto-commit. Non-yaml/non-tuning_data changes:"
+        echo "  ! cannot auto-commit. Source-tree changes detected:"
         echo "$UNSAFE" | sed 's/^/    /'
         echo
         echo "  Resolve manually before re-running:"
@@ -47,7 +53,7 @@ if [ -n "$LOCAL_CHANGES" ]; then
         echo "    git add <file> && git commit -m 'msg'   # keep"
         exit 1
     fi
-    echo "  auto-committing yaml + tuning_data:"
+    echo "  auto-committing operator-tuned artifacts:"
     echo "$LOCAL_CHANGES" | sed 's/^/    /'
     # Stage by explicit paths from `git status --porcelain` rather than
     # pathspec globs — `git add '*.yaml'` doesn't always match
@@ -59,9 +65,9 @@ if [ -n "$LOCAL_CHANGES" ]; then
         [ -n "$path" ] && git add -- "$path"
     done < <(echo "$LOCAL_CHANGES" \
               | awk '{print $2}' \
-              | grep -E '\.(yaml|yml)$|^tuning_data/')
+              | grep -E "$SAFE_RE")
     if ! git diff --cached --quiet; then
-        git commit -m "Local: yaml/tuning_data snapshot (pi_deploy.sh)" >/dev/null
+        git commit -m "Local: operator-tuned snapshot (pi_deploy.sh)" >/dev/null
         echo "  ✓ committed local snapshot"
     else
         echo "  (nothing actually staged — skipping commit)"
