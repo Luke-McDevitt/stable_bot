@@ -687,8 +687,21 @@
                 class="bg-slate-600 hover:bg-slate-500 rounded px-3 py-1 text-xs hidden">
           ■ Stop
         </button>
-        <span id="dbag-status" class="text-xs text-slate-400 mono"></span>
+        <!-- One-line live status: truncated so a long bag path can't
+             push the bag list around. min-w-0+flex-1 lets the span
+             absorb the rest of the row width and clip with ellipsis. -->
+        <span id="dbag-status"
+              class="text-xs text-slate-400 mono truncate min-w-0 flex-1"></span>
       </div>
+      <!-- Verbose output (digest stdout, errors) gets its own
+           fixed-height scrollable box below the status row so the
+           digest's multi-line output doesn't reflow the rest of the
+           GUI. Mirrors the lvl-bags-list / iva apply-output pattern. -->
+      <pre id="dbag-log"
+           class="text-xs text-slate-400 mono bg-slate-900 border
+                  border-slate-700 rounded p-1 mt-2 max-h-40
+                  overflow-y-auto whitespace-pre-wrap"
+           style="display:none"></pre>
       <div id="dbag-bags-list"
            class="text-xs text-slate-400 mono mt-2 space-y-1
                   max-h-64 overflow-y-auto pr-1"></div>
@@ -5150,10 +5163,28 @@ function dbagFetchBags() {
 function dbagSetStatus(text, ok) {
   const el = document.getElementById('dbag-status');
   if (!el) return;
-  el.innerText = text;
-  el.className = 'text-xs mono ' +
+  // Truncate to a single line — anything longer goes to dbag-log so
+  // the row doesn't wrap and shove the bag list around.
+  const oneLine = String(text || '').replace(/\s+/g, ' ').trim();
+  el.innerText = oneLine;
+  el.title = oneLine;   // hover to read the full status
+  el.className =
+    'text-xs mono truncate min-w-0 flex-1 ' +
     (ok === true ? 'text-emerald-400' :
      ok === false ? 'text-red-400' : 'text-slate-400');
+}
+
+// Verbose output panel — digest stdout, push errors, etc. Appends a
+// timestamp-prefixed entry and auto-scrolls to bottom. Hidden by
+// default; first append reveals it.
+function dbagAppendLog(text, ok) {
+  const el = document.getElementById('dbag-log');
+  if (!el) return;
+  const stamp = new Date().toLocaleTimeString([], { hour12: false });
+  const tag = (ok === true ? '✓ ' : ok === false ? '✗ ' : '· ');
+  el.style.display = 'block';
+  el.appendChild(document.createTextNode(`[${stamp}] ${tag}${text}\n`));
+  el.scrollTop = el.scrollHeight;
 }
 
 function _dbagStartPolling() {
@@ -5222,10 +5253,14 @@ function dbagDigestBag(name) {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({name}),
   }).then(r => r.json()).then(j => {
-    dbagSetStatus((j.ok ? '✓ digest ' : '✗ digest ') + (j.message || ''),
-                  !!j.ok);
+    // Short status line, full multi-line stdout in the log box.
+    dbagSetStatus(`${j.ok ? '✓' : '✗'} digest ${name}`, !!j.ok);
+    dbagAppendLog(`digest ${name}\n${j.message || ''}`, !!j.ok);
     if (j.ok) dbagFetchBags();
-  }).catch(e => dbagSetStatus('digest failed: ' + e, false));
+  }).catch(e => {
+    dbagSetStatus('digest failed', false);
+    dbagAppendLog('digest failed: ' + e, false);
+  });
 }
 
 // --- Auto-bag plumbing (Demo 1 / Demo 2 checkbox) ---
@@ -5290,9 +5325,12 @@ function dbagPushBag(name) {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({name}),
   }).then(r => r.json()).then(j => {
-    dbagSetStatus((j.ok ? '✓ ' : '✗ ') + (j.message || ''),
-                  !!j.ok);
-  }).catch(e => dbagSetStatus('push failed: ' + e, false));
+    dbagSetStatus(`${j.ok ? '✓' : '✗'} push ${name}`, !!j.ok);
+    dbagAppendLog(`push ${name}\n${j.message || ''}`, !!j.ok);
+  }).catch(e => {
+    dbagSetStatus('push failed', false);
+    dbagAppendLog('push failed: ' + e, false);
+  });
 }
 
 // Auto-abort on /odrive_errors. The error topic is already

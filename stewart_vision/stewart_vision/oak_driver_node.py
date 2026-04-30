@@ -1044,12 +1044,11 @@ class OakDriverNode(Node):
             float(jpeg_lat_ms), float(v0_lat_ms),
         ]
         self.pub_health.publish(h)
-        # /oak/config — snapshot every 30 s + at startup. Captures
-        # tunables that change behavior so the digest can correlate
-        # demo outcomes with config state.
-        if (now - self._config_last_pub_t) >= 30.0:
-            self._config_last_pub_t = now
-            self._publish_config_snapshot()
+        # /oak/config — publish every health tick (5 s) so demo bags
+        # always capture at least one snapshot regardless of run
+        # duration. The String payload is tiny (~80 B); cost is
+        # negligible.
+        self._publish_config_snapshot()
         # Sanity-probe the depth math: at the principal point, what's
         # the ArUco-derived expected depth vs. what stereo measured?
         # On a flat platform with markers coplanar with the deck,
