@@ -105,6 +105,16 @@ def detect_ball_v0(rgb_bgr: np.ndarray,
     hsv = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, HSV_LO, HSV_HI)
     if restrict_mask is not None:
+        # Defensive: resize the platform mask to the frame's shape if
+        # they differ. This happens during the OAK_ISP_SCALE=full probe
+        # where the camera outputs 1080p but the mask was built at 540p
+        # (K_rgb is calibrated at 540p too — projection is wrong, but
+        # at least we don't crash). For real runs at OAK_ISP_SCALE=half
+        # the shapes already match and resize is a no-op.
+        if restrict_mask.shape[:2] != mask.shape[:2]:
+            restrict_mask = cv2.resize(
+                restrict_mask, (mask.shape[1], mask.shape[0]),
+                interpolation=cv2.INTER_NEAREST)
         mask = cv2.bitwise_and(mask, restrict_mask)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
                             np.ones((3, 3), np.uint8), iterations=1)
