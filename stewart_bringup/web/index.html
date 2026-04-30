@@ -315,8 +315,13 @@
             </button>
             <button id="nn-weights-rebuild"
                     class="bg-amber-600 hover:bg-amber-500 rounded px-3 py-1 text-xs"
-                    title="Run build_v0_blob.py on the Pi: rebuild stewart_vision/blobs/v0_320x180.blob from the saved weights via the Luxonis cloud compiler. Takes ~30 s. Restart stable_bot.service afterwards for the new blob to load.">
+                    title="Run build_v0_blob.py on the Pi: rebuild stewart_vision/blobs/v0_320x180.blob from the saved weights via the Luxonis cloud compiler. Takes ~30 s.">
               Rebuild blob
+            </button>
+            <button id="nn-weights-reload"
+                    class="bg-fuchsia-600 hover:bg-fuchsia-500 rounded px-3 py-1 text-xs"
+                    title="Publish to /oak/cmd_reload_nn — oak_driver_node tears down + rebuilds its DepthAI pipeline with the freshly-built blob. ~3-5 s downtime, no service restart needed. Focus + HSV state are preserved.">
+              Reload NN on device
             </button>
             <button id="nn-weights-push"
                     class="bg-blue-600 hover:bg-blue-500 rounded px-3 py-1 text-xs">
@@ -332,11 +337,11 @@
             3. <b>Rebuild blob</b> — runs the build script, ~30 s
                (cloud compile). Produces a fresh
                <span class="mono">v0_320x180.blob</span>.<br>
-            4. Restart <span class="mono">stable_bot.service</span> on
-               the Pi (terminal:
-               <span class="mono">sudo systemctl restart stable_bot.service</span>)
-               so <span class="mono">oak_driver_node</span> loads the new
-               blob.<br>
+            4. <b>Reload NN on device</b> — publishes
+               <span class="mono">/oak/cmd_reload_nn</span>;
+               <span class="mono">oak_driver_node</span> closes its
+               DepthAI device, rebinds the new blob, and reopens
+               (~3-5 s, no service restart, no lost focus/HSV state).<br>
             5. Test in the live feed (emerald NN circle should track
                the ball).<br>
             6. <b>Push to GitHub</b> — commits all three artifacts
@@ -2138,6 +2143,12 @@ function setupROSInterface() {
   topic.oak_hsv_cmd = new ROSLIB.Topic({
     ros, name: '/oak/cmd_hsv',
     messageType: 'std_msgs/msg/Float32MultiArray' });
+  // Hot-reload of the NN blob without restarting the process. Empty
+  // payload — the Pi-side handler tears down + rebuilds the DepthAI
+  // pipeline from disk. Used by the "Reload NN on device" button.
+  topic.oak_reload_nn_cmd = new ROSLIB.Topic({
+    ros, name: '/oak/cmd_reload_nn',
+    messageType: 'std_msgs/msg/Empty' });
   // V0 detector debug overlay (live RGB tinted by HSV mask). Subscribed
   // only when the "V0 debug overlay" checkbox under the live feed is
   // ticked. When subscribed, callback writes to the SAME #vision-feed-img
@@ -4223,9 +4234,11 @@ function initVisionGUI() {
     .catch(() => {});
   const nnSave    = $('nn-weights-save');
   const nnRebuild = $('nn-weights-rebuild');
+  const nnReload  = $('nn-weights-reload');
   const nnPush    = $('nn-weights-push');
   if (nnSave)    nnSave.addEventListener('click',    nnWeightsSave);
   if (nnRebuild) nnRebuild.addEventListener('click', nnWeightsRebuild);
+  if (nnReload)  nnReload.addEventListener('click',  nnWeightsReload);
   if (nnPush)    nnPush.addEventListener('click',    nnWeightsPush);
 
   // --- HSV slider tuning + V0 debug overlay ---
@@ -6108,24 +6121,35 @@ async function nnWeightsPush() {
 // the Pi via gui_server. The script reads v0_weights.json, builds
 // the ONNX (no torch needed — onnx.helper only), and uploads it to
 // the Luxonis cloud blobconverter for the Myriad X compile. Takes
-// ~30 s end-to-end; afterwards the operator restarts stable_bot
-// for the new blob to load. /oak/config will report the new blob
-// timestamp once oak_driver_node restarts.
+// ~30 s end-to-end; afterwards click "Reload NN on device" so
+// oak_driver_node hot-swaps the new blob without a service restart.
 async function nnWeightsRebuild() {
   _nnSetStatus('rebuilding (~30 s, cloud compile)…', null);
   try {
     const r = await fetch('/v0/weights/rebuild', { method: 'POST' });
     const j = await r.json();
-    _nnSetStatus(j.message || (j.ok ? 'blob rebuilt' : 'rebuild failed'),
+    _nnSetStatus(j.ok ? 'blob rebuilt — click "Reload NN on device"'
+                      : (j.message || 'rebuild failed'),
                  !!j.ok);
-    if (j.ok) {
-      // Helpful nudge: blob is on disk but oak_driver hasn't reloaded.
-      console.log('[nn-rebuild] success — restart stable_bot.service '
-                  + 'to load the new blob');
-    } else if (j.stderr) {
+    if (!j.ok && j.stderr) {
       console.error('[nn-rebuild] stderr tail:\n' + j.stderr);
     }
   } catch (e) { _nnSetStatus('rebuild failed: ' + e, false); }
+}
+
+// Hot-swap the freshly-rebuilt blob into the running oak_driver_node.
+// Publishes an Empty msg on /oak/cmd_reload_nn — the Pi-side handler
+// closes the DepthAI device, re-resolves the blob path on disk, and
+// reopens the pipeline. ~3-5 s downtime, focus + HSV state preserved.
+function nnWeightsReload() {
+  if (!topic.oak_reload_nn_cmd) {
+    _nnSetStatus('reload failed: rosbridge not connected', false);
+    return;
+  }
+  try {
+    topic.oak_reload_nn_cmd.publish(new ROSLIB.Message({}));
+    _nnSetStatus('reload requested — pipeline rebuilding (~5 s)', true);
+  } catch (e) { _nnSetStatus('reload publish failed: ' + e, false); }
 }
 
 function onOakConfig(cfg) {

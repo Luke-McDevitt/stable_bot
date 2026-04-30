@@ -37,7 +37,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import PointStamped, PoseStamped
-from std_msgs.msg import Float32, Float32MultiArray, String
+from std_msgs.msg import Empty, Float32, Float32MultiArray, String
 
 # DepthAI is hardware-side; allow the module to import on machines
 # without the OAK plugged in (the node will refuse to spin without it).
@@ -1192,6 +1192,13 @@ class OakDriverNode(Node):
         # on its next frame.
         self.create_subscription(
             Float32MultiArray, '/oak/cmd_hsv', self._on_hsv_cmd, 1)
+        # Hot-swap NN blob without restarting the process. GUI's
+        # "Reload NN on device" button publishes here after a
+        # successful blob rebuild. Tears down + rebuilds the DepthAI
+        # pipeline in-place; ~3-5 s downtime, focus + HSV state
+        # preserved across the rebuild.
+        self.create_subscription(
+            Empty, '/oak/cmd_reload_nn', self._on_reload_nn_cmd, 1)
         # Debug overlay: live RGB tinted lime where HSV passes, with
         # the detected blob outlined red. Lets the operator see what
         # the detector is actually picking up while they tune the
@@ -1367,6 +1374,136 @@ class OakDriverNode(Node):
             self._publish_config_snapshot()
         except Exception as e:
             self.get_logger().warn(f"/oak/cmd_hsv parse failed: {e}")
+
+    def _on_reload_nn_cmd(self, msg: Empty):
+        """Hot-swap the V0 NN blob without restarting the process.
+
+        Closes the DepthAI device, re-resolves the blob path (so a
+        freshly-built blob is picked up), rebuilds the pipeline, and
+        re-opens the device. Focus mode + HSV bounds are kept on
+        `self` across the rebuild so the operator's tuning state
+        survives.
+
+        ROS 2's default single-threaded executor serializes callbacks,
+        so the 60 Hz `_tick` won't fire while this handler is mid-flight
+        — but `_reloading` and the queue-nulling are belt-and-braces
+        for the multi-threaded case. Total downtime: ~3-5 s (pipeline
+        compile on the host + Myriad X firmware load over USB)."""
+        self.get_logger().info(
+            "/oak/cmd_reload_nn received — hot-reloading pipeline")
+        self._reloading = True
+        try:
+            try:
+                if hasattr(self, 'device') and self.device is not None:
+                    self.device.close()
+            except Exception as e:
+                self.get_logger().warn(f"  device.close() failed: {e}")
+            self.device = None
+            # Null queue handles so a stray _tick can't dereference
+            # them while the new device is opening.
+            self.q_rgb_jpeg = None
+            self.q_rgb_raw = None
+            self.q_left = None
+            self.q_v0_nn = None
+            self.q_cam_ctrl = None
+            self.q_spatial = None
+            self.q_slc_cfg = None
+            self.q_depth = None
+
+            # Re-resolve blob path (the GUI just rebuilt it).
+            new_blob = None
+            candidates = []
+            try:
+                from ament_index_python.packages import (
+                    get_package_share_directory)
+                candidates.append(os.path.join(
+                    get_package_share_directory('stewart_vision'),
+                    'blobs', f'v0_{V0_W}x{V0_H}.blob'))
+            except Exception:
+                pass
+            candidates.append(os.path.expanduser(
+                f'~/stable_bot_repo/stewart_vision/blobs/'
+                f'v0_{V0_W}x{V0_H}.blob'))
+            for p in candidates:
+                if os.path.isfile(p):
+                    new_blob = p
+                    break
+            if new_blob is None:
+                self.get_logger().warn(
+                    f"  no blob found at any of: {candidates}; "
+                    f"rebuilding pipeline without NN node")
+            else:
+                self.get_logger().info(f"  picked blob: {new_blob}")
+            self._v0_blob_path = new_blob
+
+            pipeline = _build_pipeline(
+                rgb_fps=self._rgb_fps_used,
+                mono_fps=self._mono_fps_used,
+                enable_depth=self.enable_depth,
+                v0_blob_path=self._v0_blob_path)
+            usb_speed_env = os.environ.get('OAK_USB_SPEED', 'high').lower()
+            usb_speed_map = {
+                'high': dai.UsbSpeed.HIGH,
+                'super': dai.UsbSpeed.SUPER,
+                'super_plus': dai.UsbSpeed.SUPER_PLUS,
+            }
+            max_usb = usb_speed_map.get(usb_speed_env, dai.UsbSpeed.HIGH)
+            self.device = dai.Device(pipeline, maxUsbSpeed=max_usb)
+            self.get_logger().info(
+                f"  ✓ device reopened: {self.device.getDeviceName()} | "
+                f"USB speed: {self.device.getUsbSpeed()}")
+
+            # Re-bind queues (must match constructor's setup).
+            self.q_rgb_jpeg = self.device.getOutputQueue('rgb_jpeg', 1, False)
+            self.q_rgb_raw  = self.device.getOutputQueue('rgb_raw',  1, False)
+            self.q_left     = self.device.getOutputQueue('left',     1, False)
+            self.q_v0_nn = (
+                self.device.getOutputQueue('v0_nn', 1, False)
+                if self._v0_blob_path is not None else None)
+            self.q_cam_ctrl = self.device.getInputQueue('cam_rgb_control')
+            if self.enable_depth:
+                self.q_spatial = self.device.getOutputQueue('spatial', 1, False)
+                self.q_slc_cfg = self.device.getInputQueue('slc_config')
+                self.q_depth = self.device.getOutputQueue('depth', 1, False)
+                try:
+                    ir_proj_ma = float(
+                        os.environ.get('OAK_IR_PROJECTOR_MA', '0'))
+                    self.device.setIrLaserDotProjectorBrightness(ir_proj_ma)
+                except Exception as e:
+                    self.get_logger().warn(
+                        f"  IR projector restore failed: {e}")
+
+            # Restore focus state (mode + manual position) from the
+            # values stashed on self by _on_focus_cmd.
+            try:
+                ctrl = dai.CameraControl()
+                if self._focus_mode == 'auto':
+                    ctrl.setAutoFocusMode(
+                        dai.RawCameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
+                elif self._focus_mode == 'auto_one_shot':
+                    ctrl.setAutoFocusMode(
+                        dai.RawCameraControl.AutoFocusMode.AUTO)
+                    ctrl.setAutoFocusTrigger()
+                else:
+                    ctrl.setManualFocus(int(self._focus_pos))
+                self.q_cam_ctrl.send(ctrl)
+            except Exception as e:
+                self.get_logger().warn(f"  focus restore failed: {e}")
+
+            # If we were running NN but the blob disappeared between
+            # builds, fall back to cv2 so the operator still sees output.
+            if self.v0_backend == 'nn' and self._v0_blob_path is None:
+                self.get_logger().warn(
+                    "  NN blob missing after reload; falling back to cv2")
+                self.v0_backend = 'cv2'
+
+            self._publish_config_snapshot()
+            self.get_logger().info(
+                "  ✓ NN reload complete — new blob is live")
+        except Exception as e:
+            self.get_logger().error(f"NN reload failed: {e!r}")
+        finally:
+            self._reloading = False
 
     def _log_pipeline_health(self):
         """Periodic snapshot so we can tell which stage of the V0 /
@@ -1587,6 +1724,12 @@ class OakDriverNode(Node):
         self._publish_compressed(pub, buf.tobytes(), 'jpeg')
 
     def _tick(self):
+        # Bail if a hot-reload of the NN blob is in progress — queues
+        # are nulled and the device is closed during _on_reload_nn_cmd.
+        if getattr(self, '_reloading', False):
+            return
+        if not getattr(self, 'device', None):
+            return
         # Refresh the projected platform mask + expected-plane depth
         # map whenever the latest pose is newer than what we baked
         # into the cache. Cheap when stamps match; ~3 ms when they
