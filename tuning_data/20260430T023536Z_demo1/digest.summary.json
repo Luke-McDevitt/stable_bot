@@ -1,0 +1,84 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260430T023536Z_demo1",
+  "demo_label": "demo1",
+  "duration_s": 24.774311779,
+  "topic_counts": {
+    "/ball_ref": 334,
+    "/ball_state": 1889,
+    "/ball_xy_depth": 132,
+    "/ball_xy_mono": 1362,
+    "/control_cmd": 10,
+    "/control_result": 1,
+    "/leg_currents": 457,
+    "/leg_encoders": 457,
+    "/oak/ball/depth/diagnostic": 223,
+    "/oak/ball/depth/rgb_pixel": 138,
+    "/oak/ball/v0/diagnostic": 223,
+    "/oak/ball/v0/rgb_pixel": 223,
+    "/odrive_errors": 47,
+    "/platform/imu/data": 7327,
+    "/platform_pose": 206,
+    "/platform_pose/markers_visible": 207,
+    "/platform_rpy": 456,
+    "/status": 47
+  },
+  "gains_at_record": {
+    "kp": 0.03,
+    "kd": 0.005,
+    "ki": 0.0,
+    "max_tilt_deg": 3.0,
+    "pitch_sign": 1.0,
+    "roll_sign": 1.0
+  },
+  "ball_state_n": 1889,
+  "ball_ref_n": 334,
+  "mono_n": 1362,
+  "depth_n": 132,
+  "error_mm": {
+    "n": 451,
+    "mean": 171.140089909961,
+    "std": 64.5590352889035,
+    "rms": 182.91199909197712,
+    "p50": 171.1605689149735,
+    "p95": 267.2433274896939,
+    "min": 54.74645375649788,
+    "max": 276.937675445438
+  },
+  "error_x_mm": {
+    "n": 451,
+    "mean": -30.193286765255532,
+    "std": 21.20003805545732,
+    "rms": 36.8927659472937,
+    "p50": -27.35742598515634,
+    "p95": 3.6274754579800152,
+    "min": -87.86970555786769,
+    "max": 11.001229276195437
+  },
+  "error_y_mm": {
+    "n": 451,
+    "mean": -167.33204702650698,
+    "std": 63.99772863547976,
+    "rms": 179.15279298013087,
+    "p50": -169.8628033908487,
+    "p95": -57.026739704677475,
+    "min": -263.0016209669008,
+    "max": -41.07530360061173
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 206,
+    "mean": 813.4610014064249,
+    "std": 0.41745570291393325,
+    "rms": 813.4611085223481,
+    "p50": 813.5204696415161,
+    "p95": 813.9914179704368,
+    "min": 811.6277330464355,
+    "max": 814.3838466810963
+  },
+  "markers_visible": {
+    "n": 207,
+    "mean": 8.08695652173913,
+    "min": 7,
+    "max": 9
+  }
+}
