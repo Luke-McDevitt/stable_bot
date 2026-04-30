@@ -1769,18 +1769,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     500)
             return
         if self.path == '/v0/weights/push':
-            # git add + commit + push the weights JSON. Lets the
-            # operator preserve a history of their tuning sessions
-            # without leaving the GUI. Failures (no remote, no creds,
-            # nothing to commit) are reported but not fatal.
+            # git add + commit + push the weights JSON, the rebuilt
+            # .blob, and the intermediate .onnx (useful for inspection).
+            # Skips files that don't exist (e.g., before first Rebuild).
+            # Failures (no remote, no creds, nothing to commit) are
+            # reported but not fatal.
             try:
                 repo = os.path.expanduser('~/stable_bot_repo')
-                rel = 'stewart_vision/blobs/v0_weights.json'
                 env = os.environ.copy()
-                # Reuse existing committer identity from the repo —
-                # the user has been pushing throughout this session.
+                # Three artifacts produced by the Save / Rebuild flow.
+                # Add each one only if it actually exists, so this
+                # works even if the operator clicks Push before
+                # Rebuild has run yet.
+                rels = [
+                    'stewart_vision/blobs/v0_weights.json',
+                    'stewart_vision/blobs/v0_320x180.blob',
+                    'stewart_vision/blobs/v0_320x180.onnx',
+                ]
+                rels = [r for r in rels
+                        if os.path.isfile(os.path.join(repo, r))]
+                if not rels:
+                    self._send_json({
+                        'ok': False,
+                        'message': 'no v0 artifacts on disk to push',
+                    }, 500)
+                    return
                 add = subprocess.run(
-                    ['git', '-C', repo, 'add', rel],
+                    ['git', '-C', repo, 'add'] + rels,
                     capture_output=True, text=True, timeout=10)
                 if add.returncode != 0:
                     self._send_json({
@@ -1799,9 +1814,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     })
                     return
                 ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                # Mention which artifacts went in the commit so future
+                # diffs are easy to interpret.
+                what = ' + '.join(
+                    os.path.basename(r) for r in rels)
                 commit = subprocess.run(
                     ['git', '-C', repo, 'commit', '-m',
-                     f'NN weights: GUI tune {ts}'],
+                     f'NN weights: GUI tune {ts} ({what})'],
                     capture_output=True, text=True, timeout=15)
                 if commit.returncode != 0:
                     self._send_json({

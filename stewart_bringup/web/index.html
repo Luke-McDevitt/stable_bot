@@ -325,10 +325,23 @@
             <span id="nn-weights-status" class="text-xs text-slate-400 mono"></span>
           </div>
           <div class="text-xs text-slate-500 mt-2">
-            Workflow: drag sliders → <b>Save JSON</b> → <b>Rebuild blob</b>
-            (calls Luxonis cloud blobconverter, ~30 s) → restart
-            <span class="mono">stable_bot.service</span> for the new blob
-            to load → <b>Push to GitHub</b> to keep the JSON history.
+            Workflow:<br>
+            1. Drag sliders.<br>
+            2. <b>Save JSON</b> — writes
+               <span class="mono">v0_weights.json</span> to disk.<br>
+            3. <b>Rebuild blob</b> — runs the build script, ~30 s
+               (cloud compile). Produces a fresh
+               <span class="mono">v0_320x180.blob</span>.<br>
+            4. Restart <span class="mono">stable_bot.service</span> on
+               the Pi (terminal:
+               <span class="mono">sudo systemctl restart stable_bot.service</span>)
+               so <span class="mono">oak_driver_node</span> loads the new
+               blob.<br>
+            5. Test in the live feed (emerald NN circle should track
+               the ball).<br>
+            6. <b>Push to GitHub</b> — commits all three artifacts
+               (JSON + .blob + .onnx) so this tuning session is
+               preserved in git history.<br>
             Build is torch-free; uses only <span class="mono">onnx</span> +
             <span class="mono">blobconverter</span> on the Pi.
           </div>
