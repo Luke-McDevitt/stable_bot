@@ -313,6 +313,11 @@
                     class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs">
               Save JSON
             </button>
+            <button id="nn-weights-rebuild"
+                    class="bg-amber-600 hover:bg-amber-500 rounded px-3 py-1 text-xs"
+                    title="Run build_v0_blob.py on the Pi: rebuild stewart_vision/blobs/v0_320x180.blob from the saved weights via the Luxonis cloud compiler. Takes ~30 s. Restart stable_bot.service afterwards for the new blob to load.">
+              Rebuild blob
+            </button>
             <button id="nn-weights-push"
                     class="bg-blue-600 hover:bg-blue-500 rounded px-3 py-1 text-xs">
               Push to GitHub
@@ -320,12 +325,12 @@
             <span id="nn-weights-status" class="text-xs text-slate-400 mono"></span>
           </div>
           <div class="text-xs text-slate-500 mt-2">
-            Sliders write to <span class="mono">stewart_vision/blobs/v0_weights.json</span>.
-            They take effect after rebuilding the blob:
-            <span class="mono">python3 stewart_vision/scripts/build_v0_blob.py</span>
-            on a dev machine with <span class="mono">torch</span> +
-            <span class="mono">blobconverter</span>, then commit the new
-            <span class="mono">.blob</span> and <span class="mono">pi_deploy.sh</span>.
+            Workflow: drag sliders → <b>Save JSON</b> → <b>Rebuild blob</b>
+            (calls Luxonis cloud blobconverter, ~30 s) → restart
+            <span class="mono">stable_bot.service</span> for the new blob
+            to load → <b>Push to GitHub</b> to keep the JSON history.
+            Build is torch-free; uses only <span class="mono">onnx</span> +
+            <span class="mono">blobconverter</span> on the Pi.
           </div>
         </details>
         <!-- Vision-debug bag recorder. Captures everything the
@@ -4203,10 +4208,12 @@ function initVisionGUI() {
       }
     })
     .catch(() => {});
-  const nnSave = $('nn-weights-save');
-  const nnPush = $('nn-weights-push');
-  if (nnSave) nnSave.addEventListener('click', nnWeightsSave);
-  if (nnPush) nnPush.addEventListener('click', nnWeightsPush);
+  const nnSave    = $('nn-weights-save');
+  const nnRebuild = $('nn-weights-rebuild');
+  const nnPush    = $('nn-weights-push');
+  if (nnSave)    nnSave.addEventListener('click',    nnWeightsSave);
+  if (nnRebuild) nnRebuild.addEventListener('click', nnWeightsRebuild);
+  if (nnPush)    nnPush.addEventListener('click',    nnWeightsPush);
 
   // --- HSV slider tuning + V0 debug overlay ---
   const HSV_IDS = [
@@ -6082,6 +6089,30 @@ async function nnWeightsPush() {
     const j = await r.json();
     _nnSetStatus(j.message || (j.ok ? 'pushed' : 'failed'), !!j.ok);
   } catch (e) { _nnSetStatus('push failed: ' + e, false); }
+}
+
+// Rebuild the .blob from the saved JSON. Runs build_v0_blob.py on
+// the Pi via gui_server. The script reads v0_weights.json, builds
+// the ONNX (no torch needed — onnx.helper only), and uploads it to
+// the Luxonis cloud blobconverter for the Myriad X compile. Takes
+// ~30 s end-to-end; afterwards the operator restarts stable_bot
+// for the new blob to load. /oak/config will report the new blob
+// timestamp once oak_driver_node restarts.
+async function nnWeightsRebuild() {
+  _nnSetStatus('rebuilding (~30 s, cloud compile)…', null);
+  try {
+    const r = await fetch('/v0/weights/rebuild', { method: 'POST' });
+    const j = await r.json();
+    _nnSetStatus(j.message || (j.ok ? 'blob rebuilt' : 'rebuild failed'),
+                 !!j.ok);
+    if (j.ok) {
+      // Helpful nudge: blob is on disk but oak_driver hasn't reloaded.
+      console.log('[nn-rebuild] success — restart stable_bot.service '
+                  + 'to load the new blob');
+    } else if (j.stderr) {
+      console.error('[nn-rebuild] stderr tail:\n' + j.stderr);
+    }
+  } catch (e) { _nnSetStatus('rebuild failed: ' + e, false); }
 }
 
 function onOakConfig(cfg) {

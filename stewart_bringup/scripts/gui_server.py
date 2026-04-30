@@ -1715,6 +1715,59 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(
                     {'ok': False, 'message': f'save failed: {e}'}, 500)
             return
+        if self.path == '/v0/weights/rebuild':
+            # Run stewart_vision/scripts/build_v0_blob.py on the Pi.
+            # The script reads stewart_vision/blobs/v0_weights.json
+            # (which the operator just saved via /v0/weights), builds
+            # the ONNX with onnx.helper, and uploads it to the Luxonis
+            # cloud blobconverter for the Myriad X compile. Result is
+            # the new stewart_vision/blobs/v0_320x180.blob, committed
+            # alongside the JSON. No torch dependency — onnx +
+            # blobconverter are tiny compared to PyTorch.
+            #
+            # Rebuilding takes ~30 s (most of it is the cloud round
+            # trip). The new blob is loaded by oak_driver_node only
+            # at startup, so for the change to take effect at the
+            # camera the operator must also restart stable_bot.service.
+            try:
+                repo = os.path.expanduser('~/stable_bot_repo')
+                script = os.path.join(
+                    repo, 'stewart_vision', 'scripts', 'build_v0_blob.py')
+                if not os.path.isfile(script):
+                    self._send_json({
+                        'ok': False,
+                        'message': f'build script missing: {script}',
+                    }, 500)
+                    return
+                r = subprocess.run(
+                    ['python3', script],
+                    capture_output=True, text=True,
+                    timeout=120, cwd=repo)
+                ok = (r.returncode == 0)
+                tail = (r.stdout or '').strip().split('\n')[-1] \
+                    if (r.stdout or '').strip() else ''
+                err = (r.stderr or '').strip()
+                msg = tail
+                if not ok:
+                    msg = f'build failed (exit {r.returncode}): ' + \
+                          (err.split(chr(10))[0] if err else 'no stderr')
+                self._send_json({
+                    'ok': ok,
+                    'message': msg,
+                    'stdout': (r.stdout or '')[-2000:],
+                    'stderr': err[-2000:],
+                }, status=200 if ok else 500)
+            except subprocess.TimeoutExpired:
+                self._send_json({
+                    'ok': False,
+                    'message': 'rebuild timed out (>120 s) — '
+                               'cloud blobconverter may be slow',
+                }, 500)
+            except Exception as e:
+                self._send_json(
+                    {'ok': False, 'message': f'rebuild failed: {e}'},
+                    500)
+            return
         if self.path == '/v0/weights/push':
             # git add + commit + push the weights JSON. Lets the
             # operator preserve a history of their tuning sessions
