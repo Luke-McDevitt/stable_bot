@@ -69,6 +69,21 @@ class RefGeneratorNode(Node):
         self.t0 = time.monotonic()
         self.path: Optional[Path] = None
 
+        # Waypoint-driven trajectory state. When BALL_TRACK_TRAJECTORY
+        # is started with mode='waypoint' (the default since 2026-04-30),
+        # the ref doesn't smoothly interpolate around the orbit at fixed
+        # angular speed — it sits on each precomputed orbit waypoint
+        # until the ball arrives within `arrival_tol_mm`, dwells for
+        # `dwell_s`, then advances to the next. This makes Demo 1 a
+        # tracking-error test instead of a chase test, and works at
+        # any control gain set instead of needing the loop tuned for
+        # the orbit's angular speed.
+        self._wp_list: list = []          # [(x_mm, y_mm), ...] CCW order
+        self._wp_idx: int = 0
+        self._wp_arrived_t: Optional[float] = None
+        self._wp_started_t: Optional[float] = None    # for max_wait timeout
+        self._wp_signature: tuple = ()    # (radius, dir, n) — rebuild if changed
+
         # Ball-config state (spec v9 §9, Q47). Default to foam until the
         # GUI publishes its first ball_config: payload. The actual control
         # feedforward lives in stewart_control_node (stewart_bringup); we
@@ -194,13 +209,84 @@ class RefGeneratorNode(Node):
             return x, y
         if self.mode == 'BALL_TRACK_TRAJECTORY':
             R = float(self.params.get('radius_mm', 80.0))
-            T = float(self.params.get('period_s', 4.0))
             direction = 1.0 if self.params.get('dir', 'CCW').upper() == 'CCW' \
                 else -1.0
+            traj_mode = str(self.params.get('mode', 'waypoint')).lower()
+
+            if traj_mode == 'continuous':
+                # Original time-parameterized smooth orbit. Kept for
+                # the rare case where you actually want to test phase
+                # lag at high orbital speed.
+                T = float(self.params.get('period_s', 12.0))
+                phase = float(self.params.get('phase_rad', 0.0))
+                t = time.monotonic() - self.t0
+                theta = direction * 2.0 * math.pi * t / T + phase
+                return R * math.cos(theta), R * math.sin(theta)
+
+            # Waypoint-driven orbit (default). The ref sits on each
+            # waypoint until the ball arrives within tolerance, dwells
+            # briefly, then advances. Per-waypoint timeout prevents a
+            # stuck ball from locking the demo forever.
+            n_wp = max(3, int(self.params.get('n_waypoints', 12)))
+            tol_mm = float(self.params.get('arrival_tol_mm', 20.0))
+            dwell_s = float(self.params.get('dwell_s', 0.3))
+            max_wait_s = float(self.params.get('max_wait_s', 8.0))
             phase = float(self.params.get('phase_rad', 0.0))
-            t = time.monotonic() - self.t0
-            theta = direction * 2.0 * math.pi * t / T + phase
-            return R * math.cos(theta), R * math.sin(theta)
+
+            sig = (R, direction, n_wp, phase)
+            if sig != self._wp_signature or not self._wp_list:
+                # Rebuild the waypoint list. Always CCW in math; the
+                # `direction` flag controls iteration order.
+                pts = []
+                for i in range(n_wp):
+                    theta = phase + 2.0 * math.pi * i / n_wp
+                    pts.append((R * math.cos(theta),
+                                R * math.sin(theta)))
+                if direction < 0:
+                    pts = [pts[0]] + list(reversed(pts[1:]))
+                self._wp_list = pts
+                self._wp_idx = 0
+                self._wp_arrived_t = None
+                self._wp_started_t = time.monotonic()
+                self._wp_signature = sig
+
+            now = time.monotonic()
+            if self._wp_started_t is None:
+                self._wp_started_t = now
+            wp = self._wp_list[self._wp_idx]
+
+            if self.last_state is not None:
+                p = self.last_state.pose.position
+                dist = math.hypot(p.x - wp[0], p.y - wp[1])
+                if dist < tol_mm:
+                    if self._wp_arrived_t is None:
+                        self._wp_arrived_t = now
+                    elif (now - self._wp_arrived_t) >= dwell_s:
+                        # Advance.
+                        self._wp_idx = (self._wp_idx + 1) % n_wp
+                        self._wp_arrived_t = None
+                        self._wp_started_t = now
+                        wp = self._wp_list[self._wp_idx]
+                else:
+                    # Ball drifted out of tolerance; reset arrival
+                    # timer so we don't advance prematurely.
+                    self._wp_arrived_t = None
+
+            # Per-waypoint timeout. If the ball can't reach the
+            # current waypoint within max_wait_s, log and advance —
+            # better to keep the orbit moving than have the demo
+            # silently lock up on a stuck ball.
+            if (self._wp_started_t is not None
+                    and (now - self._wp_started_t) > max_wait_s):
+                self.get_logger().warn(
+                    f"orbit waypoint {self._wp_idx} ({wp[0]:.0f}, {wp[1]:.0f}) "
+                    f"timeout after {max_wait_s:.1f}s — advancing")
+                self._wp_idx = (self._wp_idx + 1) % n_wp
+                self._wp_arrived_t = None
+                self._wp_started_t = now
+                wp = self._wp_list[self._wp_idx]
+
+            return wp[0], wp[1]
         if self.mode == 'BALL_HOLD':
             # Active stabilization: hold at the captured target. The
             # base-IMU feedforward layer that makes this useful lives

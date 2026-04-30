@@ -385,23 +385,40 @@
           <input id="d1-radius" type="number" min="35" max="195" step="5" value="80"
                  class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
         </label>
-        <!-- Period bumped 4 → 12 s default so the orbit reference
-             moves slow enough for the closed-loop tilt response to
-             physically push the ball around. Vision arrives at ~14 Hz
-             (~70 ms cadence); a 4 s period was advancing the
-             reference ~9 mm per vision sample, faster than tilt-
-             induced ball motion can track. 12 s is conservative for
-             initial tuning — once gains are dialed in, drop the
-             period. Min raised 1 → 4 s for the same reason. -->
-        <label>Period (s)
-          <input id="d1-period" type="number" min="4" max="30" step="1" value="12"
+        <label>N waypoints
+          <input id="d1-n-waypoints" type="number" min="3" max="48" step="1" value="12"
                  class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
         </label>
-        <label class="col-span-2">Direction
+        <label>Arrival tol (mm)
+          <input id="d1-arrival-tol" type="number" min="5" max="60" step="1" value="20"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>Dwell (s)
+          <input id="d1-dwell" type="number" min="0" max="3" step="0.1" value="0.3"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>Max wait/wp (s)
+          <input id="d1-max-wait" type="number" min="2" max="60" step="1" value="8"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label>Direction
           <select id="d1-dir" class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
             <option value="CCW">CCW</option>
             <option value="CW">CW</option>
           </select>
+        </label>
+        <!-- Period field retained for the legacy 'continuous' orbit
+             mode (rare — only used when explicitly checked below).
+             Default mode is now 'waypoint': advance only when the
+             ball arrives within `arrival tol` and dwells for
+             `dwell`. Per-waypoint timeout caps how long the demo
+             will wait for a stuck ball before advancing. -->
+        <label>Period (s) <span class="text-slate-500">(continuous-mode only)</span>
+          <input id="d1-period" type="number" min="4" max="30" step="1" value="12"
+                 class="mono w-full bg-slate-900 border border-slate-700 rounded px-2 py-1">
+        </label>
+        <label class="col-span-2 flex items-center gap-2 text-slate-400">
+          <input id="d1-continuous" type="checkbox"> continuous orbit (legacy time-parameterized mode)
         </label>
         <label class="col-span-2 flex items-center gap-2 text-slate-400">
           <input id="d1-rec-images" type="checkbox"> record images in bag (large; off for routine runs)
@@ -5364,12 +5381,18 @@ function startDemo1() {
   if (!_ensureArmed('d1', 'Demo 1 (Orbit)')) return;
   maybeRecordImages('d1');
   publishBallConfig();   // ensure ball type is in the bag at run start
+  const continuous = !!($('d1-continuous') && $('d1-continuous').checked);
   const params = {
-    radius_mm: parseFloat($('d1-radius').value),
-    period_s:  parseFloat($('d1-period').value),
-    dir:       $('d1-dir').value,
-    phase_rad: 0,
-    ball:      currentBallConfig(),   // also embedded for direct readout
+    radius_mm:      parseFloat($('d1-radius').value),
+    dir:            $('d1-dir').value,
+    phase_rad:      0,
+    mode:           continuous ? 'continuous' : 'waypoint',
+    period_s:       parseFloat($('d1-period').value),
+    n_waypoints:    parseInt($('d1-n-waypoints').value || '12', 10),
+    arrival_tol_mm: parseFloat($('d1-arrival-tol').value || '20'),
+    dwell_s:        parseFloat($('d1-dwell').value || '0.3'),
+    max_wait_s:     parseFloat($('d1-max-wait').value || '8'),
+    ball:           currentBallConfig(),
   };
   publishCmdRaw('mode:BALL_TRACK_TRAJECTORY ' + JSON.stringify(params));
   setActiveDemo(1);
