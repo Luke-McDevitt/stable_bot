@@ -46,6 +46,11 @@
     "control_latency_s": 0.1,
     "algorithm": "pid"
   },
+  "next_step": {
+    "suggestion": "no recommendation (non-goto demo or insufficient data)",
+    "suggested_gains": {},
+    "rationale": []
+  },
   "ball_state_n": 870,
   "ball_ref_n": 568,
   "mono_n": 662,
