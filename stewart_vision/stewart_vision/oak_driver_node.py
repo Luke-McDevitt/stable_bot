@@ -628,7 +628,8 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
                     v0_blob_path: Optional[str] = None,
                     v1_blob_path: Optional[str] = None,
                     enable_mono: bool = True,
-                    enable_jpeg: bool = True):
+                    enable_jpeg: bool = True,
+                    jpeg_fps: int = 10):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
     Two configurations, selected by `enable_depth`:
@@ -801,7 +802,35 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
         enc_rgb.input.setQueueSize(1)
         enc_rgb.input.setBlocking(False)
         enc_rgb.setNumFramesPool(2)
-        cam_rgb.video.link(enc_rgb.input)
+        # JPEG throttle via Script node — runs Python on the OAK to
+        # forward only every Nth frame to the encoder. At cam_rgb's
+        # 60 fps source rate, the encoder ate Myriad X cycles roughly
+        # equivalent to a second NN node and capped V1 YOLO at ~22 Hz
+        # (vs the standalone benchmark's 60 Hz). Throttling JPEG to
+        # 10 Hz frees the budget — V1 stays at 60 Hz, GUI live preview
+        # is still smooth, and platform_pose's ArUco solve gets
+        # plenty of frames at 10 Hz. Set jpeg_fps=0 to disable
+        # throttle (forwards every frame, original 60 Hz behavior).
+        if jpeg_fps > 0 and jpeg_fps < rgb_fps:
+            script = pipeline.create(dai.node.Script)
+            period_s = 1.0 / float(jpeg_fps)
+            script.setScript(f"""
+import time
+last = 0.0
+period = {period_s}
+while True:
+    msg = node.io['rgb_in'].get()
+    now = time.monotonic()
+    if now - last >= period:
+        node.io['rgb_out'].send(msg)
+        last = now
+""")
+            script.inputs['rgb_in'].setBlocking(False)
+            script.inputs['rgb_in'].setQueueSize(1)
+            cam_rgb.video.link(script.inputs['rgb_in'])
+            script.outputs['rgb_out'].link(enc_rgb.input)
+        else:
+            cam_rgb.video.link(enc_rgb.input)
 
     # Outputs
     def add_out(name, src):
@@ -1195,18 +1224,32 @@ class OakDriverNode(Node):
             os.environ.get('OAK_ENABLE_MONO', '1') == '1')
         self._enable_jpeg = (
             os.environ.get('OAK_DISABLE_JPEG', '0') != '1')
+        # JPEG encoder throttle — N fps. 0 = unthrottled (original
+        # behavior). 10 fps is plenty for GUI live preview AND for
+        # platform_pose's ArUco solve (the bottleneck for ArUco isn't
+        # frame rate — a stable pose at 5-10 Hz is fine).
+        try:
+            self._jpeg_fps = max(0, min(60,
+                int(os.environ.get('OAK_JPEG_FPS', '10'))))
+        except Exception:
+            self._jpeg_fps = 10
         if not self._enable_mono:
             self.get_logger().info(
                 "Mono camera disabled via OAK_ENABLE_MONO=0")
         if not self._enable_jpeg:
             self.get_logger().info(
                 "MJPEG encoder disabled via OAK_DISABLE_JPEG=1")
+        elif self._jpeg_fps > 0 and self._jpeg_fps < rgb_fps:
+            self.get_logger().info(
+                f"MJPEG encoder throttled to {self._jpeg_fps} fps via "
+                f"Script node (cam_rgb stays at {rgb_fps} fps for V1 NN)")
         pipeline = _build_pipeline(rgb_fps=rgb_fps, mono_fps=mono_fps,
                                    enable_depth=self.enable_depth,
                                    v0_blob_path=self._v0_blob_path,
                                    v1_blob_path=self._v1_blob_path,
                                    enable_mono=self._enable_mono,
-                                   enable_jpeg=self._enable_jpeg)
+                                   enable_jpeg=self._enable_jpeg,
+                                   jpeg_fps=self._jpeg_fps)
 
         # USB speed cap. The Pi 5 caps total USB current at 600 mA
         # by default (raise to 1.2 A with `usb_max_current_enable=1`
@@ -1761,7 +1804,8 @@ class OakDriverNode(Node):
                 v0_blob_path=self._v0_blob_path,
                 v1_blob_path=self._v1_blob_path,
                 enable_mono=self._enable_mono,
-                enable_jpeg=self._enable_jpeg)
+                enable_jpeg=self._enable_jpeg,
+                jpeg_fps=self._jpeg_fps)
             usb_speed_env = os.environ.get('OAK_USB_SPEED', 'high').lower()
             usb_speed_map = {
                 'high': dai.UsbSpeed.HIGH,

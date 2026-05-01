@@ -26,12 +26,21 @@ Environment=OAK_ENABLE_DEPTH=0
 # Myriad X SHAVE budget. V0.5c was a dead end (NaN output, wrong
 # detection ceiling); kept in code for git-history fallback only.
 Environment=OAK_DISABLE_V0_NN=1
-# Strip pipeline elements that compete with the V1 NN for Myriad X
-# cycles. ArUco runs on RGB now (mono unused). The MJPEG encoder is
-# only used by the GUI live feed — disable for max V1 rate, re-enable
-# (Environment=OAK_DISABLE_JPEG=0) when you want the live feed back.
+# Pipeline performance knobs.
+#   OAK_ENABLE_MONO=0  — mono unused (ArUco runs on RGB), saves USB.
+#   OAK_DISABLE_JPEG=0 — keep JPEG ON; the encoder ate Myriad X
+#                        cycles at 60 fps (capped V1 YOLO at 22 Hz)
+#                        but we now throttle it via a Script node.
+#   OAK_JPEG_FPS=10    — Script-node throttle: cam_rgb runs at 60 fps
+#                        for V1 NN, but only every 6th frame reaches
+#                        the encoder. JPEG-via-encoder Myriad X cost
+#                        drops 6×, V1 YOLO holds at 60 Hz, GUI live
+#                        preview + platform_pose still get a useful
+#                        10 fps stream. Set to 0 to disable throttle
+#                        (full 60 fps JPEG, V1 drops to ~22 Hz).
 Environment=OAK_ENABLE_MONO=0
 Environment=OAK_DISABLE_JPEG=0
+Environment=OAK_JPEG_FPS=10
 # Mono FPS stays at 15 (default). 2026-05-01: tried OAK_MONO_FPS=60
 # to test the hypothesis that mono rate gates RGB; at 60 fps mono,
 # platform_pose_node's ArUco solve was dropping out (pose=0 in
