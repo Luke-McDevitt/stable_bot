@@ -380,3 +380,34 @@ fitness curve PNG let them inspect what the algorithm explored.
   sufficient light but blooms the ball center.
 
 Onward.
+
+---
+
+## 2026-05-01: STEP_ID + Demo 2 push
+
+The auto-tuner mentioned at end-of-2026-04-30 turned out to be
+unworkable (random-target picker produced fitness noise larger
+than gain effect, 27 trials with 0 acceptances). Replaced with
+**STEP_ID** — an analytic-gains approach: open-loop tilt-step
+trial measures the cascaded plant gain G_eff, then Kp/Kd are
+computed from `ωn²/G` and `2ζωn/G` with ωn chosen from observed
+dead-time. Closed-loop verification via 4 marker-pair goto trials.
+
+The full architecture, tuning methodology, lessons from six
+sessions of plant-ID variability, the cascade-bypass decision,
+the velocity-sanity-gate, the stiction-relief PID branch, the
+two-tilt-thresholds insight (`max_tilt = max(θ_s + 2.5, 8)`),
+and what worked vs what didn't — all in
+**`step_id_tuning_lessons.md`**. Read that doc for any future
+work on the BALL_TRACK PID, plant-ID code, or anything that
+subscribes to `/ball_state` for control.
+
+Top-level outcome: the controller infrastructure (PID with
+stiction relief + velocity gate + lookahead, level-PI bypass,
+analytic-gains recommendation engine, per-phase STEP_ID GUI,
+inter-trial pose cleanup) is mature. The remaining limit on
+Demo 2 reliability is hardware-physical: vision noise during
+fast ball motion drives 30–50% CV in plant-ID across replicates
+on this OAK / cv2 / lighting combo. YOLO v8 was tried as an
+alternative detector and proved worse for fast motion despite
+better stationary-frame benchmarks.
