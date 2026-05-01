@@ -2875,6 +2875,8 @@ class AutoTuneNode(Node):
                 'kp': float(current_gains.get('kp', 0.015)),
                 'kd': float(current_gains.get('kd', 0.03)),
                 'ki': float(current_gains.get('ki', 0.001)),
+                'max_tilt_deg':
+                    float(current_gains.get('max_tilt_deg', 2.5)),
                 'omega_n_rad_s': float(STEP_ID_FALLBACK_OMEGA_N),
                 'zeta': float(STEP_ID_TARGET_ZETA),
                 'g_eff_used': float(g_eff_mm_s2_per_deg),
@@ -2897,10 +2899,20 @@ class AutoTuneNode(Node):
         # for friction/stiction, not bandwidth shaping). Operator can
         # tune it separately if needed.
         ki = float(current_gains.get('ki', 0.001))
+        # Recommended max_tilt: Kp × 60 mm gives the linear-range authority
+        # for a 60 mm error (mid-range adjacent-marker step). Below this,
+        # the controller saturates immediately and runs effectively bang-
+        # bang. Capped at 8° for safety, with a 2.5° floor so we never
+        # recommend less than current. Per operator observation
+        # 2026-05-01: prior session's recommended Kp=0.077 saturated the
+        # default max_tilt=2.5° at any error > 32 mm, producing orbital
+        # ball motion in all 4 verification trials.
+        max_tilt_deg_rec = max(2.5, min(8.0, kp * 60.0))
         return {
             'kp': float(kp),
             'kd': float(kd),
             'ki': ki,
+            'max_tilt_deg': float(max_tilt_deg_rec),
             'omega_n_rad_s': float(omega_n),
             'zeta': float(zeta),
             'g_eff_used': float(g_eff_mm_s2_per_deg),

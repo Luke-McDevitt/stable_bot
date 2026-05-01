@@ -1598,11 +1598,6 @@
                 title="After placing the ball on the prompted marker, click here to continue.">
           ✓ Ball is on marker
         </button>
-        <button id="stepid-promote-btn"
-                class="bg-sky-600 hover:bg-sky-500 rounded px-3 py-1 text-xs hidden"
-                title="Apply the analytically-computed gains. Writes ball_track_gains.yaml and reloads in-memory.">
-          Promote recommended
-        </button>
         <label class="flex items-center gap-1 text-xs text-slate-400 ml-auto"
                title="Platform Z height used for the open-loop tilt-step trial and inter-trial pose resets. Default 80 mm: empirically the legs hold their position tightly enough that disarm sag is minimal here. Lower Z (30-50 mm) is stiffer for closed-loop control but produces larger disarm sag.">
           <span>start Z</span>
@@ -1630,10 +1625,62 @@
         <div>verification trial: <span id="stepid-vtrial" class="mono text-slate-200">—</span></div>
         <div>G_eff (mm/s²/°): <span id="stepid-geff" class="mono text-emerald-400">—</span></div>
       </div>
-      <div class="text-xs text-slate-500 mb-1">recommended gains:</div>
-      <pre id="stepid-recommended"
-           class="text-xs mono bg-slate-900 rounded px-2 py-1 text-emerald-300 overflow-auto"
-           style="max-height:120px">—</pre>
+      <!-- Recommended-gains editor. Auto-fills from the analytic
+           recommendation when STEP_ID computes one; operator can
+           tweak before applying. Apply writes to ball_track_gains.yaml
+           via /control_cmd ball_track_save_gains and the BALL_TRACK
+           loop reloads in-memory within ~20 ms (same handshake the
+           main "Gains & Control Parameters" panel uses). -->
+      <div class="text-xs text-slate-500 mb-1 flex justify-between items-center">
+        <span>Recommended gains (editable):</span>
+        <span id="stepid-recommended-source"
+              class="text-slate-600 mono"></span>
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-xs mono">
+        <label class="flex flex-col">
+          <span class="text-slate-400">Kp [deg/mm]</span>
+          <input id="stepid-edit-kp" type="number"
+                 step="0.001" min="0" max="1" value="0.015"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+        </label>
+        <label class="flex flex-col">
+          <span class="text-slate-400">Kd [deg·s/mm]</span>
+          <input id="stepid-edit-kd" type="number"
+                 step="0.001" min="0" max="0.5" value="0.030"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+        </label>
+        <label class="flex flex-col">
+          <span class="text-slate-400">Ki [deg/(mm·s)]</span>
+          <input id="stepid-edit-ki" type="number"
+                 step="0.0005" min="0" max="0.5" value="0.001"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+        </label>
+        <label class="flex flex-col"
+               title="Hard cap on commanded tilt magnitude. Below this, controller is saturated → bang-bang behaviour, large overshoot. Recommended value scales with Kp so a typical step doesn't saturate immediately.">
+          <span class="text-slate-400">max tilt [deg]</span>
+          <input id="stepid-edit-max-tilt" type="number"
+                 step="0.5" min="0.5" max="15" value="2.5"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+        </label>
+      </div>
+      <div class="flex items-center gap-2 mt-2 flex-wrap">
+        <button id="stepid-apply-btn"
+                class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs"
+                title="Write the four values above to ball_track_gains.yaml and reload the live BALL_TRACK loop. Uses the same ball_track_save_gains handshake as the main Gains panel.">
+          ✓ Apply (save + reload)
+        </button>
+        <button id="stepid-reset-btn"
+                class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-xs"
+                title="Re-populate the four inputs from the most recent STEP_ID recommendation, discarding any local edits.">
+          ↺ Reset to recommendation
+        </button>
+        <button id="stepid-load-current-btn"
+                class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-xs"
+                title="Re-populate the four inputs from /status's currently-active gains. Useful when you want to start tweaking from the live values rather than the recommendation.">
+          ↧ Load current
+        </button>
+        <span id="stepid-apply-msg" class="text-xs text-slate-400 mono"></span>
+      </div>
       <details class="border-t border-slate-700 pt-3 mt-3"
                id="stepid-bags-details">
         <summary class="cursor-pointer text-xs uppercase text-slate-400">
@@ -4693,7 +4740,9 @@ function initVisionGUI() {
   const stepidStartBtn = $('stepid-start-btn');
   const stepidStopBtn = $('stepid-stop-btn');
   const stepidConfirmBtn = $('stepid-confirm-btn');
-  const stepidPromoteBtn = $('stepid-promote-btn');
+  const stepidApplyBtn = $('stepid-apply-btn');
+  const stepidResetBtn = $('stepid-reset-btn');
+  const stepidLoadCurrentBtn = $('stepid-load-current-btn');
   const stepidStartZInput = $('stepid-start-z');
   const stepidTiltMagInput = $('stepid-tilt-mag');
   // Publish start-Z on every change so the node's stored value
@@ -4757,27 +4806,66 @@ function initVisionGUI() {
       () => {},
       () => {});
   });
-  if (stepidPromoteBtn) stepidPromoteBtn.addEventListener('click', () => {
-    if (!_stepIdLastRecommended) return;
-    // Reuse the existing ball_track_save_gains handshake. Build a
-    // payload that merges the recommended kp/kd/ki onto the current
-    // gains so the controller's other knobs (max_tilt, signs, FSM
-    // thresholds) stay intact.
-    const payload = {};
-    Object.assign(payload, _stepIdLastRecommended);
-    const promptEl = document.getElementById('stepid-prompt');
-    if (!topic.control_cmd) {
-      if (promptEl) promptEl.innerText = 'control_cmd topic missing';
+  // Apply: read the four input fields, send them via the existing
+  // ball_track_save_gains handshake. Same path the main "Gains &
+  // Control Parameters" panel uses, so the BALL_TRACK loop reloads
+  // in-memory within ~20 ms.
+  function _stepIdApplyMsg(text, ok) {
+    const el = document.getElementById('stepid-apply-msg');
+    if (!el) return;
+    el.innerText = text;
+    el.className = 'text-xs mono ' + (
+      ok === true  ? 'text-emerald-400'
+      : ok === false ? 'text-rose-400'
+      :                'text-slate-400');
+  }
+  if (stepidApplyBtn) stepidApplyBtn.addEventListener('click', () => {
+    const kp = parseFloat($('stepid-edit-kp').value);
+    const kd = parseFloat($('stepid-edit-kd').value);
+    const ki = parseFloat($('stepid-edit-ki').value);
+    const max_tilt_deg = parseFloat($('stepid-edit-max-tilt').value);
+    if (![kp, kd, ki, max_tilt_deg].every(Number.isFinite)) {
+      _stepIdApplyMsg('invalid input', false);
       return;
     }
+    if (!topic.control_cmd) {
+      _stepIdApplyMsg('control_cmd topic missing', false);
+      return;
+    }
+    const payload = {kp, kd, ki, max_tilt_deg};
     try {
       topic.control_cmd.publish(new ROSLIB.Message({
         data: 'ball_track_save_gains:' + JSON.stringify(payload) }));
-      if (promptEl) promptEl.innerText =
-        'recommended gains promoted (ball_track_save_gains).';
+      _stepIdApplyMsg(
+        `applied: kp=${kp} kd=${kd} ki=${ki} max_tilt=${max_tilt_deg}°`,
+        true);
     } catch (e) {
-      if (promptEl) promptEl.innerText = 'promote failed: ' + e;
+      _stepIdApplyMsg('apply failed: ' + e, false);
     }
+  });
+  // Reset: re-populate inputs from the latest STEP_ID recommendation
+  // (overrides any local edits the operator made).
+  if (stepidResetBtn) stepidResetBtn.addEventListener('click', () => {
+    if (!_stepIdLastRecommended) {
+      _stepIdApplyMsg('no recommendation yet — run STEP_ID first',
+                      false);
+      return;
+    }
+    _stepIdSetEditFields(_stepIdLastRecommended);
+    _stepIdApplyMsg('reset to recommendation', null);
+  });
+  // Load current: re-populate inputs from /status's currently-active
+  // gains. Useful for tweaking from the live values rather than
+  // starting from the analytic recommendation.
+  if (stepidLoadCurrentBtn) stepidLoadCurrentBtn.addEventListener(
+      'click', () => {
+    const live = window._lastBallTrackGainsFromStatus;
+    if (!live) {
+      _stepIdApplyMsg('no /status snapshot yet', false);
+      return;
+    }
+    _stepIdSetEditFields(live);
+    _stepIdApplyMsg('loaded current gains from /status', null);
   });
   const stepidBagsRefresh = $('stepid-bags-refresh');
   if (stepidBagsRefresh) {
@@ -5966,6 +6054,11 @@ function setBtGainsStatus(msg, classes) {
 function syncBtGainsFromStatus(s) {
   if (s && s.ball_track_gains) {
     populateBtGainInputs(s.ball_track_gains);
+    // Stash the latest live gains for the STEP_ID panel's "Load
+    // current" button — lets the operator pre-populate the editable
+    // inputs from what's actually running, rather than from the
+    // analytic recommendation.
+    window._lastBallTrackGainsFromStatus = s.ball_track_gains;
   }
 }
 
@@ -6710,6 +6803,27 @@ function onAutotuneTrial(t) {
 // start with 'step_id_'; the handler is a no-op for other states so
 // running Twiddle doesn't clobber the STEP_ID panel and vice versa.
 let _stepIdLastRecommended = null;
+// Track whether we've auto-populated the editable inputs from the
+// latest recommendation. Reset on session start so the next session's
+// recommendation auto-fills again. Within a session the operator's
+// edits persist (never auto-overwritten) until they click Reset.
+let _stepIdRecommendationAutoApplied = false;
+
+function _stepIdSetEditFields(g) {
+  if (!g) return;
+  const setVal = (id, val, decimals) => {
+    const el = document.getElementById(id);
+    if (el && val != null && isFinite(val)) {
+      el.value = Number(val).toFixed(decimals);
+    }
+  };
+  if (g.kp != null) setVal('stepid-edit-kp', g.kp, 4);
+  if (g.kd != null) setVal('stepid-edit-kd', g.kd, 4);
+  if (g.ki != null) setVal('stepid-edit-ki', g.ki, 4);
+  if (g.max_tilt_deg != null)
+    setVal('stepid-edit-max-tilt', g.max_tilt_deg, 1);
+}
+
 function onStepIdStatus(s) {
   if (!s) return;
   const isStepId = typeof s.state === 'string'
@@ -6736,7 +6850,6 @@ function onStepIdStatus(s) {
       crashed: 'bg-rose-600 text-white',
     };
     let cls = colors[short] || 'bg-slate-700 text-slate-300';
-    // Verification trial states (step_id_verification_trial_N)
     if (short.startsWith('verification_trial')) {
       cls = colors.verification;
     }
@@ -6758,16 +6871,31 @@ function onStepIdStatus(s) {
   set('stepid-geff',
       s.g_eff_mm_s2_per_deg != null
         ? Number(s.g_eff_mm_s2_per_deg).toFixed(1) : '—');
-  // Recommended gains
-  const recEl = document.getElementById('stepid-recommended');
-  if (recEl) {
-    if (s.recommended_gains && s.recommended_gains.kp != null) {
-      const r = s.recommended_gains;
-      const lines = Object.entries(r)
-        .filter(([k, v]) => typeof v === 'number')
-        .map(([k, v]) => `${k.padEnd(18)}: ${Number(v).toFixed(4)}`);
-      recEl.innerText = lines.join('\n');
-      _stepIdLastRecommended = r;
+  // Reset the auto-populate flag at session start so the next
+  // recommendation refills the editable fields. Within a session the
+  // recommendation only auto-populates ONCE — operator edits persist.
+  if (s.state === 'step_id_starting'
+      || s.state === 'step_id_detecting_marker') {
+    _stepIdRecommendationAutoApplied = false;
+  }
+  // Auto-populate editable gain fields when the recommendation first
+  // arrives. Don't overwrite later — operator edits are sticky until
+  // Reset. Keep the latest recommendation around for the Reset button.
+  if (s.recommended_gains && s.recommended_gains.kp != null) {
+    _stepIdLastRecommended = s.recommended_gains;
+    if (!_stepIdRecommendationAutoApplied) {
+      _stepIdSetEditFields(s.recommended_gains);
+      _stepIdRecommendationAutoApplied = true;
+    }
+    // Source label below the panel header
+    const srcEl = document.getElementById('stepid-recommended-source');
+    if (srcEl) {
+      const omega = s.recommended_gains.omega_n_rad_s
+                    || (s.recommended_gains.omega_n_rad_s);
+      srcEl.innerText = (omega != null
+        ? `(rec: ωn=${Number(omega).toFixed(2)}, G_eff=${
+            Number(s.g_eff_mm_s2_per_deg || 0).toFixed(0)})`
+        : '(populated from recommendation)');
     }
   }
   // Show/hide the operator-confirm button
@@ -6777,18 +6905,6 @@ function onStepIdStatus(s) {
       confirmBtn.classList.remove('hidden');
     } else {
       confirmBtn.classList.add('hidden');
-    }
-  }
-  // Show/hide the promote button
-  const promoteBtn = document.getElementById('stepid-promote-btn');
-  if (promoteBtn) {
-    if (_stepIdLastRecommended
-        && (s.state === 'step_id_recommendation_ready'
-            || s.state === 'step_id_done')) {
-      promoteBtn.classList.remove('hidden');
-    } else if (s.state === 'step_id_starting'
-               || s.state === 'step_id_detecting_marker') {
-      promoteBtn.classList.add('hidden');
     }
   }
 }
