@@ -5,6 +5,6 @@
   "bias": -0.7,
   "score_floor": 0.11,
   "density_floor": 0.1,
-  "nn_conf_min": 0.001,
-  "saved_at_utc": "2026-05-01T01:55:39Z"
+  "nn_conf_min": 0.00445,
+  "saved_at_utc": "2026-05-01T01:55:59Z"
 }
