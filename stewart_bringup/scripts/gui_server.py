@@ -267,6 +267,75 @@ def _list_iva_bags():
     return out
 
 
+def _list_auto_tune_sessions():
+    """Enumerate auto_tune sessions under tuning_data/. Mirrors
+    _list_iva_bags' shape so the GUI can reuse the same render
+    pattern: one row per session with Digest / Push / Delete
+    actions + an inline summary of best fitness."""
+    root = _iva_bags_root()
+    out = []
+    if not os.path.isdir(root):
+        return out
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return out
+    for name in entries:
+        if not name.startswith('auto_tune_'):
+            continue
+        full = os.path.join(root, name)
+        if not os.path.isdir(full):
+            continue
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        png = os.path.join(full, 'fitness_curve.png')
+        summary = os.path.join(full, 'summary.json')
+        digest_summary = os.path.join(full, 'digest.summary.json')
+        log = os.path.join(full, 'log.jsonl')
+        bag = os.path.join(full, 'bag')
+        entry = {
+            'name': name,
+            'path': full,
+            'mtime': st.st_mtime,
+            'size_bytes': _iva_dir_size(full),
+            'has_png': os.path.isfile(png),
+            'has_summary': os.path.isfile(summary),
+            'has_digest': os.path.isfile(digest_summary),
+            'has_bag': os.path.isdir(bag),
+            'has_log': os.path.isfile(log),
+        }
+        # Inline best-fitness so the list shows it without a click.
+        if os.path.isfile(summary):
+            try:
+                with open(summary) as f:
+                    sd = json.load(f) or {}
+                entry['n_trials'] = sd.get('n_trials')
+                entry['best_fitness'] = sd.get('best_fitness')
+                entry['elapsed_s'] = sd.get('elapsed_s')
+            except Exception:
+                pass
+        out.append(entry)
+    out.sort(key=lambda e: e['mtime'], reverse=True)
+    return out
+
+
+def _resolve_auto_tune_session(name):
+    """Path-traversal guard for auto_tune session names."""
+    if not name or '/' in name or name in ('.', '..'):
+        return None
+    if not name.startswith('auto_tune_'):
+        return None
+    root = os.path.realpath(_iva_bags_root())
+    full = os.path.realpath(os.path.join(root, name))
+    if not full.startswith(root + os.sep) and full != root:
+        return None
+    if not os.path.isdir(full):
+        return None
+    return full
+
+
 def _resolve_iva_bag_path(name):
     """Path-traversal guard. Resolves a basename under the IVA root."""
     if not name or '/' in name or name in ('.', '..'):
@@ -1398,6 +1467,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({'iva_dir': _iva_bags_root(),
                              'entries': _list_iva_bags()})
             return
+        if self.path == '/auto_tune/bags':
+            self._send_json({'tuning_dir': _iva_bags_root(),
+                             'entries': _list_auto_tune_sessions()})
+            return
+        if self.path.startswith('/auto_tune/bags/png'):
+            # /auto_tune/bags/png?name=<session>  →  fitness_curve.png
+            from urllib.parse import urlsplit, parse_qs
+            q = parse_qs(urlsplit(self.path).query)
+            name = (q.get('name') or [''])[0]
+            full = _resolve_auto_tune_session(name)
+            if not full:
+                self._send_json({'error': 'session not found'}, 404)
+                return
+            png = os.path.join(full, 'fitness_curve.png')
+            if not os.path.isfile(png):
+                self._send_json(
+                    {'error': 'no fitness_curve.png — run digest first'},
+                    404)
+                return
+            try:
+                with open(png, 'rb') as f:
+                    data = f.read()
+            except OSError as e:
+                self._send_json({'error': str(e)}, 500)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path == '/iva/alignment':
             # Live ArUco→IMU alignment, read directly from the active
             # config file. The GUI uses this to invert the rotation so
@@ -1860,7 +1961,145 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(
                     {'ok': False, 'message': f'push failed: {e}'}, 500)
             return
-        # ----- Auto-tune session endpoints -----
+        # ----- Auto-tune per-session endpoints (IVA-style) -----
+        if self.path == '/auto_tune/bags/digest':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+            except Exception:
+                self._send_json({'ok': False,
+                                 'message': 'bad JSON'}, 400)
+                return
+            name = body.get('name', '').strip()
+            full = _resolve_auto_tune_session(name)
+            if not full:
+                self._send_json(
+                    {'ok': False,
+                     'message': f'session not found: {name!r}'}, 404)
+                return
+            try:
+                script = os.path.expanduser(
+                    '~/stable_bot_repo/stewart_bringup/scripts/'
+                    'digest_auto_tune_bag.py')
+                r = subprocess.run(
+                    ['python3', script, full],
+                    capture_output=True, text=True, timeout=30)
+                ok = (r.returncode == 0)
+                self._send_json({
+                    'ok': ok,
+                    'message': (r.stdout or r.stderr).strip(),
+                }, status=200 if ok else 500)
+            except Exception as e:
+                self._send_json(
+                    {'ok': False, 'message': f'digest failed: {e}'},
+                    500)
+            return
+        if self.path == '/auto_tune/bags/delete':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+            except Exception:
+                self._send_json({'ok': False,
+                                 'message': 'bad JSON'}, 400)
+                return
+            name = body.get('name', '').strip()
+            full = _resolve_auto_tune_session(name)
+            if not full:
+                self._send_json(
+                    {'ok': False,
+                     'message': f'session not found: {name!r}'}, 404)
+                return
+            try:
+                import shutil as _shutil
+                _shutil.rmtree(full)
+                self._send_json({'ok': True,
+                                 'message': f'deleted {name}'})
+            except Exception as e:
+                self._send_json(
+                    {'ok': False, 'message': f'delete failed: {e}'},
+                    500)
+            return
+        if self.path == '/auto_tune/bags/push':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+            except Exception:
+                self._send_json({'ok': False,
+                                 'message': 'bad JSON'}, 400)
+                return
+            name = body.get('name', '').strip()
+            full = _resolve_auto_tune_session(name)
+            if not full:
+                self._send_json(
+                    {'ok': False,
+                     'message': f'session not found: {name!r}'}, 404)
+                return
+            try:
+                repo = os.path.expanduser('~/stable_bot_repo')
+                rel = os.path.join('tuning_data', name)
+                add = subprocess.run(
+                    ['git', '-C', repo, 'add', '-f', rel],
+                    capture_output=True, text=True, timeout=10)
+                if add.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': f'git add: {add.stderr.strip()}',
+                    }, 500)
+                    return
+                diff = subprocess.run(
+                    ['git', '-C', repo, 'diff', '--cached', '--quiet'],
+                    capture_output=True, text=True)
+                if diff.returncode == 0:
+                    self._send_json({
+                        'ok': True,
+                        'message': 'no changes to commit'})
+                    return
+                try:
+                    with open(os.path.join(full, 'summary.json')) as f:
+                        sd = json.load(f) or {}
+                    fmsg = (f"f={sd.get('best_fitness', 0):.3f}, "
+                            f"n={sd.get('n_trials', 0)} trials")
+                except Exception:
+                    fmsg = 'auto-tune session'
+                msg = f'auto_tune: {name} ({fmsg})'
+                commit = subprocess.run(
+                    ['git', '-C', repo, 'commit', '-m', msg],
+                    capture_output=True, text=True, timeout=15)
+                if commit.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': (
+                            f'commit: {commit.stderr.strip()}'),
+                    }, 500)
+                    return
+                pull = subprocess.run(
+                    ['git', '-C', repo, 'pull', '--rebase'],
+                    capture_output=True, text=True, timeout=30)
+                if pull.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': (
+                            f'pull --rebase: {pull.stderr.strip()}'),
+                    }, 500)
+                    return
+                push = subprocess.run(
+                    ['git', '-C', repo, 'push'],
+                    capture_output=True, text=True, timeout=30)
+                if push.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': (
+                            f'push: {push.stderr.strip()}'),
+                    }, 500)
+                    return
+                self._send_json({
+                    'ok': True, 'message': f'pushed {name}'})
+            except Exception as e:
+                self._send_json(
+                    {'ok': False, 'message': f'push failed: {e}'},
+                    500)
+            return
+        # ----- Auto-tune legacy single-session endpoints -----
         if self.path == '/auto_tune/digest':
             # Body: {"session": "<dirname under tuning_data/>"}.
             # Defaults to the latest session if omitted. Runs

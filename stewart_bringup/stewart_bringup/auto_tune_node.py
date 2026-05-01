@@ -155,6 +155,13 @@ ANNEAL_TRIGGER         = 3       # consec non-improves → step *= ANNEAL_FACTOR
 ANNEAL_FACTOR          = 0.7
 SAFETY_BAD_TRIALS      = 5       # 5x f<0.10 → halt
 SAFETY_BAD_THRESH      = 0.10
+# Lucky-baseline fix: if N consecutive trials are rejected against
+# the current best, re-evaluate the current best to get a fresh
+# fitness sample. Update best_fitness with a weighted average so
+# a one-shot lucky high regresses toward the truth instead of
+# trapping the optimizer ("nothing beats trial 0").
+REEVAL_AFTER_REJECTIONS = 6
+REEVAL_WEIGHT_NEW       = 0.6    # new sample gets 60% weight, old 40%
 # Sign knobs (pitch_sign, roll_sign) are categorical and direction-
 # tested manually before tuning starts. After ONE rejected flip, we
 # have strong evidence the current sign is correct — flipping a
@@ -398,6 +405,7 @@ class AutoTuneNode(Node):
             self._update_summary(summary_path, 1, best_fitness, best_gains, 0)
 
             consec_bad = 0
+            consec_rejections = 0   # for lucky-baseline re-eval
             t_start = time.time()
             knob_idx = 0
             sign_locked: dict[str, bool] = {
@@ -468,7 +476,9 @@ class AutoTuneNode(Node):
                     best_fitness = f
                     best_gains = dict(test_gains)
                     consec_no_improve[kn.name] = 0
+                    consec_rejections = 0
                 else:
+                    consec_rejections += 1
                     consec_no_improve[kn.name] += 1
                     if (not kn.categorical
                             and consec_no_improve[kn.name] >= ANNEAL_TRIGGER):
@@ -521,6 +531,33 @@ class AutoTuneNode(Node):
                 self._update_summary(summary_path, trial + 1,
                                      best_fitness, best_gains,
                                      int(time.time() - t_start))
+
+                # Lucky-baseline guard. If the running best hasn't
+                # been beaten in REEVAL_AFTER_REJECTIONS trials, it
+                # may have been a noisy outlier. Re-evaluate the
+                # same gains; weighted-average the two samples so
+                # the recorded fitness regresses toward the truth.
+                if consec_rejections >= REEVAL_AFTER_REJECTIONS:
+                    self.get_logger().info(
+                        f'  re-evaluating current best after '
+                        f'{consec_rejections} rejections')
+                    rr = self._run_trial(best_gains)
+                    if not rr.aborted and rr.samples:
+                        f_re, c_re = self._compute_fitness(rr)
+                        new_best = (REEVAL_WEIGHT_NEW * f_re +
+                                    (1.0 - REEVAL_WEIGHT_NEW)
+                                    * best_fitness)
+                        self.get_logger().info(
+                            f'  reeval f={f_re:.3f}; best '
+                            f'{best_fitness:.3f} → {new_best:.3f}')
+                        best_fitness = new_best
+                        self._append_trial_log(
+                            log_path, trial, best_gains, rr, f_re, c_re,
+                            step_taken=(f'reeval (best was '
+                                        f'{best_fitness:.3f}, now '
+                                        f'{new_best:.3f})'),
+                            algo='reeval')
+                    consec_rejections = 0
 
             # Save best gains back to the yaml so the controller picks
             # them up after the session ends.
@@ -964,11 +1001,19 @@ class AutoTuneNode(Node):
             res.success = False
             res.message = 'gain save failed'
             return res
+        # Important: this restores the GAINS, not the fitness. The
+        # next session's trial 0 re-evaluates these gains fresh —
+        # so a one-off lucky run that produced a misleadingly high
+        # fitness can't trap the next session's optimizer ("nothing
+        # beats the historical 0.71"). The historical fitness is
+        # surfaced here only as context.
+        historical_f = best.get('best_fitness', 0.0)
         res.success = True
         res.message = (
             f'restored gains from {os.path.basename(best["dir"])} '
-            f'(f={best.get("best_fitness", 0):.3f}, '
-            f'n={best.get("n_trials", 0)} trials)')
+            f'(historical f={historical_f:.3f}, '
+            f'n={best.get("n_trials", 0)}); '
+            f'next session will re-evaluate fresh')
         self.get_logger().info(res.message)
         return res
 

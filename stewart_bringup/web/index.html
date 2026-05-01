@@ -1492,18 +1492,8 @@
         </button>
         <button id="autotune-restore-btn"
                 class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-xs"
-                title="Search every past auto_tune_*/summary.json under tuning_data/, pick the one with the highest best_fitness, and apply its gains to ball_track_gains.yaml.">
+                title="Apply the gains from the past session with the highest best_fitness. Does NOT carry over its fitness — the next trial re-evaluates fresh, so a lucky one-shot baseline can't trap the optimizer.">
           Restore best ever
-        </button>
-        <button id="autotune-digest-btn"
-                class="bg-amber-600 hover:bg-amber-500 rounded px-3 py-1 text-xs"
-                title="Run digest_auto_tune_bag.py on the latest session: produces fitness_curve.png + gain_trajectory.png + target_coverage.png + digest.summary.json.">
-          Digest
-        </button>
-        <button id="autotune-push-btn"
-                class="bg-blue-600 hover:bg-blue-500 rounded px-3 py-1 text-xs"
-                title="git add + commit + push the latest auto_tune session (log.jsonl + summary + digest PNGs + bag).">
-          Push to GitHub
         </button>
         <span id="autotune-status-msg"
               class="text-xs text-slate-400 mono"></span>
@@ -1539,6 +1529,33 @@
            style="max-height:240px; height:240px;">
         <span class="text-slate-600">no trials yet</span>
       </div>
+      <!-- Recorded auto-tune sessions on disk. Mirrors the IVA
+           "Recorded sweeps" pattern: per-session row with Digest /
+           Push / Delete actions, inline best-fitness summary, and
+           a PNG link once digested. -->
+      <details class="border-t border-slate-700 pt-3 mt-3"
+               id="autotune-bags-details">
+        <summary class="cursor-pointer text-xs uppercase text-slate-400">
+          Recorded sessions
+          <span id="autotune-bags-count" class="text-slate-500">(—)</span>
+        </summary>
+        <div class="mt-2 mb-1 flex gap-2 text-xs">
+          <button id="autotune-bags-refresh"
+                  class="bg-slate-700 hover:bg-slate-600 rounded px-2 py-0.5">
+            Refresh
+          </button>
+          <span class="text-slate-500 self-center">
+            stored under <span class="mono">tuning_data/auto_tune_*/</span>
+          </span>
+        </div>
+        <div id="autotune-bags-list"
+             class="text-xs space-y-1 max-h-72 overflow-y-auto pr-1">
+          <div class="text-slate-500">no sessions yet — run one above</div>
+        </div>
+        <pre id="autotune-bags-out"
+             class="hidden text-xs mono mt-2 p-2 bg-slate-900 border rounded
+                    whitespace-pre-wrap max-h-48 overflow-y-auto"></pre>
+      </details>
     </details>
 
     <details id="sysid-panel"
@@ -4516,38 +4533,20 @@ function initVisionGUI() {
       (r) => _autotuneSetMsg(r.message || '', !!r.success),
       (e) => _autotuneSetMsg('restore failed: ' + e, false));
   });
-  const autotuneDigestBtn = $('autotune-digest-btn');
-  if (autotuneDigestBtn) autotuneDigestBtn.addEventListener('click', async () => {
-    _autotuneSetMsg('running digest…', null);
-    try {
-      const r = await fetch('/auto_tune/digest', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const j = await r.json();
-      _autotuneSetMsg(j.message || (j.ok ? 'digest done' : 'digest failed'),
-                      !!j.ok);
-    } catch (e) {
-      _autotuneSetMsg('digest failed: ' + e, false);
-    }
-  });
-  const autotunePushBtn = $('autotune-push-btn');
-  if (autotunePushBtn) autotunePushBtn.addEventListener('click', async () => {
-    _autotuneSetMsg('pushing…', null);
-    try {
-      const r = await fetch('/auto_tune/push', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const j = await r.json();
-      _autotuneSetMsg(j.message || (j.ok ? 'pushed' : 'push failed'),
-                      !!j.ok);
-    } catch (e) {
-      _autotuneSetMsg('push failed: ' + e, false);
-    }
-  });
+  // Recorded-sessions list (IVA-style). Refresh button + auto-fetch
+  // when the panel is opened.
+  const autotuneBagsRefresh = $('autotune-bags-refresh');
+  if (autotuneBagsRefresh) {
+    autotuneBagsRefresh.addEventListener('click', autotuneFetchBags);
+  }
+  const autotuneBagsDetails = $('autotune-bags-details');
+  if (autotuneBagsDetails) {
+    autotuneBagsDetails.addEventListener('toggle', () => {
+      if (autotuneBagsDetails.open) autotuneFetchBags();
+    });
+  }
+  // Initial fetch in the background.
+  setTimeout(autotuneFetchBags, 1000);
 
   // --- HSV slider tuning + V0 debug overlay ---
   const HSV_IDS = [
@@ -6450,6 +6449,128 @@ function onAutotuneTrial(t) {
   _autotuneHistory.unshift(t);
   if (_autotuneHistory.length > 200) _autotuneHistory.length = 200;
   _renderAutotuneHistory();
+}
+
+// ---- Recorded auto-tune sessions list (IVA-style) ----
+
+function _autotuneSetBagsOut(text, ok) {
+  const el = document.getElementById('autotune-bags-out');
+  if (!el) return;
+  el.classList.remove('hidden');
+  el.innerText = text;
+  el.className = 'text-xs mono mt-2 p-2 bg-slate-900 border rounded ' +
+    'whitespace-pre-wrap max-h-48 overflow-y-auto ' +
+    (ok === true  ? 'border-emerald-700 text-emerald-300'
+     : ok === false ? 'border-red-700 text-red-300'
+     :                'border-slate-700 text-slate-300');
+}
+
+function _autotuneFmtBytes(b) {
+  if (b == null) return '—';
+  if (b < 1024) return `${b} B`;
+  if (b < 1048576) return `${(b/1024).toFixed(0)} KB`;
+  return `${(b/1048576).toFixed(1)} MB`;
+}
+function _autotuneFmtMtime(t) {
+  if (!t) return '';
+  const d = new Date(t * 1000);
+  return d.toLocaleString();
+}
+
+function _autotuneRenderBag(e) {
+  const name = e.name || '';
+  const fit = (e.best_fitness != null) ? e.best_fitness.toFixed(3) : '—';
+  const n = (e.n_trials != null) ? e.n_trials : '—';
+  const elapsed = (e.elapsed_s != null) ? `${e.elapsed_s}s` : '';
+  const stats = `<div class="text-slate-500 mt-0.5">
+    <span class="text-emerald-400">f=${fit}</span> ·
+    <span>${n} trials</span>
+    ${elapsed ? '· ' + elapsed : ''}
+    ${e.has_bag ? ' · <span class="text-cyan-400">bag</span>' : ''}
+    ${e.has_digest ? ' · digested' : ''}
+  </div>`;
+  const pngBtn = e.has_png
+    ? `<a class="text-blue-400 hover:text-blue-300"
+          target="_blank" rel="noopener"
+          href="/auto_tune/bags/png?name=${encodeURIComponent(name)}">PNG</a>`
+    : `<span class="text-slate-600" title="no fitness_curve.png — run digest first">—</span>`;
+  return `
+    <div class="border-l-2 border-slate-700 pl-2 py-1">
+      <div class="flex items-center justify-between gap-2">
+        <div class="mono text-slate-300 truncate" title="${e.path || ''}">${name}</div>
+        <div class="flex items-center gap-2 shrink-0 text-xs">
+          <button class="text-emerald-400 hover:text-emerald-300"
+                  onclick="autotuneDigestBag('${name}')">Digest</button>
+          ${pngBtn}
+          <button class="text-purple-400 hover:text-purple-300"
+                  title="git add + commit + push this session to origin"
+                  onclick="autotunePushBag('${name}')">Push</button>
+          <button class="text-red-400 hover:text-red-300"
+                  onclick="autotuneDeleteBag('${name}')">×</button>
+        </div>
+      </div>
+      <div class="text-slate-500">
+        ${_autotuneFmtMtime(e.mtime)} · ${_autotuneFmtBytes(e.size_bytes)}
+      </div>
+      ${stats}
+    </div>`;
+}
+
+function autotuneFetchBags() {
+  const out = document.getElementById('autotune-bags-list');
+  const cnt = document.getElementById('autotune-bags-count');
+  if (!out) return;
+  fetch('/auto_tune/bags').then(r => r.json()).then(j => {
+    const entries = (j.entries || []);
+    if (cnt) cnt.innerText = `(${entries.length})`;
+    if (!entries.length) {
+      out.innerHTML = '<div class="text-slate-500">no sessions yet — run one above</div>';
+      return;
+    }
+    out.innerHTML = entries.map(_autotuneRenderBag).join('');
+  }).catch(e => {
+    out.innerText = `failed to fetch /auto_tune/bags: ${e}`;
+  });
+}
+
+function autotuneDigestBag(name) {
+  _autotuneSetBagsOut(`running digest on ${name}…`, null);
+  fetch('/auto_tune/bags/digest', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    const head = (j.ok ? '✓ ' : '✗ ') + 'digest ' + name + '\n';
+    _autotuneSetBagsOut(head + (j.message || '(no output)'), !!j.ok);
+    if (j.ok) autotuneFetchBags();
+  }).catch(e => {
+    _autotuneSetBagsOut('✗ digest failed: ' + e, false);
+  });
+}
+
+function autotunePushBag(name) {
+  _autotuneSetBagsOut(`pushing ${name} to origin…`, null);
+  fetch('/auto_tune/bags/push', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    const head = (j.ok ? '✓ ' : '✗ ') + 'push ' + name + '\n';
+    _autotuneSetBagsOut(head + (j.message || '(no output)'), !!j.ok);
+  }).catch(e => {
+    _autotuneSetBagsOut('✗ push failed: ' + e, false);
+  });
+}
+
+function autotuneDeleteBag(name) {
+  if (!confirm(`Delete session "${name}"? This removes the entire dir.`)) return;
+  fetch('/auto_tune/bags/delete', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    _autotuneSetBagsOut(j.message || (j.ok ? 'deleted' : 'failed'), !!j.ok);
+    autotuneFetchBags();
+  }).catch(e => {
+    _autotuneSetBagsOut('✗ delete failed: ' + e, false);
+  });
 }
 
 function _renderAutotuneHistory() {
