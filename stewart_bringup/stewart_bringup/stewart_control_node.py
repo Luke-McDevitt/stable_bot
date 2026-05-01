@@ -4274,6 +4274,21 @@ class StewartControlNode(Node):
                 # demands more positive pitch to brake. Same convention.
                 edot_x = vx
                 edot_y = vy
+                # Vision-noise sanity gate. Single-frame V0
+                # false-positives or KF jumps can spike vx/vy to
+                # 4000+ mm/s on a foam ball that physically tops
+                # out around 800 mm/s — Kd · v_spike then saturates
+                # max_tilt in random directions and pumps energy
+                # into the orbit. Cap |v| at the physical max,
+                # preserving the direction. Documented after
+                # step_id_20260501T202650Z verification trials
+                # showed peak speeds of 4500-5500 mm/s in the bag.
+                BT_MAX_BALL_VEL_MM_S = 800.0
+                v_mag_pid = math.hypot(edot_x, edot_y)
+                if v_mag_pid > BT_MAX_BALL_VEL_MM_S:
+                    scale = BT_MAX_BALL_VEL_MM_S / v_mag_pid
+                    edot_x *= scale
+                    edot_y *= scale
 
                 # Algorithm selector — read each tick so a live save
                 # via the GUI can switch PID ↔ bang-bang without

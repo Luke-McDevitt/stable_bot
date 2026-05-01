@@ -2273,6 +2273,30 @@ class AutoTuneNode(Node):
             out['abort_reason'] = 'no ball state at trial start'
             return out
         out['ball_start_xy'] = list(ball0)
+        # Snapshot platform state at trial start. Without this we
+        # can't reproduce / diagnose session-to-session divergences
+        # like 202650Z (IMU achievement 101%) vs 203101Z (achievement
+        # 38%) three minutes apart on the same hardware. The state
+        # of the level loop, current_rpy, and recent set_pose history
+        # all influence open-loop fit quality.
+        try:
+            ss = self._status_snapshot or {}
+            out['platform_state_at_start'] = {
+                'armed': ss.get('armed'),
+                'level_enabled': ss.get('level_enabled'),
+                'current_xyz': ss.get('current_xyz'),
+                'current_rpy': ss.get('current_rpy'),
+                'imu_fresh': ss.get('imu_fresh'),
+                'level_corr_roll_deg': ss.get('level_corr_roll_deg'),
+                'level_corr_pitch_deg': ss.get('level_corr_pitch_deg'),
+                'level_err_roll_deg': ss.get('level_err_roll_deg'),
+                'level_err_pitch_deg': ss.get('level_err_pitch_deg'),
+                'status_age_s': (
+                    time.monotonic() - self._status_t
+                    if self._status_t > 0 else None),
+            }
+        except Exception:
+            out['platform_state_at_start'] = {'error': 'capture failed'}
 
         samples: list[dict] = []
         # Send tilt command. The control node's level-PI loop tracks
@@ -2384,10 +2408,21 @@ class AutoTuneNode(Node):
         g_eff_v, fit_meta_v = self._fit_velocity_based_g_eff(
             samples, roll_deg, pitch_deg)
         # Pick the more plausible value. Velocity-based wins when
-        # parabolic comes back implausibly small (< 50 mm/s²/°) AND
-        # velocity-based is in the plausible range. Otherwise default
-        # to parabolic (its dead-time estimate is more useful).
-        prefer_velocity = (g_eff_p < 50.0 and 50.0 <= g_eff_v <= 500.0)
+        # parabolic returns a low or implausibly-low value AND
+        # velocity-based is in the plausible range.
+        #
+        # Threshold raised 2026-05-01 from 50 to 100 after observing
+        # in 202650Z that parabolic = 92 (looked plausible) but the
+        # ball had only 0.18 s of fit-window data after stiction
+        # broke; velocity-based 189 was the better physically-
+        # plausible answer. Stiction systematically biases parabolic
+        # low because the early no-motion samples drag the
+        # 2nd-order fit's curvature down. Up to ~100 mm/s²/° the
+        # parabolic fit is presumed contaminated by stiction;
+        # velocity-based wins on the integral (which already
+        # includes the no-motion phase as zero contribution from
+        # the ball but full contribution from the IMU).
+        prefer_velocity = (g_eff_p < 100.0 and 50.0 <= g_eff_v <= 500.0)
         if prefer_velocity:
             g_eff = g_eff_v
             fit_meta = {
@@ -2645,9 +2680,14 @@ class AutoTuneNode(Node):
         vx = np.gradient(xs, ts)
         vy = np.gradient(ys, ts)
         v_along = vx * ax_dir + vy * ay_dir
-        # Peak velocity in the expected direction. We want the
-        # signed positive peak (ball moving the way we commanded).
-        peak_v_signed = float(np.max(v_along))
+        # Robust peak: use 95th percentile, not max. Single-frame
+        # vision glitches drove peak_v=2505 in step_id_20260501T200141Z
+        # and 5500+ in 202650Z verification trials; np.max picks up
+        # exactly those glitch frames. The 95th percentile drops the
+        # top ~5% of samples (≈ top 5-10 frames at 100 Hz over 1 s),
+        # so a true sustained peak survives but isolated outliers do
+        # not.
+        peak_v_signed = float(np.percentile(v_along, 95))
         if peak_v_signed < 30.0:
             return (0.0, {
                 'velocity_fit_error': (
