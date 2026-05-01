@@ -1506,6 +1506,24 @@
       <pre id="autotune-best-gains"
            class="text-xs mono bg-slate-900 rounded px-2 py-1 text-slate-300 overflow-auto"
            style="max-height:120px">—</pre>
+      <!-- Trial history — accumulated client-side from the
+           /auto_tune/trial topic. Most-recent first. Each row shows
+           the perturbation that was tried, the fitness it produced,
+           and whether it was accepted. Cleared when a new session
+           starts (state transitions to 'running' from anything else). -->
+      <div class="text-xs text-slate-500 mt-3 mb-1 flex justify-between">
+        <span>trial history (most recent first):</span>
+        <button id="autotune-history-clear"
+                class="text-xs text-slate-500 hover:text-slate-300"
+                title="Clear the in-browser trial history (does not delete the JSONL log on disk)">
+          clear
+        </button>
+      </div>
+      <div id="autotune-history"
+           class="text-xs mono bg-slate-900 rounded px-2 py-1 text-slate-300 overflow-auto"
+           style="max-height:200px">
+        <span class="text-slate-600">no trials yet</span>
+      </div>
     </details>
 
     <details id="sysid-panel"
@@ -2295,6 +2313,11 @@ function setupROSInterface() {
     ros, name: '/auto_tune/status', messageType: 'std_msgs/msg/String' });
   topic.autotune_status.subscribe(m => {
     try { onAutotuneStatus(JSON.parse(m.data)); } catch (e) {}
+  });
+  topic.autotune_trial = new ROSLIB.Topic({
+    ros, name: '/auto_tune/trial', messageType: 'std_msgs/msg/String' });
+  topic.autotune_trial.subscribe(m => {
+    try { onAutotuneTrial(JSON.parse(m.data)); } catch (e) {}
   });
 
   // Ball state (KF posterior, platform-frame mm)
@@ -4454,6 +4477,11 @@ function initVisionGUI() {
       (r) => _autotuneSetMsg(r.message || '', !!r.success),
       (e) => _autotuneSetMsg('stop failed: ' + e, false));
   });
+  const autotuneClearBtn = $('autotune-history-clear');
+  if (autotuneClearBtn) autotuneClearBtn.addEventListener('click', () => {
+    _autotuneHistory.length = 0;
+    _renderAutotuneHistory();
+  });
 
   // --- HSV slider tuning + V0 debug overlay ---
   const HSV_IDS = [
@@ -6265,9 +6293,21 @@ function _autotuneSetMsg(text, ok) {
   }, 5000);
 }
 
+// Track the last seen state so we can reset history on a fresh
+// run. Cleared when state transitions FROM something else INTO
+// 'running'.
+let _autotunePrevState = null;
+const _autotuneHistory = [];
+
 function onAutotuneStatus(s) {
   if (!s) return;
-  // State pill (idle / running / done / crashed).
+  // Auto-clear history on a fresh run start (idle / done / crashed → running).
+  if (s.state === 'running' && _autotunePrevState !== 'running') {
+    _autotuneHistory.length = 0;
+    _renderAutotuneHistory();
+  }
+  _autotunePrevState = s.state;
+  // State pill (idle / running / done / aborted / crashed).
   const pill = document.getElementById('autotune-state-pill');
   if (pill) {
     pill.innerText = s.state || 'idle';
@@ -6275,6 +6315,7 @@ function onAutotuneStatus(s) {
       idle:    'bg-slate-700 text-slate-300',
       running: 'bg-emerald-600 text-white',
       done:    'bg-blue-600 text-white',
+      aborted: 'bg-amber-600 text-white',
       crashed: 'bg-rose-600 text-white',
     };
     pill.className = 'text-xs mono ml-2 px-2 py-0.5 rounded ' +
@@ -6313,6 +6354,48 @@ function onAutotuneStatus(s) {
       gainsEl.innerText = '—';
     }
   }
+}
+
+function onAutotuneTrial(t) {
+  if (!t) return;
+  // Prepend (most recent first) and cap at 200 rows so the DOM
+  // doesn't grow without bound on long sessions.
+  _autotuneHistory.unshift(t);
+  if (_autotuneHistory.length > 200) _autotuneHistory.length = 200;
+  _renderAutotuneHistory();
+}
+
+function _renderAutotuneHistory() {
+  const el = document.getElementById('autotune-history');
+  if (!el) return;
+  if (!_autotuneHistory.length) {
+    el.innerHTML = '<span class="text-slate-600">no trials yet</span>';
+    return;
+  }
+  // Each row: trial# | step | fitness (color-coded vs prev best) |
+  // status (settled / aborted / center-stuck).
+  const rows = _autotuneHistory.map(t => {
+    const fit = (t.fitness != null) ? t.fitness.toFixed(3) : '—';
+    let fitClass = 'text-slate-300';
+    const taken = (t.step_taken || '').toLowerCase();
+    if (taken.includes('accepted')) fitClass = 'text-emerald-400';
+    else if (taken.includes('rejected')) fitClass = 'text-slate-500';
+    let flags = '';
+    if (t.aborted) flags += ' <span class="text-rose-400">[abort]</span>';
+    if (t.components && t.components.stuck_on_center_fraction > 0.4) {
+      flags += ` <span class="text-amber-400">[stuck ${(t.components.stuck_on_center_fraction*100).toFixed(0)}%]</span>`;
+    }
+    if (t.settled) flags += ' <span class="text-emerald-500">[settled]</span>';
+    const stepShort = (t.step_taken || '')
+      .replace(/\(accepted\)/, '✓').replace(/\(rejected\)/, '✗');
+    return `<div>` +
+           `<span class="text-slate-500">#${String(t.trial).padStart(2,' ')}</span> ` +
+           `<span class="${fitClass}">f=${fit}</span> ` +
+           `<span class="text-slate-400">${stepShort}</span>` +
+           flags +
+           `</div>`;
+  });
+  el.innerHTML = rows.join('');
 }
 
 function onMethodCmp(d) {

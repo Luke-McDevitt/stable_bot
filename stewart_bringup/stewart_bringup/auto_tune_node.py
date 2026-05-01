@@ -64,6 +64,15 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+# SetPose lives in jugglebot_interfaces; we use it to reset platform Z
+# to nominal between trials so accumulated tilt-induced Z drift can't
+# turn the platform into a bowl that pulls the ball toward the center bolt.
+try:
+    from jugglebot_interfaces.srv import SetPose
+    HAVE_SET_POSE = True
+except ImportError:
+    HAVE_SET_POSE = False
+
 
 # ----- Tuning configuration ---------------------------------------------------
 
@@ -90,12 +99,18 @@ KNOBS: list[Knob] = [
 TRIAL_DISTANCE_MM      = 60.0    # target distance from current ball position
 PLATFORM_R_MM          = 200.0   # safe-region radius
 SAFE_RADIUS_FRAC       = 0.70    # target must be within 0.7*R_platform
+CENTER_EXCLUSION_MM    = 40.0    # target must be > this from platform center
+                                  # (stops the ball getting parked on the
+                                  # central mounting bolt)
 TARGET_PICK_ATTEMPTS   = 16
 SETTLE_BAND_MM         = 10.0    # err < this for SETTLE_HOLD_S → settled
 SETTLE_HOLD_S          = 1.0
 TRIAL_TIMEOUT_S        = 25.0
 LEVEL_HOLD_BETWEEN_S   = 2.0
 HOLD_TOL_MM            = 25.0    # f_hold counts samples within this band
+RESET_Z_EVERY_N_TRIALS = 5       # call set_pose to nominal Z every N trials
+                                  # to defeat accumulated drift
+NOMINAL_Z_MM           = 35.0    # operating Z range is 30-50; midpoint
 
 # Optimizer
 NOISE_FLOOR            = 0.02
@@ -192,6 +207,25 @@ class AutoTuneNode(Node):
         self.create_service(
             Trigger, '/auto_tune/stop', self._srv_stop)
 
+        # Per-trial event topic — GUI accumulates these into a history
+        # log. Distinct from /auto_tune/status (which is the rolling
+        # snapshot); each trial publishes here exactly once after its
+        # fitness is computed.
+        self.pub_trial = self.create_publisher(
+            String, '/auto_tune/trial', 50)
+
+        # SetPose client for the periodic Z reset that defeats
+        # accumulated tilt-induced Z drift. None if the interfaces
+        # package is missing — we just skip the reset and warn.
+        if HAVE_SET_POSE:
+            self._set_pose_cli = self.create_client(
+                SetPose, '/set_pose')
+        else:
+            self._set_pose_cli = None
+            self.get_logger().warn(
+                'jugglebot_interfaces.SetPose not available — '
+                'skipping periodic Z reset; expect Z drift on long runs')
+
         # status snapshot
         self._status = {
             'state': 'idle',
@@ -241,9 +275,20 @@ class AutoTuneNode(Node):
             res.success = False
             res.message = 'auto_tune not running'
             return res
+        # Cooperative abort flag for the trial loop.
         self._abort = True
+        # IMMEDIATELY return the platform to LEVEL_HOLD — don't wait for
+        # the trial loop to notice the flag. Without this, the platform
+        # keeps tilting until the current trial's collect-loop ticks
+        # again (up to 20 ms), and during a runaway gain set that's
+        # 20 ms too long.
+        self._publish_mode('LEVEL_HOLD')
+        # Belt and braces: also send a zero-tilt set_pose so even if
+        # something is mis-mapping LEVEL_HOLD, we explicitly set the
+        # platform flat at nominal Z.
+        self._reset_pose_to_nominal(blocking=False)
         res.success = True
-        res.message = 'auto_tune abort requested'
+        res.message = 'auto_tune stopping — platform → LEVEL_HOLD'
         return res
 
     # ----- Trial loop -------------------------------------------------------
@@ -299,6 +344,17 @@ class AutoTuneNode(Node):
                 if self._abort:
                     self.get_logger().info('auto_tune aborted by user')
                     break
+
+                # Periodic Z reset so accumulated tilt-induced drift
+                # doesn't turn the platform into a bowl pulling the
+                # ball to the center bolt.
+                if (RESET_Z_EVERY_N_TRIALS > 0
+                        and (trial - 1) % RESET_Z_EVERY_N_TRIALS == 0):
+                    if self._reset_pose_to_nominal(blocking=False):
+                        self.get_logger().info(
+                            f'  Z reset → {NOMINAL_Z_MM:.0f} mm')
+                        # Give the IK time to settle before next trial.
+                        self._sleep_with_abort(0.5)
 
                 # Pick a knob round-robin (skip categorical signs unless
                 # we've stalled on continuous knobs — flipping signs
@@ -379,13 +435,21 @@ class AutoTuneNode(Node):
             self.get_logger().info(
                 f'auto_tune done. best_fitness={best_fitness:.3f} '
                 f'best_gains={best_gains}')
-            self._status['state'] = 'done'
+            self._status['state'] = 'aborted' if self._abort else 'done'
             self._publish_status()
         except Exception as e:
             self.get_logger().error(f'auto_tune crashed: {e!r}')
             self._status['state'] = 'crashed'
             self._publish_status()
         finally:
+            # Always return the platform to LEVEL_HOLD when the session
+            # ends — done, aborted, or crashed. This guarantees the
+            # controller is no longer commanding tilts after Stop.
+            try:
+                self._publish_mode('LEVEL_HOLD')
+                self._reset_pose_to_nominal(blocking=False)
+            except Exception:
+                pass
             self._running = False
 
     def _run_trial(self, gains: dict) -> TrialResult:
@@ -485,6 +549,13 @@ class AutoTuneNode(Node):
         else:
             mean_speed = 0.0
 
+        # Ball-stuck-on-center detector. If the ball spent most of the
+        # trial near the center bolt (regardless of target), the trial
+        # is degenerate — the controller couldn't move it off and the
+        # operator has to physically un-stick it. Penalize hard.
+        center_dist = np.hypot(xs, ys)
+        stuck_frac = float(np.mean(center_dist < CENTER_EXCLUSION_MM))
+
         f_err    = 1.0 / (1.0 + rms_err / 50.0)
         f_p95    = 1.0 / (1.0 + p95_err / 100.0)
         f_settle = (max(0.0, 1.0 - r.settling_time_s / 15.0)
@@ -494,12 +565,20 @@ class AutoTuneNode(Node):
 
         fitness = (W_ERR * f_err + W_P95 * f_p95 + W_SETTLE * f_settle
                    + W_HOLD * f_hold + W_CALM * f_calm)
+        # Multiplicative penalty: any trial where the ball spent
+        # >40% of samples inside the center exclusion zone gets its
+        # fitness scaled by (1 - stuck_frac), which collapses the
+        # score even if rms / hold accidentally look OK because the
+        # target was placed close to center too.
+        if stuck_frac > 0.4:
+            fitness *= max(0.0, 1.0 - stuck_frac)
         components = {
             'f_err': f_err, 'f_p95': f_p95, 'f_settle': f_settle,
             'f_hold': f_hold, 'f_calm': f_calm,
             'rms_err_mm': rms_err, 'p95_err_mm': p95_err,
             'on_target_fraction': on_target_frac,
             'mean_speed_mm_per_s': mean_speed,
+            'stuck_on_center_fraction': stuck_frac,
         }
         return fitness, components
 
@@ -507,6 +586,12 @@ class AutoTuneNode(Node):
 
     def _pick_target(self, ball_xy: tuple[float, float]
                      ) -> Optional[tuple[float, float]]:
+        """Pick a target at TRIAL_DISTANCE_MM from the ball that is:
+         - inside the safe radius (≤ 0.7·R_platform)
+         - outside the center exclusion zone (≥ CENTER_EXCLUSION_MM
+           from origin) so the ball never gets parked on the
+           central mounting bolt
+        """
         D = TRIAL_DISTANCE_MM
         safe_R = SAFE_RADIUS_FRAC * PLATFORM_R_MM
         for shrink_attempt in range(2):
@@ -514,8 +599,12 @@ class AutoTuneNode(Node):
                 theta = random.uniform(0, 2 * math.pi)
                 tx = ball_xy[0] + D * math.cos(theta)
                 ty = ball_xy[1] + D * math.sin(theta)
-                if math.hypot(tx, ty) <= safe_R:
-                    return (tx, ty)
+                r_target = math.hypot(tx, ty)
+                if r_target > safe_R:
+                    continue
+                if r_target < CENTER_EXCLUSION_MM:
+                    continue
+                return (tx, ty)
             D *= 0.7  # ball is near rim — try a closer target
         return None
 
@@ -541,6 +630,36 @@ class AutoTuneNode(Node):
         # the publish→subscribe RTT can be a few ms.
         time.sleep(0.10)
         return True
+
+    def _reset_pose_to_nominal(self, blocking: bool = False) -> bool:
+        """Call /set_pose to reset the platform to nominal Z, level,
+        zero yaw. Used between groups of trials to defeat the slow
+        Z drift the user observed on long runs ("the platform turns
+        into a bowl that pulls the ball toward the center bolt").
+        Non-blocking by default so we don't stall the trial loop;
+        the controller picks up the new pose on its next tick.
+        """
+        if self._set_pose_cli is None:
+            return False
+        if not self._set_pose_cli.service_is_ready():
+            # The control node may take a moment to advertise.
+            self._set_pose_cli.wait_for_service(timeout_sec=0.5)
+            if not self._set_pose_cli.service_is_ready():
+                return False
+        req = SetPose.Request()
+        req.x = 0.0
+        req.y = 0.0
+        req.z = float(NOMINAL_Z_MM)
+        req.roll = 0.0
+        req.pitch = 0.0
+        req.yaw = 0.0
+        req.blocking = bool(blocking)
+        try:
+            self._set_pose_cli.call_async(req)
+            return True
+        except Exception as e:
+            self.get_logger().warn(f'set_pose call failed: {e!r}')
+            return False
 
     def _latest_ball_xy(self) -> Optional[tuple[float, float]]:
         # Wait briefly if /ball_state hasn't arrived yet.
@@ -583,6 +702,11 @@ class AutoTuneNode(Node):
         }
         with open(log_path, 'a') as f:
             f.write(json.dumps(row) + '\n')
+        # Also publish to /auto_tune/trial so the GUI can accumulate a
+        # live history without re-fetching the file.
+        msg = String()
+        msg.data = json.dumps(row)
+        self.pub_trial.publish(msg)
 
     def _update_summary(self, summary_path: str, n_trials: int,
                         best_fitness: float, best_gains: dict,
