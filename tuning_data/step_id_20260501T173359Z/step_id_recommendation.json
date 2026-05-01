@@ -1,0 +1,37 @@
+{
+  "current_gains": {
+    "accel_tilt_deg": 3.0,
+    "brake_horizon_mm": 60.0,
+    "brake_tilt_deg": 6.0,
+    "control_latency_s": 0.1,
+    "err_tol_mm": 15.0,
+    "kd": 0.03,
+    "ki": 0.001,
+    "kp": 0.015,
+    "max_tilt_deg": 2.5,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "stiction_break_s": 0.6,
+    "stiction_v_threshold_mm_s": 20.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0
+  },
+  "recommended_gains": {
+    "kp": 21.56933553782301,
+    "kd": 6.039413950590443,
+    "ki": 0.001
+  },
+  "omega_n_rad_s": 5.0,
+  "zeta": 0.7,
+  "g_eff_open_loop_mm_s2_per_deg": 1.159052857987263,
+  "td_observed_s": 0.0,
+  "closed_loop_initial_accel_mm_s2": {
+    "samples": [
+      25.0586549451997
+    ],
+    "mean": 25.0586549451997,
+    "std": 0.0
+  },
+  "recommendation_valid": true,
+  "note": "computed from G_eff=1.2 mm/s\u00b2/\u00b0, Td=0.000s, \u03c9n=5.00 rad/s, \u03b6=0.70"
+}
