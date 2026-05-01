@@ -1563,6 +1563,86 @@
       </details>
     </details>
 
+    <!-- STEP_ID panel: analytic-gains tuning. One open-loop tilt-step
+         characterizes the cascaded plant (G_eff in mm/s² per degree),
+         then 4 closed-loop marker-pair goto trials verify. Recommended
+         gains are computed analytically from G_eff + observed dead-time
+         and a target damping ratio. Operator places ball on any marker
+         to start; STEP_ID detects which one via ArUco occlusion. See
+         stewart_bringup/docs/auto_tuning_plan.md (sequel section). -->
+    <details id="stepid-panel"
+             class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <summary class="cursor-pointer select-none">
+        <span class="text-sm uppercase text-slate-400">Step-ID tuning</span>
+        <span id="stepid-state-pill"
+              class="text-xs mono ml-2 px-2 py-0.5 rounded bg-slate-700">idle</span>
+      </summary>
+      <p class="text-xs text-slate-500 mt-2 mb-3">
+        Analytic-gains tuning. Place ball on <em>any</em> marker, click
+        Start. One open-loop tilt step → measures plant gain G_eff →
+        computes Kp, Kd analytically. Then 4 closed-loop marker-pair
+        goto trials verify. ~3 min total. Recommended gains are NOT
+        auto-applied — review and click Promote.
+      </p>
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
+        <button id="stepid-start-btn"
+                class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs">
+          ▶ Start step-ID
+        </button>
+        <button id="stepid-stop-btn"
+                class="bg-rose-600 hover:bg-rose-500 rounded px-3 py-1 text-xs">
+          ■ Stop
+        </button>
+        <button id="stepid-confirm-btn"
+                class="bg-amber-600 hover:bg-amber-500 rounded px-3 py-1 text-xs hidden"
+                title="After placing the ball on the prompted marker, click here to continue.">
+          ✓ Ball is on marker
+        </button>
+        <button id="stepid-promote-btn"
+                class="bg-sky-600 hover:bg-sky-500 rounded px-3 py-1 text-xs hidden"
+                title="Apply the analytically-computed gains. Writes ball_track_gains.yaml and reloads in-memory.">
+          Promote recommended
+        </button>
+      </div>
+      <div id="stepid-prompt"
+           class="text-xs bg-slate-900 rounded px-2 py-1 text-amber-300 mb-2 mono">
+        idle — click Start
+      </div>
+      <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-400 mb-2">
+        <div>phase: <span id="stepid-phase" class="mono text-slate-200">—</span></div>
+        <div>start marker: <span id="stepid-start-marker" class="mono text-slate-200">—</span></div>
+        <div>verification trial: <span id="stepid-vtrial" class="mono text-slate-200">—</span></div>
+        <div>G_eff (mm/s²/°): <span id="stepid-geff" class="mono text-emerald-400">—</span></div>
+      </div>
+      <div class="text-xs text-slate-500 mb-1">recommended gains:</div>
+      <pre id="stepid-recommended"
+           class="text-xs mono bg-slate-900 rounded px-2 py-1 text-emerald-300 overflow-auto"
+           style="max-height:120px">—</pre>
+      <details class="border-t border-slate-700 pt-3 mt-3"
+               id="stepid-bags-details">
+        <summary class="cursor-pointer text-xs uppercase text-slate-400">
+          Recorded sessions
+          <span id="stepid-bags-count" class="text-slate-500">(—)</span>
+        </summary>
+        <div class="mt-2 mb-1 flex gap-2 text-xs">
+          <button id="stepid-bags-refresh"
+                  class="bg-slate-700 hover:bg-slate-600 rounded px-2 py-0.5">
+            Refresh
+          </button>
+          <span class="text-slate-500 self-center">
+            stored under <span class="mono">tuning_data/step_id_*/</span>
+          </span>
+        </div>
+        <div id="stepid-bags-list"
+             class="text-xs space-y-1 max-h-72 overflow-y-auto pr-1">
+          <div class="text-slate-500">no sessions yet — run one above</div>
+        </div>
+        <pre id="stepid-bags-out"
+             class="hidden text-xs mono mt-2 p-2 bg-slate-900 border rounded
+                    whitespace-pre-wrap max-h-48 overflow-y-auto"></pre>
+      </details>
+    </details>
+
     <details id="sysid-panel"
              class="bg-slate-800 rounded-lg p-4 border border-slate-700">
       <summary class="cursor-pointer select-none">
@@ -2186,6 +2266,11 @@ function setupROSInterface() {
   srv.autotune_restore = new ROSLIB.Service({
     ros, name: '/auto_tune/restore_best',
     serviceType: 'std_srvs/srv/Trigger' });
+  srv.stepid_start = new ROSLIB.Service({
+    ros, name: '/step_id/start', serviceType: 'std_srvs/srv/Trigger' });
+  srv.stepid_operator_confirm = new ROSLIB.Service({
+    ros, name: '/step_id/operator_confirm',
+    serviceType: 'std_srvs/srv/Trigger' });
   srv.go_to_rest = new ROSLIB.Service({
     ros, name: '/go_to_rest', serviceType: 'std_srvs/srv/Trigger' });
   srv.jog_leg = new ROSLIB.Service({
@@ -2352,7 +2437,15 @@ function setupROSInterface() {
   topic.autotune_status = new ROSLIB.Topic({
     ros, name: '/auto_tune/status', messageType: 'std_msgs/msg/String' });
   topic.autotune_status.subscribe(m => {
-    try { onAutotuneStatus(JSON.parse(m.data)); } catch (e) {}
+    try {
+      const s = JSON.parse(m.data);
+      onAutotuneStatus(s);
+      // STEP_ID shares /auto_tune/status with Twiddle. The status
+      // handler differentiates by checking the state field — if it
+      // starts with 'step_id_', the STEP_ID UI updates. Otherwise
+      // it's left alone.
+      onStepIdStatus(s);
+    } catch (e) {}
   });
   topic.autotune_trial = new ROSLIB.Topic({
     ros, name: '/auto_tune/trial', messageType: 'std_msgs/msg/String' });
@@ -4570,6 +4663,69 @@ function initVisionGUI() {
     });
   }
 
+  // --- STEP_ID panel ---
+  const stepidStartBtn = $('stepid-start-btn');
+  const stepidStopBtn = $('stepid-stop-btn');
+  const stepidConfirmBtn = $('stepid-confirm-btn');
+  const stepidPromoteBtn = $('stepid-promote-btn');
+  if (stepidStartBtn) stepidStartBtn.addEventListener('click', () => {
+    if (!srv.stepid_start) return;
+    const promptEl = document.getElementById('stepid-prompt');
+    if (promptEl) promptEl.innerText = 'starting…';
+    srv.stepid_start.callService(new ROSLIB.ServiceRequest({}),
+      (r) => { if (promptEl && !r.success) promptEl.innerText = r.message; },
+      (e) => { if (promptEl) promptEl.innerText = 'start failed: ' + e; });
+  });
+  if (stepidStopBtn) stepidStopBtn.addEventListener('click', () => {
+    // STEP_ID shares /auto_tune/stop with Twiddle — both abort modes
+    // listen to the same flag.
+    if (!srv.autotune_stop) return;
+    const promptEl = document.getElementById('stepid-prompt');
+    if (promptEl) promptEl.innerText = 'stopping…';
+    srv.autotune_stop.callService(new ROSLIB.ServiceRequest({}),
+      (r) => { if (promptEl) promptEl.innerText = r.message || 'stopped'; },
+      (e) => { if (promptEl) promptEl.innerText = 'stop failed: ' + e; });
+  });
+  if (stepidConfirmBtn) stepidConfirmBtn.addEventListener('click', () => {
+    if (!srv.stepid_operator_confirm) return;
+    srv.stepid_operator_confirm.callService(new ROSLIB.ServiceRequest({}),
+      () => {},
+      () => {});
+  });
+  if (stepidPromoteBtn) stepidPromoteBtn.addEventListener('click', () => {
+    if (!_stepIdLastRecommended) return;
+    // Reuse the existing ball_track_save_gains handshake. Build a
+    // payload that merges the recommended kp/kd/ki onto the current
+    // gains so the controller's other knobs (max_tilt, signs, FSM
+    // thresholds) stay intact.
+    const payload = {};
+    Object.assign(payload, _stepIdLastRecommended);
+    const promptEl = document.getElementById('stepid-prompt');
+    if (!topic.control_cmd) {
+      if (promptEl) promptEl.innerText = 'control_cmd topic missing';
+      return;
+    }
+    try {
+      topic.control_cmd.publish(new ROSLIB.Message({
+        data: 'ball_track_save_gains:' + JSON.stringify(payload) }));
+      if (promptEl) promptEl.innerText =
+        'recommended gains promoted (ball_track_save_gains).';
+    } catch (e) {
+      if (promptEl) promptEl.innerText = 'promote failed: ' + e;
+    }
+  });
+  const stepidBagsRefresh = $('stepid-bags-refresh');
+  if (stepidBagsRefresh) {
+    stepidBagsRefresh.addEventListener('click', stepIdFetchBags);
+  }
+  const stepidBagsDetails = $('stepid-bags-details');
+  if (stepidBagsDetails) {
+    stepidBagsDetails.addEventListener('toggle', () => {
+      if (stepidBagsDetails.open) stepIdFetchBags();
+    });
+  }
+  setTimeout(stepIdFetchBags, 1500);
+
   // --- HSV slider tuning + V0 debug overlay ---
   const HSV_IDS = [
     ['hsv-h-lo','hsv-h-lo-val'], ['hsv-h-hi','hsv-h-hi-val'],
@@ -6483,6 +6639,95 @@ function onAutotuneTrial(t) {
   _renderAutotuneHistory();
 }
 
+// ---- STEP_ID status handler ----
+//
+// Shares /auto_tune/status with Twiddle. STEP_ID-specific states all
+// start with 'step_id_'; the handler is a no-op for other states so
+// running Twiddle doesn't clobber the STEP_ID panel and vice versa.
+let _stepIdLastRecommended = null;
+function onStepIdStatus(s) {
+  if (!s) return;
+  const isStepId = typeof s.state === 'string'
+                   && s.state.startsWith('step_id_');
+  if (!isStepId) return;
+  const set = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.innerText = val;
+  };
+  // State pill
+  const pill = document.getElementById('stepid-state-pill');
+  if (pill) {
+    const short = s.state.replace(/^step_id_/, '');
+    pill.innerText = short;
+    const colors = {
+      starting: 'bg-emerald-600 text-white',
+      detecting_marker: 'bg-amber-600 text-white',
+      open_loop: 'bg-emerald-600 text-white',
+      recommendation_ready: 'bg-blue-600 text-white',
+      verification: 'bg-emerald-600 text-white',
+      waiting_for_ball: 'bg-amber-600 text-white',
+      done: 'bg-blue-600 text-white',
+      failed: 'bg-rose-600 text-white',
+      crashed: 'bg-rose-600 text-white',
+    };
+    let cls = colors[short] || 'bg-slate-700 text-slate-300';
+    // Verification trial states (step_id_verification_trial_N)
+    if (short.startsWith('verification_trial')) {
+      cls = colors.verification;
+    }
+    pill.className = 'text-xs mono ml-2 px-2 py-0.5 rounded ' + cls;
+  }
+  // Phase + prompt
+  set('stepid-phase', s.state.replace(/^step_id_/, '') || '—');
+  const promptEl = document.getElementById('stepid-prompt');
+  if (promptEl) promptEl.innerText = s.prompt || '—';
+  set('stepid-start-marker',
+      s.start_marker !== undefined ? `m${s.start_marker}` : '—');
+  if (s.verification_trial_idx !== undefined
+      && s.verification_trial_count !== undefined) {
+    set('stepid-vtrial',
+        `${s.verification_trial_idx}/${s.verification_trial_count}`);
+  } else {
+    set('stepid-vtrial', '—');
+  }
+  set('stepid-geff',
+      s.g_eff_mm_s2_per_deg != null
+        ? Number(s.g_eff_mm_s2_per_deg).toFixed(1) : '—');
+  // Recommended gains
+  const recEl = document.getElementById('stepid-recommended');
+  if (recEl) {
+    if (s.recommended_gains && s.recommended_gains.kp != null) {
+      const r = s.recommended_gains;
+      const lines = Object.entries(r)
+        .filter(([k, v]) => typeof v === 'number')
+        .map(([k, v]) => `${k.padEnd(18)}: ${Number(v).toFixed(4)}`);
+      recEl.innerText = lines.join('\n');
+      _stepIdLastRecommended = r;
+    }
+  }
+  // Show/hide the operator-confirm button
+  const confirmBtn = document.getElementById('stepid-confirm-btn');
+  if (confirmBtn) {
+    if (s.state === 'step_id_waiting_for_ball') {
+      confirmBtn.classList.remove('hidden');
+    } else {
+      confirmBtn.classList.add('hidden');
+    }
+  }
+  // Show/hide the promote button
+  const promoteBtn = document.getElementById('stepid-promote-btn');
+  if (promoteBtn) {
+    if (_stepIdLastRecommended
+        && (s.state === 'step_id_recommendation_ready'
+            || s.state === 'step_id_done')) {
+      promoteBtn.classList.remove('hidden');
+    } else if (s.state === 'step_id_starting'
+               || s.state === 'step_id_detecting_marker') {
+      promoteBtn.classList.add('hidden');
+    }
+  }
+}
+
 // ---- Recorded auto-tune sessions list (IVA-style) ----
 
 function _autotuneSetBagsOut(text, ok) {
@@ -6602,6 +6847,115 @@ function autotuneDeleteBag(name) {
     autotuneFetchBags();
   }).catch(e => {
     _autotuneSetBagsOut('✗ delete failed: ' + e, false);
+  });
+}
+
+// ---- STEP_ID bag list (mirrors autotune list, different endpoints) ----
+
+function _stepIdSetBagsOut(text, ok) {
+  const el = document.getElementById('stepid-bags-out');
+  if (!el) return;
+  el.classList.remove('hidden');
+  el.innerText = text;
+  el.className = 'text-xs mono mt-2 p-2 bg-slate-900 border rounded ' +
+    'whitespace-pre-wrap max-h-48 overflow-y-auto ' +
+    (ok === true  ? 'border-emerald-700 text-emerald-300'
+     : ok === false ? 'border-red-700 text-red-300'
+     :                'border-slate-700 text-slate-300');
+}
+
+function _stepIdRenderBag(e) {
+  const name = e.name || '';
+  const omega = (e.omega_n_rad_s != null)
+    ? Number(e.omega_n_rad_s).toFixed(2) : '—';
+  const geff = (e.g_eff_used != null)
+    ? Number(e.g_eff_used).toFixed(0) : '—';
+  const stats = `<div class="text-slate-500 mt-0.5">
+    <span class="text-emerald-400">G_eff=${geff}</span> ·
+    <span>ωn=${omega} rad/s</span>
+    ${e.has_digest ? ' · digested' : ''}
+    ${e.has_bag ? ' · <span class="text-cyan-400">bag</span>' : ''}
+  </div>`;
+  const pngBtn = e.has_png
+    ? `<a class="text-blue-400 hover:text-blue-300"
+          target="_blank" rel="noopener"
+          href="/step_id/bags/png?name=${encodeURIComponent(name)}">PNG</a>`
+    : `<span class="text-slate-600" title="no plant_gain_fit.png — run digest first">—</span>`;
+  return `
+    <div class="border-l-2 border-slate-700 pl-2 py-1">
+      <div class="flex items-center justify-between gap-2">
+        <div class="mono text-slate-300 truncate" title="${e.path || ''}">${name}</div>
+        <div class="flex items-center gap-2 shrink-0 text-xs">
+          <button class="text-emerald-400 hover:text-emerald-300"
+                  onclick="stepIdDigestBag('${name}')">Digest</button>
+          ${pngBtn}
+          <button class="text-purple-400 hover:text-purple-300"
+                  onclick="stepIdPushBag('${name}')">Push</button>
+          <button class="text-red-400 hover:text-red-300"
+                  onclick="stepIdDeleteBag('${name}')">×</button>
+        </div>
+      </div>
+      <div class="text-slate-500">
+        ${_autotuneFmtMtime(e.mtime)} · ${_autotuneFmtBytes(e.size_bytes)}
+      </div>
+      ${stats}
+    </div>`;
+}
+
+function stepIdFetchBags() {
+  const out = document.getElementById('stepid-bags-list');
+  const cnt = document.getElementById('stepid-bags-count');
+  if (!out) return;
+  fetch('/step_id/bags').then(r => r.json()).then(j => {
+    const entries = (j.entries || []);
+    if (cnt) cnt.innerText = `(${entries.length})`;
+    if (!entries.length) {
+      out.innerHTML = '<div class="text-slate-500">no sessions yet — run one above</div>';
+      return;
+    }
+    out.innerHTML = entries.map(_stepIdRenderBag).join('');
+  }).catch(e => {
+    out.innerText = `failed to fetch /step_id/bags: ${e}`;
+  });
+}
+
+function stepIdDigestBag(name) {
+  _stepIdSetBagsOut(`running digest on ${name}…`, null);
+  fetch('/step_id/bags/digest', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    const head = (j.ok ? '✓ ' : '✗ ') + 'digest ' + name + '\n';
+    _stepIdSetBagsOut(head + (j.message || '(no output)'), !!j.ok);
+    if (j.ok) stepIdFetchBags();
+  }).catch(e => {
+    _stepIdSetBagsOut('✗ digest failed: ' + e, false);
+  });
+}
+
+function stepIdPushBag(name) {
+  _stepIdSetBagsOut(`pushing ${name} to origin…`, null);
+  fetch('/step_id/bags/push', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    const head = (j.ok ? '✓ ' : '✗ ') + 'push ' + name + '\n';
+    _stepIdSetBagsOut(head + (j.message || '(no output)'), !!j.ok);
+  }).catch(e => {
+    _stepIdSetBagsOut('✗ push failed: ' + e, false);
+  });
+}
+
+function stepIdDeleteBag(name) {
+  if (!confirm(`Delete session "${name}"? This removes the entire dir.`)) return;
+  fetch('/step_id/bags/delete', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(j => {
+    _stepIdSetBagsOut(j.message || (j.ok ? 'deleted' : 'failed'), !!j.ok);
+    stepIdFetchBags();
+  }).catch(e => {
+    _stepIdSetBagsOut('✗ delete failed: ' + e, false);
   });
 }
 

@@ -336,6 +336,82 @@ def _resolve_auto_tune_session(name):
     return full
 
 
+def _list_step_id_sessions():
+    """Enumerate step_id_<UTC>/ sessions under tuning_data/.
+    Mirrors _list_auto_tune_sessions; the inline summary surfaces the
+    open-loop G_eff and recommended ωn so operators can compare runs
+    at a glance without opening the digest PNG."""
+    root = _iva_bags_root()
+    out = []
+    if not os.path.isdir(root):
+        return out
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return out
+    for name in entries:
+        if not name.startswith('step_id_'):
+            continue
+        full = os.path.join(root, name)
+        if not os.path.isdir(full):
+            continue
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        png = os.path.join(full, 'plant_gain_fit.png')
+        summary = os.path.join(full, 'summary.json')
+        digest_summary = os.path.join(full, 'step_id_summary.json')
+        recommendation = os.path.join(full, 'step_id_recommendation.json')
+        bag = os.path.join(full, 'bag')
+        entry = {
+            'name': name,
+            'path': full,
+            'mtime': st.st_mtime,
+            'size_bytes': _iva_dir_size(full),
+            'has_png': os.path.isfile(png),
+            'has_summary': os.path.isfile(summary),
+            'has_digest': os.path.isfile(digest_summary),
+            'has_recommendation': os.path.isfile(recommendation),
+            'has_bag': os.path.isdir(bag),
+        }
+        # Inline open-loop G_eff and recommended ωn so the list shows
+        # those without a click — same UX as best_fitness for
+        # auto_tune sessions.
+        if os.path.isfile(summary):
+            try:
+                with open(summary) as f:
+                    sd = json.load(f) or {}
+                rec = (sd.get('phases', {}) or {}).get('recommendation', {})
+                ol = (sd.get('phases', {}) or {}).get('open_loop', {})
+                entry['g_eff_used'] = rec.get('g_eff_used')
+                entry['omega_n_rad_s'] = rec.get('omega_n_rad_s')
+                entry['kp'] = rec.get('kp')
+                entry['kd'] = rec.get('kd')
+                entry['start_marker'] = sd.get('start_marker')
+                entry['td_observed_s'] = ol.get('td_observed_s')
+            except Exception:
+                pass
+        out.append(entry)
+    out.sort(key=lambda e: e['mtime'], reverse=True)
+    return out
+
+
+def _resolve_step_id_session(name):
+    """Path-traversal guard for step_id session names."""
+    if not name or '/' in name or name in ('.', '..'):
+        return None
+    if not name.startswith('step_id_'):
+        return None
+    root = os.path.realpath(_iva_bags_root())
+    full = os.path.realpath(os.path.join(root, name))
+    if not full.startswith(root + os.sep) and full != root:
+        return None
+    if not os.path.isdir(full):
+        return None
+    return full
+
+
 def _resolve_iva_bag_path(name):
     """Path-traversal guard. Resolves a basename under the IVA root."""
     if not name or '/' in name or name in ('.', '..'):
@@ -1471,6 +1547,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({'tuning_dir': _iva_bags_root(),
                              'entries': _list_auto_tune_sessions()})
             return
+        if self.path == '/step_id/bags':
+            self._send_json({'tuning_dir': _iva_bags_root(),
+                             'entries': _list_step_id_sessions()})
+            return
+        if self.path.startswith('/step_id/bags/png'):
+            # /step_id/bags/png?name=<session> → plant_gain_fit.png
+            from urllib.parse import urlsplit, parse_qs
+            q = parse_qs(urlsplit(self.path).query)
+            name = (q.get('name') or [''])[0]
+            full = _resolve_step_id_session(name)
+            if not full:
+                self._send_json({'error': 'session not found'}, 404)
+                return
+            png = os.path.join(full, 'plant_gain_fit.png')
+            if not os.path.isfile(png):
+                self._send_json(
+                    {'error': 'no plant_gain_fit.png — run digest first'},
+                    404)
+                return
+            try:
+                with open(png, 'rb') as f:
+                    data = f.read()
+            except OSError as e:
+                self._send_json({'error': str(e)}, 500)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path.startswith('/auto_tune/bags/png'):
             # /auto_tune/bags/png?name=<session>  →  fitness_curve.png
             from urllib.parse import urlsplit, parse_qs
@@ -2096,6 +2204,148 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         'ok': False,
                         'message': (
                             f'push: {push.stderr.strip()}'),
+                    }, 500)
+                    return
+                self._send_json({
+                    'ok': True, 'message': f'pushed {name}'})
+            except Exception as e:
+                self._send_json(
+                    {'ok': False, 'message': f'push failed: {e}'},
+                    500)
+            return
+        # ----- STEP_ID per-session endpoints (mirror auto_tune/bags/*) -----
+        if self.path == '/step_id/bags/digest':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+            except Exception:
+                self._send_json({'ok': False,
+                                 'message': 'bad JSON'}, 400)
+                return
+            name = body.get('name', '').strip()
+            full = _resolve_step_id_session(name)
+            if not full:
+                self._send_json(
+                    {'ok': False,
+                     'message': f'session not found: {name!r}'}, 404)
+                return
+            try:
+                script = os.path.expanduser(
+                    '~/stable_bot_repo/stewart_bringup/scripts/'
+                    'digest_step_id_bag.py')
+                r = subprocess.run(
+                    ['python3', script, full],
+                    capture_output=True, text=True, timeout=30)
+                ok = (r.returncode == 0)
+                self._send_json({
+                    'ok': ok,
+                    'message': (r.stdout or r.stderr).strip(),
+                }, status=200 if ok else 500)
+            except Exception as e:
+                self._send_json(
+                    {'ok': False, 'message': f'digest failed: {e}'},
+                    500)
+            return
+        if self.path == '/step_id/bags/delete':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+            except Exception:
+                self._send_json({'ok': False,
+                                 'message': 'bad JSON'}, 400)
+                return
+            name = body.get('name', '').strip()
+            full = _resolve_step_id_session(name)
+            if not full:
+                self._send_json(
+                    {'ok': False,
+                     'message': f'session not found: {name!r}'}, 404)
+                return
+            try:
+                import shutil as _shutil
+                _shutil.rmtree(full)
+                self._send_json({'ok': True,
+                                 'message': f'deleted {name}'})
+            except Exception as e:
+                self._send_json(
+                    {'ok': False, 'message': f'delete failed: {e}'},
+                    500)
+            return
+        if self.path == '/step_id/bags/push':
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b'{}')
+            except Exception:
+                self._send_json({'ok': False,
+                                 'message': 'bad JSON'}, 400)
+                return
+            name = body.get('name', '').strip()
+            full = _resolve_step_id_session(name)
+            if not full:
+                self._send_json(
+                    {'ok': False,
+                     'message': f'session not found: {name!r}'}, 404)
+                return
+            try:
+                repo = os.path.expanduser('~/stable_bot_repo')
+                rel = os.path.join('tuning_data', name)
+                # Plain `git add` — bag/ stays gitignored. We push the
+                # JSON summaries + the three digest PNGs. Same recipe
+                # as /auto_tune/bags/push.
+                add = subprocess.run(
+                    ['git', '-C', repo, 'add', rel],
+                    capture_output=True, text=True, timeout=10)
+                if add.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': f'git add: {add.stderr.strip()}',
+                    }, 500)
+                    return
+                diff = subprocess.run(
+                    ['git', '-C', repo, 'diff', '--cached', '--quiet'],
+                    capture_output=True, text=True)
+                if diff.returncode == 0:
+                    self._send_json({
+                        'ok': True,
+                        'message': 'no changes to commit (digest may '
+                                   'not be run yet — try Digest first)'})
+                    return
+                try:
+                    with open(os.path.join(full, 'summary.json')) as f:
+                        sd = json.load(f) or {}
+                    rec = (sd.get('phases', {}) or {}).get(
+                        'recommendation', {}) or {}
+                    fmsg = (f"G_eff={rec.get('g_eff_used', 0):.0f} "
+                            f"mm/s²/°, ωn={rec.get('omega_n_rad_s', 0):.2f}")
+                except Exception:
+                    fmsg = 'step_id session'
+                msg = f'step_id: {name} ({fmsg})'
+                commit = subprocess.run(
+                    ['git', '-C', repo, 'commit', '-m', msg],
+                    capture_output=True, text=True, timeout=15)
+                if commit.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': f'commit: {commit.stderr.strip()}',
+                    }, 500)
+                    return
+                pull = subprocess.run(
+                    ['git', '-C', repo, 'pull', '--rebase'],
+                    capture_output=True, text=True, timeout=30)
+                if pull.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': (
+                            f'pull --rebase: {pull.stderr.strip()}'),
+                    }, 500)
+                    return
+                push = subprocess.run(
+                    ['git', '-C', repo, 'push'],
+                    capture_output=True, text=True, timeout=30)
+                if push.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': f'push: {push.stderr.strip()}',
                     }, 500)
                     return
                 self._send_json({
