@@ -64,7 +64,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_services_default
 
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Bool, Int32MultiArray, String
+from std_msgs.msg import Bool, Float64, Int32MultiArray, String
 from std_srvs.srv import Trigger
 
 # SetPose lives in jugglebot_interfaces; we use it to reset platform Z
@@ -511,6 +511,18 @@ class AutoTuneNode(Node):
                 'aruco_imu_alignment.yaml not loaded — STEP_ID '
                 'cross-sensor position check will use identity '
                 'rotation (looser tolerance).')
+        # Operator-set start height for the STEP_ID session. Drives
+        # the platform Z used by both the open-loop tilt trial and
+        # the inter-trial pose reset. Default 80 mm: per operator
+        # observation 2026-05-01, this Z keeps the legs "tight enough"
+        # that disarm sag is small while still being inside the
+        # platform's natural operating envelope. GUI publishes the
+        # Float64 as the operator changes the input; we read the
+        # latest value at session start.
+        self._step_id_start_z_mm: float = 80.0
+        self.create_subscription(
+            Float64, '/step_id/cmd_start_z',
+            self._on_step_id_start_z_cmd, 1)
         self.pub_cmd = self.create_publisher(String, '/control_cmd', 10)
         # Latched-style status: rosbridge clients pick up the latest
         # snapshot on connect (we'll re-publish it every status update).
@@ -1340,6 +1352,21 @@ class AutoTuneNode(Node):
         except (json.JSONDecodeError, AttributeError):
             pass
 
+    def _on_step_id_start_z_cmd(self, msg: Float64) -> None:
+        """GUI updates the desired start height for STEP_ID sessions.
+        Soft-clamped to a reasonable envelope; control node's set_pose
+        also has its own limits, but this clamp gives the operator a
+        more useful error message than 'out of envelope'."""
+        z = float(msg.data)
+        if z < 25.0 or z > 120.0:
+            self.get_logger().warn(
+                f'/step_id/cmd_start_z={z:.1f} mm outside reasonable '
+                f'envelope [25, 120]; ignoring')
+            return
+        self._step_id_start_z_mm = z
+        self.get_logger().info(
+            f'STEP_ID start height set to {z:.1f} mm')
+
     def _check_preflight(self) -> tuple[bool, str]:
         """Pre-flight check before starting any tuning session.
         Returns (ok, message). Currently checks:
@@ -1972,7 +1999,24 @@ class AutoTuneNode(Node):
         # fighting the open-loop tilt.
         self._publish_mode('LEVEL_HOLD')
         self._sleep_with_abort(0.3)
-        self._reset_pose_to_nominal(blocking=True)
+        # Pre-tilt level pose at the operator-chosen start Z.
+        start_z = float(self._step_id_start_z_mm)
+        out['start_z_mm'] = start_z
+        if self._set_pose_cli is not None:
+            req = SetPose.Request()
+            req.x = 0.0
+            req.y = 0.0
+            req.z = start_z
+            req.roll = 0.0
+            req.pitch = 0.0
+            req.yaw = 0.0
+            req.blocking = True
+            try:
+                self._set_pose_cli.call_async(req)
+            except Exception as e:
+                out['aborted'] = True
+                out['abort_reason'] = f'pre-tilt set_pose failed: {e!r}'
+                return out
         self._sleep_with_abort(STEP_ID_PRE_TILT_LEVEL_S)
         if self._abort:
             out['aborted'] = True
@@ -1994,7 +2038,7 @@ class AutoTuneNode(Node):
             req = SetPose.Request()
             req.x = 0.0
             req.y = 0.0
-            req.z = float(NOMINAL_Z_MM)
+            req.z = start_z
             req.roll = float(roll_deg)
             req.pitch = float(pitch_deg)
             req.yaw = 0.0
@@ -2023,7 +2067,7 @@ class AutoTuneNode(Node):
             req = SetPose.Request()
             req.x = 0.0
             req.y = 0.0
-            req.z = float(NOMINAL_Z_MM)
+            req.z = start_z
             req.roll = 0.0
             req.pitch = 0.0
             req.yaw = 0.0

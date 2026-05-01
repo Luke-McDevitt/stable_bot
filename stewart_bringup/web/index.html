@@ -1603,6 +1603,14 @@
                 title="Apply the analytically-computed gains. Writes ball_track_gains.yaml and reloads in-memory.">
           Promote recommended
         </button>
+        <label class="flex items-center gap-1 text-xs text-slate-400 ml-auto"
+               title="Platform Z height used for the open-loop tilt-step trial and inter-trial pose resets. Default 80 mm: empirically the legs hold their position tightly enough that disarm sag is minimal here. Lower Z (30-50 mm) is stiffer for closed-loop control but produces larger disarm sag.">
+          <span>start Z</span>
+          <input id="stepid-start-z" type="number" step="1" value="80"
+                 min="25" max="120"
+                 class="bg-slate-700 rounded px-1 py-0.5 mono w-16">
+          <span>mm</span>
+        </label>
       </div>
       <div id="stepid-prompt"
            class="text-xs bg-slate-900 rounded px-2 py-1 text-amber-300 mb-2 mono">
@@ -2456,6 +2464,12 @@ function setupROSInterface() {
   topic.autotune_disable_signs = new ROSLIB.Topic({
     ros, name: '/auto_tune/cmd_disable_sign_flips',
     messageType: 'std_msgs/msg/Bool' });
+  // STEP_ID start-height. Operator-set Z (mm) for the open-loop
+  // tilt-step trial and inter-trial pose reset. Auto-tune subscribes
+  // and stores latest; the trial reads it on session start.
+  topic.stepid_start_z = new ROSLIB.Topic({
+    ros, name: '/step_id/cmd_start_z',
+    messageType: 'std_msgs/msg/Float64' });
 
   // Ball state (KF posterior, platform-frame mm)
   topic.ball_state = new ROSLIB.Topic({
@@ -4668,13 +4682,39 @@ function initVisionGUI() {
   const stepidStopBtn = $('stepid-stop-btn');
   const stepidConfirmBtn = $('stepid-confirm-btn');
   const stepidPromoteBtn = $('stepid-promote-btn');
+  const stepidStartZInput = $('stepid-start-z');
+  // Publish start-Z on every change so the node's stored value
+  // stays in sync with the input even before Start is pressed.
+  function _publishStepIdStartZ() {
+    if (!topic.stepid_start_z || !stepidStartZInput) return;
+    const z = parseFloat(stepidStartZInput.value);
+    if (!isFinite(z)) return;
+    try {
+      topic.stepid_start_z.publish(new ROSLIB.Message({ data: z }));
+    } catch (e) {}
+  }
+  if (stepidStartZInput) {
+    stepidStartZInput.addEventListener('change', _publishStepIdStartZ);
+    // Publish once at GUI ready so a fresh node picks up the value
+    // even if the operator never touches the input before Start.
+    setTimeout(_publishStepIdStartZ, 1500);
+  }
   if (stepidStartBtn) stepidStartBtn.addEventListener('click', () => {
     if (!srv.stepid_start) return;
+    // Re-publish start-Z right before Start so the latest input
+    // value definitely lands at the node before the session begins.
+    _publishStepIdStartZ();
     const promptEl = document.getElementById('stepid-prompt');
     if (promptEl) promptEl.innerText = 'starting…';
-    srv.stepid_start.callService(new ROSLIB.ServiceRequest({}),
-      (r) => { if (promptEl && !r.success) promptEl.innerText = r.message; },
-      (e) => { if (promptEl) promptEl.innerText = 'start failed: ' + e; });
+    // Brief delay so the Float64 lands at auto_tune_node before the
+    // Trigger service request. Both go via the same rosbridge so
+    // ordering is deterministic, but giving rosbridge a tick to
+    // forward both is cheap and safer.
+    setTimeout(() => {
+      srv.stepid_start.callService(new ROSLIB.ServiceRequest({}),
+        (r) => { if (promptEl && !r.success) promptEl.innerText = r.message; },
+        (e) => { if (promptEl) promptEl.innerText = 'start failed: ' + e; });
+    }, 100);
   });
   if (stepidStopBtn) stepidStopBtn.addEventListener('click', () => {
     // STEP_ID shares /auto_tune/stop with Twiddle — both abort modes
