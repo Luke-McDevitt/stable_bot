@@ -160,14 +160,18 @@
             <input id="vis-show-v0-debug" type="checkbox"> V0 debug overlay
           </label>
           <label class="flex items-center gap-2"
-                 title="Show what the cv2 (HSV+contour) detector picks up, BLUE circle. Independent of the active-backend ball-circle and the detector dropdown.">
+                 title="Show what the cv2 (HSV+contour) detector picks up, BLUE circle. Independent of the active-backend ball-circle and the detector dropdown. Latency = capture (OAK) to display (browser) end-to-end.">
             <input id="vis-show-cv2-circle" type="checkbox">
             <span class="text-blue-400">cv2 circle</span>
+            <span id="cv2-lat-readout"
+                  class="text-xs mono text-slate-500 ml-1">— ms</span>
           </label>
           <label class="flex items-center gap-2"
-                 title="Show the on-device YOLO detector's bounding-box centroid as an EMERALD ring. Subscribed to /oak/ball/v0/yolo_pixel (which the v6n / v8n model publishes at ~30-60 Hz). Independent of the active-backend ball-circle.">
+                 title="Show the on-device YOLO detector's bounding-box centroid as an EMERALD ring. Subscribed to /oak/ball/v0/yolo_pixel (which the v6n / v8n model publishes at ~30-60 Hz). Latency = capture (OAK) to display (browser) end-to-end. Compare against cv2's number — for closed-loop control, lower latency wins.">
             <input id="vis-show-nn-circle" type="checkbox">
             <span class="text-emerald-400">YOLO circle</span>
+            <span id="yolo-lat-readout"
+                  class="text-xs mono text-slate-500 ml-1">— ms</span>
           </label>
         </div>
         <!-- Detector toggle for option 2 (V0 + platform mask) vs
@@ -5899,6 +5903,21 @@ function onBallV0PerBackend(which, m) {
   const latest = {
     cx: m.point.x, cy: m.point.y, r: m.point.z,
   };
+  // Compute capture-to-render latency. msg.header.stamp is the OAK
+  // capture time (oak_driver_node converts dai.Clock into ROS clock
+  // before stamping). Subtracting from "now" on the laptop gives the
+  // total cam → host → rosbridge → browser pipeline latency. Useful
+  // for comparing cv2 (raw 540p host detect) vs YOLO (on-device NN
+  // + USB transfer) — they differ by ~20 ms which is visible when
+  // tracking a rolling ball.
+  let lat_ms = NaN;
+  try {
+    const stamp = m.header.stamp;
+    const stamp_ms = stamp.sec * 1000 + stamp.nanosec / 1e6;
+    lat_ms = Date.now() - stamp_ms;
+  } catch (e) {}
+  // Rolling mean of last 30 samples (≈1 s at 30 Hz).
+  _trackBackendLatency(which, lat_ms);
   if (which === 'cv2') {
     _v0Cv2Latest = latest;
     _v0Cv2LastMs = performance.now();
@@ -5907,6 +5926,24 @@ function onBallV0PerBackend(which, m) {
     _v0NnLastMs = performance.now();
   }
   renderBallOverlays();
+}
+
+// Per-backend latency tracking — keeps a 30-sample ring buffer of
+// (msg.header.stamp → now()) deltas, and writes a live mean to the
+// DOM so the operator can see e.g. "cv2: 13 ms · YOLO: 33 ms" right
+// next to the toggle checkboxes.
+const _latRing = { cv2: [], nn: [] };
+function _trackBackendLatency(which, lat_ms) {
+  if (!isFinite(lat_ms) || lat_ms < 0 || lat_ms > 1000) return;
+  const ring = _latRing[which];
+  if (!ring) return;
+  ring.push(lat_ms);
+  if (ring.length > 30) ring.shift();
+  if (ring.length < 5) return;  // wait for warm-up before display
+  const mean = ring.reduce((a, b) => a + b, 0) / ring.length;
+  const elId = which === 'cv2' ? 'cv2-lat-readout' : 'yolo-lat-readout';
+  const el = document.getElementById(elId);
+  if (el) el.innerText = `${mean.toFixed(0)} ms`;
 }
 
 // Depth-blob ball overlay. Subscribed to /oak/ball/depth/rgb_pixel —
