@@ -2921,25 +2921,41 @@ class AutoTuneNode(Node):
     def _fit_velocity_based_g_eff(self, samples: list[dict],
                                   roll_deg: float, pitch_deg: float
                                   ) -> tuple[float, dict]:
-        """G_eff via peak velocity / integrated IMU tilt up to peak.
+        """G_eff via linear regression of v(t) vs ∫θ(τ)dτ during the
+        sustained-motion window. The slope of this line IS the plant
+        gain (physics: a = G·θ integrates to v = G·∫θ + C).
 
-        Physics: ball acceleration a(t) = G_eff · sin(θ_imu(t))
-        (small angle: a ≈ G_eff · θ_imu in deg). Integrating over
-        time: v(t) = ∫(0 to t) G_eff · θ_imu(τ) dτ. Peak velocity
-        occurs roughly at end-of-tilt (before friction starts
-        decelerating). So G_eff ≈ v_peak / ∫(0 to t_peak) |θ_imu| dτ.
+        Why linear regression instead of peak_v / integrated_tilt?
+        Per-trial G_eff using peak_v varied 5× across the 213307Z
+        replicates ([104, 124, 214]) even with cleaned IMU and
+        consistent trajectories — the noise was in the peak-velocity
+        sample (single-frame vision glitch surviving the 95th-
+        percentile filter) and in the choice of integration window
+        (peak_v_t happens at variable times relative to the tilt-
+        phase boundary). Linear regression uses ALL samples in the
+        motion window via least-squares, so a few outlier frames
+        don't dominate, AND the integration window is a fixed
+        analytical construct (cumulative integral from t=0) rather
+        than a noise-determined one.
 
-        Robust to stiction: even if the ball is stationary for the
-        first 500 ms, the integrated tilt during that period is
-        still in the integral (driving force was applied), and the
-        ball's eventual peak velocity reflects the cumulative impulse.
-        Position-based fits fail in this regime because the position
-        record looks flat-then-jump rather than the smooth parabola
-        the fit assumes.
+        Implementation:
+          1. Median-filter the ball-position arrays (kernel=5 frames)
+             to absorb single-frame V0 dropouts that would otherwise
+             produce velocity spikes.
+          2. Compute v(t) along the expected motion direction.
+          3. Compute cumulative integral of |θ_imu(t)| from t=0
+             (always positive, magnitude in expected direction).
+          4. Detect motion onset as first time smoothed velocity
+             exceeds 30 mm/s for ≥3 consecutive frames — a stricter
+             definition than "displacement > 5 mm" because it
+             requires SUSTAINED motion not just a single frame
+             jump.
+          5. Linear-fit v(t) vs cumint(t) over [motion_onset, end-
+             of-samples]. Slope = G_eff.
+          6. Robust cleanup: drop samples whose fit residual is
+             >3σ, refit. One iteration is enough for typical noise.
 
-        Returns (g_eff_mm_s2_per_deg, meta_dict). Returns 0.0 if the
-        ball didn't move enough to characterize, or if integrated
-        IMU tilt was too small."""
+        Returns (g_eff_mm_s2_per_deg, meta_dict)."""
         if len(samples) < 10:
             return (0.0, {'velocity_fit_error': 'too few samples'})
         ax_dir = math.copysign(1.0, pitch_deg) if pitch_deg != 0 else 0.0
@@ -2948,63 +2964,109 @@ class AutoTuneNode(Node):
         ax_dir /= nrm
         ay_dir /= nrm
         ts = np.array([s['t'] for s in samples])
-        xs = np.array([s['x'] for s in samples])
-        ys = np.array([s['y'] for s in samples])
+        xs_raw = np.array([s['x'] for s in samples])
+        ys_raw = np.array([s['y'] for s in samples])
         imu_p = np.array([s.get('imu_pitch_deg', 0.0) for s in samples])
         imu_r = np.array([s.get('imu_roll_deg', 0.0) for s in samples])
-        # Velocity along the expected motion direction. Numerical
-        # gradient: central differences in the interior, one-sided
-        # at boundaries.
+        # Median-filter the position arrays to absorb single-frame V0
+        # dropouts. With kernel=5, a single bad frame's value gets
+        # replaced by the median of itself + 4 neighbours — the
+        # outlier never dominates. Implemented inline since scipy
+        # isn't a hard dependency for this package.
+        def _median_filter(a: np.ndarray, k: int = 5) -> np.ndarray:
+            if len(a) < k:
+                return a.copy()
+            half = k // 2
+            out = np.zeros_like(a)
+            for i in range(len(a)):
+                lo = max(0, i - half)
+                hi = min(len(a), i + half + 1)
+                out[i] = np.median(a[lo:hi])
+            return out
+        xs = _median_filter(xs_raw, 5)
+        ys = _median_filter(ys_raw, 5)
+        # Velocity from smoothed position (central differences).
         vx = np.gradient(xs, ts)
         vy = np.gradient(ys, ts)
         v_along = vx * ax_dir + vy * ay_dir
-        # Robust peak: use 95th percentile, not max. Single-frame
-        # vision glitches drove peak_v=2505 in step_id_20260501T200141Z
-        # and 5500+ in 202650Z verification trials; np.max picks up
-        # exactly those glitch frames. The 95th percentile drops the
-        # top ~5% of samples (≈ top 5-10 frames at 100 Hz over 1 s),
-        # so a true sustained peak survives but isolated outliers do
-        # not.
-        peak_v_signed = float(np.percentile(v_along, 95))
-        if peak_v_signed < 30.0:
-            return (0.0, {
-                'velocity_fit_error': (
-                    f'peak v in expected direction only '
-                    f'{peak_v_signed:.0f} mm/s — ball didn\'t move '
-                    f'enough or moved the wrong way'),
-                'peak_v_signed_mm_s': peak_v_signed,
-            })
-        peak_idx = int(np.argmax(v_along))
-        peak_t = float(ts[peak_idx])
-        # Integrate IMU tilt magnitude from t=0 to peak_t. Use the
-        # dominant axis (the one we commanded).
+        # IMU magnitude in expected motion direction (always positive
+        # because we tilt one way only; cumulative integral grows
+        # monotonically).
         if abs(pitch_deg) >= abs(roll_deg):
             imu_dominant = np.abs(imu_p)
         else:
             imu_dominant = np.abs(imu_r)
-        mask = ts <= peak_t
-        if mask.sum() < 5:
+        # Cumulative trapezoid integral of |θ_imu(t)| from t=0.
+        # Using np.cumsum + dt approximation here; for precise
+        # integration use np.trapz — but the speed difference at
+        # 100 Hz × 2 s × 200 samples is negligible.
+        dt = np.diff(ts, prepend=ts[0])
+        cum_int_tilt = np.cumsum(0.5 * (imu_dominant
+                                         + np.roll(imu_dominant, 1)) * dt)
+        cum_int_tilt[0] = 0.0
+        # Smoothed-velocity-based motion onset: first t where the
+        # 3-frame moving average of v_along exceeds 30 mm/s.
+        v_smooth = _median_filter(v_along, 3)
+        motion_onset_idx = None
+        for i in range(2, len(v_smooth)):
+            if (v_smooth[i] > 30.0 and v_smooth[i-1] > 30.0
+                    and v_smooth[i-2] > 30.0):
+                motion_onset_idx = i - 2
+                break
+        if motion_onset_idx is None:
             return (0.0, {
-                'velocity_fit_error': 'too few pre-peak samples',
-                'peak_v_signed_mm_s': peak_v_signed,
-                'peak_t_s': peak_t,
+                'velocity_fit_error': (
+                    'no sustained motion detected (smoothed v < '
+                    '30 mm/s for 3+ consecutive frames throughout '
+                    'the trial)'),
             })
-        integrated_tilt_deg_s = float(np.trapz(
-            imu_dominant[mask], ts[mask]))
-        if integrated_tilt_deg_s < 0.05:
+        # Linear regression v(t) = G_eff · cum_int(t) + offset over
+        # [motion_onset, end_of_samples]. Slope = G_eff.
+        fit_mask = np.arange(len(ts)) >= motion_onset_idx
+        if fit_mask.sum() < 5:
             return (0.0, {
-                'velocity_fit_error':
-                    f'integrated tilt {integrated_tilt_deg_s:.3f} '
-                    f'deg·s too small',
-                'peak_v_signed_mm_s': peak_v_signed,
-                'integrated_tilt_deg_s': integrated_tilt_deg_s,
+                'velocity_fit_error': 'too few post-onset samples',
             })
-        g_eff_v = peak_v_signed / integrated_tilt_deg_s
+        x_fit = cum_int_tilt[fit_mask]
+        y_fit = v_along[fit_mask]
+        # Need x_fit to span enough range for a meaningful slope.
+        if x_fit[-1] - x_fit[0] < 0.05:
+            return (0.0, {
+                'velocity_fit_error': 'integrated tilt range too small',
+            })
+        try:
+            slope, intercept = np.polyfit(x_fit, y_fit, 1)
+        except Exception as e:
+            return (0.0, {
+                'velocity_fit_error': f'polyfit failed: {e!r}',
+            })
+        # Robust cleanup: drop samples > 3σ off the line, refit once.
+        residuals = y_fit - (slope * x_fit + intercept)
+        std_resid = float(np.std(residuals))
+        n_dropped = 0
+        if std_resid > 1e-6:
+            keep = np.abs(residuals) < 3.0 * std_resid
+            if keep.sum() >= 5:
+                n_dropped = int(np.sum(~keep))
+                try:
+                    slope, intercept = np.polyfit(
+                        x_fit[keep], y_fit[keep], 1)
+                except Exception:
+                    pass
+        # Slope is signed: positive = ball moving in expected
+        # direction at the rate predicted by accumulated tilt. We
+        # report magnitude.
+        g_eff_v = float(abs(slope))
         return (g_eff_v, {
-            'velocity_fit_method': 'peak_v / integ(|θ_imu|)',
-            'peak_v_signed_mm_s': float(peak_v_signed),
-            'peak_v_t_s': float(peak_t),
-            'integrated_tilt_deg_s': float(integrated_tilt_deg_s),
+            'velocity_fit_method': 'lr_v_vs_cumint_theta',
+            'lr_slope_signed': float(slope),
+            'lr_intercept_mm_s': float(intercept),
+            'lr_motion_onset_s': float(ts[motion_onset_idx]),
+            'lr_n_fit_samples': int(fit_mask.sum()),
+            'lr_n_outliers_dropped': n_dropped,
+            'lr_residual_std_mm_s': std_resid,
+            'lr_cum_int_range_deg_s':
+                float(x_fit[-1] - x_fit[0]),
         })
 
     # ----- Closed-loop marker-pair trial -----------------------------------
