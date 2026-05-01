@@ -1822,12 +1822,28 @@ class OakDriverNode(Node):
                 self._n_v0_attempts += 1
                 self._n_v0_nn_attempts += 1
                 try:
-                    # Model output shape is (1, 3, 1, 1) — three FP16
-                    # values flattened. Index [0]=cx, [1]=cy, [2]=conf.
+                    # V0.5c output shape is (1, 3, 1, 1) — three FP16
+                    # sums all scaled by K=1000:
+                    #   [0] = K * mx_avg  (sum of m·xs / N, scaled)
+                    #   [1] = K * my_avg  (sum of m·ys / N, scaled)
+                    #   [2] = K * m_avg   (sum of m / N, scaled)
+                    # Centroid is mx_avg / m_avg = (K*mx)/(K*m) so the
+                    # K cancels — done here on the host in FP32 to
+                    # avoid the in-model Div that produced NaN on
+                    # Myriad X (V0.5b).
                     out = nn_msg.getFirstLayerFp16()
-                    cx_n = float(out[0])
-                    cy_n = float(out[1])
-                    conf = float(out[2])
+                    mx_avg_K = float(out[0])
+                    my_avg_K = float(out[1])
+                    m_avg_K  = float(out[2])
+                    NN_M_SCALE = 1000.0
+                    HOST_EPS = 1e-7
+                    if m_avg_K > HOST_EPS:
+                        cx_n = mx_avg_K / m_avg_K
+                        cy_n = my_avg_K / m_avg_K
+                    else:
+                        cx_n, cy_n = 0.0, 0.0
+                    # Conf for the radius proxy is the unscaled m_avg.
+                    conf = m_avg_K / NN_M_SCALE
                 except Exception as e:
                     cx_n, cy_n, conf = float('nan'), float('nan'), 0.0
                     self.get_logger().warn(

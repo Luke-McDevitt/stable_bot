@@ -167,24 +167,21 @@ def build_onnx(out_path: str, w_b, w_g, w_r, bias,
     _const('density_floor_const',
            np.array([[[[density_floor]]]], dtype=np.float32))
 
-    # FP16 numerics fix (2026-04-30, V0.5b): bumped eps from 1e-6 to
-    # 1e-4 because Myriad X uses FP16 with denormals flushed to zero
-    # (smallest normal ≈ 6.1e-5). 1e-6 silently became 0 on hardware,
-    # turning the soft-argmax denominator into 0+0=0 → 0/0=NaN
-    # whenever no orange pixels were present. The host's getFirstLayerFp16
-    # then read NaN and silently rejected the publish (NaN > floor is
-    # False). Confirmed via the [nn-debug] log: cx_n=NaN cy_n=NaN
-    # conf=0 on every frame.
-    _const('eps',   np.array([[[[1e-4]]]],        dtype=np.float32))
-
-    # Scale-up factor on m before the soft-argmax pools. m_avg for
-    # small detections (5-px ball ≈ 2.4e-4, 2-px ball ≈ 1.6e-5) lives
-    # right at or below the FP16 normal threshold — even after fixing
-    # eps, m_avg itself can flush to zero on small balls. Multiplying
-    # m by 1000 lifts every intermediate into FP16 normal range
-    # (smallest is now ~1.6e-2, comfortable). The conf field of the
-    # output uses the UNSCALED m_avg (separate global pool below) so
-    # the host's existing radius calculation stays calibrated.
+    # V0.5c (2026-04-30): NO in-model division.
+    #
+    # V0.5b tried fixing FP16 underflow by adding eps=1e-4 and scaling
+    # m by 1000 before the Div. Myriad X *still* produced cx=cy=NaN
+    # despite both fixes — confirmed via [nn-debug] log with the
+    # rebuilt blob (eps=1e-4 verified in-model). The Div op itself is
+    # the failure mode on Myriad X for this graph topology, not the
+    # operands. Compiler may be fusing ops in a way that bypasses the
+    # eps add, or the in-FP16 Div has its own quirks we can't probe.
+    #
+    # New approach: output the 3 sums (mx_avg_K, my_avg_K, m_avg_K),
+    # all scaled by K=1000 so they fit comfortably in FP16 normal
+    # range for any plausible ball size. Host computes the centroid
+    # in FP32 — no in-model Div, no NaN possible. Math is identical:
+    #     cx = (K * mx_avg) / (K * m_avg) = mx_avg / m_avg
     _const('m_scale', np.array([[[[1000.0]]]], dtype=np.float32))
 
     # 5×5 box-blur kernel for the spatial-coherence stage. Stored as
@@ -230,25 +227,22 @@ def build_onnx(out_path: str, w_b, w_g, w_r, bias,
         helper.make_node('Sub', ['m_density', 'density_floor_const'],
                          ['m_density_minus_floor']),
         helper.make_node('Relu', ['m_density_minus_floor'], ['m']),
-        # Conf output uses the UNSCALED m_avg so the host's existing
-        # radius proxy `(conf * V0_W * V0_H) ** 0.5` keeps the right
-        # calibration.
-        helper.make_node('GlobalAveragePool', ['m'], ['m_avg']),
-        # Soft-argmax math runs in scaled space (m × 1000) so neither
-        # m_avg nor mx_avg/my_avg can underflow FP16 — see m_scale
-        # comment above.
+        # Scale m by K=1000 so all global-pool outputs stay in FP16
+        # normal range (smallest m_avg becomes ~1.6e-2 even for a
+        # 2-px ball). Host divides in FP32, so the K cancels:
+        #     cx_n = (K * mx_avg) / (K * m_avg) = mx_avg / m_avg
         helper.make_node('Mul', ['m', 'm_scale'], ['m_K']),
         helper.make_node('GlobalAveragePool', ['m_K'], ['m_avg_K']),
         helper.make_node('Mul', ['m_K', 'xs_grid'], ['m_xs_K']),
         helper.make_node('GlobalAveragePool', ['m_xs_K'], ['mx_avg_K']),
         helper.make_node('Mul', ['m_K', 'ys_grid'], ['m_ys_K']),
         helper.make_node('GlobalAveragePool', ['m_ys_K'], ['my_avg_K']),
-        helper.make_node('Add', ['m_avg_K', 'eps'], ['denom_K']),
-        helper.make_node('Div', ['mx_avg_K', 'denom_K'], ['cx']),
-        helper.make_node('Div', ['my_avg_K', 'denom_K'], ['cy']),
+        # Output: [mx_avg_K, my_avg_K, m_avg_K] — three FP16 floats.
+        # Host parses out[0]/out[2] for cx_n, out[1]/out[2] for cy_n,
+        # and out[2] / 1000 for the conf used in the radius proxy.
         helper.make_node('Concat',
-                         ['cx', 'cy', 'm_avg'], ['cxcyconf'],
-                         axis=1),
+                         ['mx_avg_K', 'my_avg_K', 'm_avg_K'],
+                         ['cxcyconf'], axis=1),
     ]
 
     graph = helper.make_graph(
