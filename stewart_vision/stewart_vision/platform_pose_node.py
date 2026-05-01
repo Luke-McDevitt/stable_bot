@@ -6,6 +6,10 @@ the marker ring board defined in `marker_layout.yaml`. Publishes:
 
     /platform_pose (geometry_msgs/PoseStamped) @ ~30 Hz, frame: oak_left
     /platform_pose/markers_visible (std_msgs/Int32) — count, for debug
+    /platform_pose/marker_ids (std_msgs/Int32MultiArray) — IDs detected
+        this frame. Sorted ascending. Empty when no markers were
+        seen. Used by step-ID auto-tuning to detect which marker
+        the ball is occluding (= "missing from the visible set").
 
 The pose is the camera-to-platform transform: position + orientation
 of the platform-frame origin expressed in the camera frame.
@@ -30,7 +34,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, Int32MultiArray
 
 try:
     import cv2
@@ -92,6 +96,8 @@ class PlatformPoseNode(Node):
             PoseStamped, '/platform_pose', 10)
         self.pub_n = self.create_publisher(
             Int32, '/platform_pose/markers_visible', 10)
+        self.pub_ids = self.create_publisher(
+            Int32MultiArray, '/platform_pose/marker_ids', 10)
 
         self._last_warn = 0.0
 
@@ -136,6 +142,11 @@ class PlatformPoseNode(Node):
         n_msg = Int32()
         n_msg.data = int(0 if ids is None else len(ids))
         self.pub_n.publish(n_msg)
+
+        ids_msg = Int32MultiArray()
+        if ids is not None and len(ids) > 0:
+            ids_msg.data = sorted(int(i) for i in ids.ravel().tolist())
+        self.pub_ids.publish(ids_msg)
 
         if ids is None or len(ids) < 3:
             return  # need at least 3 markers for a stable pose
