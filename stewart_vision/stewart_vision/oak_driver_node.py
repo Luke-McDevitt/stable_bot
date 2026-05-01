@@ -1187,8 +1187,12 @@ class OakDriverNode(Node):
         self.q_v0_nn = (
             self.device.getOutputQueue('v0_nn', 1, False)
             if self._v0_blob_path is not None else None)
+        # Host queue size 3 (vs the others' 1) so brief host stalls
+        # — e.g. a 30 ms cv2 spike or GC pause — don't cost YOLO
+        # frames. Non-blocking so we still drop oldest if we fall
+        # multi-frame behind.
         self.q_v1_yolo = (
-            self.device.getOutputQueue('v1_yolo', 1, False)
+            self.device.getOutputQueue('v1_yolo', 3, False)
             if self._v1_blob_path is not None else None)
         # Runtime camera-control input queue — drives autofocus on/off
         # and manual focus position from the GUI without rebuilding
@@ -1643,7 +1647,7 @@ class OakDriverNode(Node):
                 self.device.getOutputQueue('v0_nn', 1, False)
                 if self._v0_blob_path is not None else None)
             self.q_v1_yolo = (
-                self.device.getOutputQueue('v1_yolo', 1, False)
+                self.device.getOutputQueue('v1_yolo', 3, False)
                 if self._v1_blob_path is not None else None)
             self.q_cam_ctrl = self.device.getInputQueue('cam_rgb_control')
             if self.enable_depth:
@@ -2177,13 +2181,23 @@ class OakDriverNode(Node):
                 v0_stamp = self.get_clock().now().to_msg()
                 v0_age_s = float('nan')
             self._v0_last_age_s = v0_age_s
-            # Always run cv2 detection (publishes to /oak/ball/v0/cv2_pixel
-            # for the GUI's blue overlay). The cv2 block itself decides
-            # whether to also mirror the result to /oak/ball/v0/rgb_pixel
-            # based on `self.v0_backend == 'cv2'`. This way the operator
-            # can compare cv2 vs NN visually regardless of which is the
-            # controller's active source.
-            if True:
+            # Run cv2 detection only when actually needed:
+            #   - cv2 is the active backend (controller consumes it)
+            #   - someone is subscribed to /oak/ball/v0/cv2_pixel
+            #     (GUI's blue circle toggle is on)
+            #   - someone is subscribed to /oak/v0/debug_image
+            #     (HSV-tuning overlay)
+            # cv2 inRange + findContours on a 540p frame costs ~10 ms
+            # of host CPU. At 30 Hz of rgb_raw frames that's 300 ms/sec
+            # of CPU burn — single-threaded, on the same thread that
+            # has to drain the YOLO output queue. Confirmed via
+            # benchmark_v1_yolo.py: device-side YOLO ceiling is 30 Hz,
+            # but live oak_driver was capping at 17 Hz because cv2
+            # work was eating the host's tick budget.
+            cv2_subs = (self.pub_v0_cv2.get_subscription_count() > 0
+                        or self.pub_v0_debug.get_subscription_count() > 0)
+            do_cv2 = (self.v0_backend == 'cv2') or cv2_subs
+            if do_cv2:
                 # Pre-crop to the platform-mask bbox so HSV+morph+contour
                 # only run on ~25 % of the frame area. Falls back to full-
                 # frame if bbox isn't ready yet (no pose received).
