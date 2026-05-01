@@ -1504,6 +1504,11 @@
         <div>last fitness: <span id="autotune-last-fit" class="mono text-slate-200">—</span></div>
         <div>elapsed: <span id="autotune-elapsed" class="mono text-slate-200">—</span></div>
       </div>
+      <label class="flex items-center gap-2 text-xs text-slate-400 mb-2"
+             title="When ON (default), pitch_sign / roll_sign stay locked at their pre-tested values for the entire session. Turn OFF only on hardware that hasn't been direction-tested — flipping a correct sign briefly inverts the controller and risks ball escape.">
+        <input id="autotune-disable-signs" type="checkbox" checked>
+        <span>Disable sign flips</span>
+      </label>
       <div class="text-xs text-slate-500 mb-1">last step:</div>
       <div id="autotune-last-step"
            class="text-xs mono bg-slate-900 rounded px-2 py-1 text-slate-300 mb-2">—</div>
@@ -2354,6 +2359,10 @@ function setupROSInterface() {
   topic.autotune_trial.subscribe(m => {
     try { onAutotuneTrial(JSON.parse(m.data)); } catch (e) {}
   });
+  // Sign-flip toggle (default ON = disabled). Live update.
+  topic.autotune_disable_signs = new ROSLIB.Topic({
+    ros, name: '/auto_tune/cmd_disable_sign_flips',
+    messageType: 'std_msgs/msg/Bool' });
 
   // Ball state (KF posterior, platform-frame mm)
   topic.ball_state = new ROSLIB.Topic({
@@ -4548,6 +4557,19 @@ function initVisionGUI() {
   // Initial fetch in the background.
   setTimeout(autotuneFetchBags, 1000);
 
+  // Sign-flip toggle. Live publish on change. Status callback
+  // syncs the checkbox if the value differs from the live state.
+  const autotuneDisableSigns = $('autotune-disable-signs');
+  if (autotuneDisableSigns) {
+    autotuneDisableSigns.addEventListener('change', () => {
+      if (!topic.autotune_disable_signs) return;
+      try {
+        topic.autotune_disable_signs.publish(new ROSLIB.Message({
+          data: !!autotuneDisableSigns.checked }));
+      } catch (e) {}
+    });
+  }
+
   // --- HSV slider tuning + V0 debug overlay ---
   const HSV_IDS = [
     ['hsv-h-lo','hsv-h-lo-val'], ['hsv-h-hi','hsv-h-hi-val'],
@@ -6428,6 +6450,16 @@ function onAutotuneStatus(s) {
     set('autotune-elapsed', '—');
   }
   set('autotune-last-step', s.last_step || '—');
+  // Sync the sign-flip checkbox with the live node state, but only
+  // if the user isn't currently interacting with it (avoid clobbering
+  // a click in flight).
+  if ('disable_sign_flips' in s) {
+    const cb = document.getElementById('autotune-disable-signs');
+    if (cb && document.activeElement !== cb
+            && cb.checked !== !!s.disable_sign_flips) {
+      cb.checked = !!s.disable_sign_flips;
+    }
+  }
   // Pretty-print best gains.
   const gainsEl = document.getElementById('autotune-best-gains');
   if (gainsEl) {

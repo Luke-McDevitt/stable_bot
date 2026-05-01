@@ -64,7 +64,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_services_default
 
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
 # SetPose lives in jugglebot_interfaces; we use it to reset platform Z
@@ -261,6 +261,17 @@ class AutoTuneNode(Node):
         self._running = False
         self._abort = False
         self._tune_thread = None
+        # Sign-knob master switch. Default ON (sign flips disabled),
+        # because for any setup that's been direction-tested once
+        # (which Stable-Bot has — see ball_track_gains.yaml comments),
+        # touching pitch_sign / roll_sign during tuning is pure
+        # downside: best case it confirms what you already know;
+        # worst case it briefly inverts the controller and the ball
+        # escapes. GUI checkbox toggles this live; env var sets the
+        # boot default. Set DISABLE_SIGN_FLIPS=0 only on fresh
+        # hardware that hasn't been direction-tested yet.
+        self._disable_sign_flips = (
+            os.environ.get('DISABLE_SIGN_FLIPS', '1') == '1')
 
         # ROS i/o
         self.create_subscription(
@@ -283,6 +294,13 @@ class AutoTuneNode(Node):
         # best in any past run."
         self.create_service(
             Trigger, '/auto_tune/restore_best', self._do_restore_best)
+
+        # GUI checkbox publishes a Bool here. True = sign flips
+        # disabled (default); False = include sign knobs in the
+        # Twiddle rotation. Takes effect on next knob pick.
+        self.create_subscription(
+            Bool, '/auto_tune/cmd_disable_sign_flips',
+            self._on_disable_sign_flips_cmd, 1)
 
         # Per-trial event topic — GUI accumulates these into a history
         # log. Distinct from /auto_tune/status (which is the rolling
@@ -346,6 +364,17 @@ class AutoTuneNode(Node):
         res.success = True
         res.message = 'auto_tune started'
         return res
+
+    def _on_disable_sign_flips_cmd(self, msg: Bool) -> None:
+        """GUI checkbox handler. Live update — takes effect on next
+        knob pick (existing trial finishes its current step)."""
+        old = self._disable_sign_flips
+        self._disable_sign_flips = bool(msg.data)
+        if old != self._disable_sign_flips:
+            self.get_logger().info(
+                f"sign-flip toggle → "
+                f"{'disabled' if self._disable_sign_flips else 'enabled'}")
+            self._publish_status()
 
     def _srv_stop(self, req, res):
         if not self._running:
@@ -463,13 +492,16 @@ class AutoTuneNode(Node):
                         break
 
                 # Twiddle knob picker: round-robin through unlocked
-                # knobs. For each, the state machine determines which
-                # direction to try (plus, minus, or move on).
+                # continuous knobs. Sign knobs skipped entirely when
+                # _disable_sign_flips is True (default — see init).
                 for _ in range(len(KNOBS) * 2):
                     kn = KNOBS[knob_idx % len(KNOBS)]
                     knob_idx += 1
-                    if kn.categorical and sign_locked.get(kn.name):
-                        continue
+                    if kn.categorical:
+                        if self._disable_sign_flips:
+                            continue
+                        if sign_locked.get(kn.name):
+                            continue
                     break
 
                 # Build candidate gains based on the knob's state.
@@ -974,6 +1006,9 @@ class AutoTuneNode(Node):
             json.dump(d, f, indent=2)
 
     def _publish_status(self) -> None:
+        # Always include the live config flags so the GUI checkbox
+        # can reflect the running state (especially after reconnect).
+        self._status['disable_sign_flips'] = bool(self._disable_sign_flips)
         msg = String()
         msg.data = json.dumps(self._status)
         self.pub_status.publish(msg)
