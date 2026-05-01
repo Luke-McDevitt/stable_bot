@@ -1481,7 +1481,7 @@
         <span class="text-slate-300">foam ring on rim</span>.
         ~25 min for 50 trials.
       </p>
-      <div class="flex items-center gap-2 mb-2">
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
         <button id="autotune-start-btn"
                 class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs">
           ▶ Start
@@ -1489,6 +1489,21 @@
         <button id="autotune-stop-btn"
                 class="bg-rose-600 hover:bg-rose-500 rounded px-3 py-1 text-xs">
           ■ Stop
+        </button>
+        <button id="autotune-restore-btn"
+                class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-xs"
+                title="Search every past auto_tune_*/summary.json under tuning_data/, pick the one with the highest best_fitness, and apply its gains to ball_track_gains.yaml.">
+          Restore best ever
+        </button>
+        <button id="autotune-digest-btn"
+                class="bg-amber-600 hover:bg-amber-500 rounded px-3 py-1 text-xs"
+                title="Run digest_auto_tune_bag.py on the latest session: produces fitness_curve.png + gain_trajectory.png + target_coverage.png + digest.summary.json.">
+          Digest
+        </button>
+        <button id="autotune-push-btn"
+                class="bg-blue-600 hover:bg-blue-500 rounded px-3 py-1 text-xs"
+                title="git add + commit + push the latest auto_tune session (log.jsonl + summary + digest PNGs + bag).">
+          Push to GitHub
         </button>
         <span id="autotune-status-msg"
               class="text-xs text-slate-400 mono"></span>
@@ -1520,8 +1535,8 @@
         </button>
       </div>
       <div id="autotune-history"
-           class="text-xs mono bg-slate-900 rounded px-2 py-1 text-slate-300 overflow-auto"
-           style="max-height:200px">
+           class="text-xs mono bg-slate-900 rounded px-2 py-1 text-slate-300 overflow-y-auto border border-slate-700"
+           style="max-height:240px; height:240px;">
         <span class="text-slate-600">no trials yet</span>
       </div>
     </details>
@@ -2146,6 +2161,9 @@ function setupROSInterface() {
     ros, name: '/auto_tune/start', serviceType: 'std_srvs/srv/Trigger' });
   srv.autotune_stop = new ROSLIB.Service({
     ros, name: '/auto_tune/stop', serviceType: 'std_srvs/srv/Trigger' });
+  srv.autotune_restore = new ROSLIB.Service({
+    ros, name: '/auto_tune/restore_best',
+    serviceType: 'std_srvs/srv/Trigger' });
   srv.go_to_rest = new ROSLIB.Service({
     ros, name: '/go_to_rest', serviceType: 'std_srvs/srv/Trigger' });
   srv.jog_leg = new ROSLIB.Service({
@@ -4481,6 +4499,46 @@ function initVisionGUI() {
   if (autotuneClearBtn) autotuneClearBtn.addEventListener('click', () => {
     _autotuneHistory.length = 0;
     _renderAutotuneHistory();
+  });
+  const autotuneRestoreBtn = $('autotune-restore-btn');
+  if (autotuneRestoreBtn) autotuneRestoreBtn.addEventListener('click', () => {
+    if (!srv.autotune_restore) return;
+    _autotuneSetMsg('searching history…', null);
+    srv.autotune_restore.callService(new ROSLIB.ServiceRequest({}),
+      (r) => _autotuneSetMsg(r.message || '', !!r.success),
+      (e) => _autotuneSetMsg('restore failed: ' + e, false));
+  });
+  const autotuneDigestBtn = $('autotune-digest-btn');
+  if (autotuneDigestBtn) autotuneDigestBtn.addEventListener('click', async () => {
+    _autotuneSetMsg('running digest…', null);
+    try {
+      const r = await fetch('/auto_tune/digest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const j = await r.json();
+      _autotuneSetMsg(j.message || (j.ok ? 'digest done' : 'digest failed'),
+                      !!j.ok);
+    } catch (e) {
+      _autotuneSetMsg('digest failed: ' + e, false);
+    }
+  });
+  const autotunePushBtn = $('autotune-push-btn');
+  if (autotunePushBtn) autotunePushBtn.addEventListener('click', async () => {
+    _autotuneSetMsg('pushing…', null);
+    try {
+      const r = await fetch('/auto_tune/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const j = await r.json();
+      _autotuneSetMsg(j.message || (j.ok ? 'pushed' : 'push failed'),
+                      !!j.ok);
+    } catch (e) {
+      _autotuneSetMsg('push failed: ' + e, false);
+    }
   });
 
   // --- HSV slider tuning + V0 debug overlay ---

@@ -45,10 +45,13 @@ Pre-flight requirements (operator):
 """
 from __future__ import annotations
 
+import glob
 import json
 import math
 import os
 import random
+import signal
+import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -113,6 +116,31 @@ RESET_Z_EVERY_N_TRIALS = 5       # call set_pose to nominal Z every N trials
 NOMINAL_Z_MM           = 75.0    # higher than the 30-50 demo range —
                                   # less ball-sticking on the center bolt
                                   # (per operator observation 2026-05-01)
+RESET_LEVEL_DWELL_S    = 5.0     # after Z reset, hold LEVEL_HOLD this long
+                                  # so platform fully settles before the
+                                  # next trial starts
+
+# Topics recorded into the per-session mcap bag. Mirrors the IVA /
+# vision-debug topic set + adds the auto_tune-specific status and
+# trial events. /auto_tune/trial events provide the natural
+# subsection markers — replay trial-by-trial offline by filtering
+# on those timestamps.
+AUTOTUNE_BAG_TOPICS = [
+    '/ball_state',
+    '/ball_ref',
+    '/ball_xy_mono',
+    '/platform_pose',
+    '/platform_rpy',
+    '/platform/imu/data',
+    '/control_cmd',
+    '/control_result',
+    '/auto_tune/status',
+    '/auto_tune/trial',
+    '/oak/ball/v0/yolo_pixel',
+    '/oak/ball/v0/cv2_pixel',
+    '/leg_encoders',
+    '/status',
+]
 
 # Optimizer
 NOISE_FLOOR            = 0.02
@@ -120,6 +148,15 @@ ANNEAL_TRIGGER         = 3       # consec non-improves → step *= ANNEAL_FACTOR
 ANNEAL_FACTOR          = 0.7
 SAFETY_BAD_TRIALS      = 5       # 5x f<0.10 → halt
 SAFETY_BAD_THRESH      = 0.10
+# Sign knobs (pitch_sign, roll_sign) are categorical and direction-
+# tested manually before tuning starts. After ONE rejected flip, we
+# have strong evidence the current sign is correct — flipping a
+# correct sign causes the controller to push the ball AWAY from the
+# target, which collapses fitness (typical Δf > 0.2, well above
+# noise floor 0.02). Locking after 1 rejection gives ~95%+
+# statistical confidence per the noise-vs-effect-size argument.
+# Set to a higher number on hardware that hasn't been pre-tested.
+SIGN_FLIP_LOCK_AFTER_REJECTS = 1
 
 # Fitness weights (sum should equal 1.0)
 W_ERR    = 0.25
@@ -208,6 +245,12 @@ class AutoTuneNode(Node):
             Trigger, '/auto_tune/start', self._srv_start)
         self.create_service(
             Trigger, '/auto_tune/stop', self._srv_stop)
+        # Walks tuning_data/auto_tune_*/summary.json, picks the
+        # session with the highest best_fitness, applies its gains.
+        # Useful after a rough session: "go back to whatever worked
+        # best in any past run."
+        self.create_service(
+            Trigger, '/auto_tune/restore_best', self._do_restore_best)
 
         # Per-trial event topic — GUI accumulates these into a history
         # log. Distinct from /auto_tune/status (which is the rolling
@@ -297,6 +340,7 @@ class AutoTuneNode(Node):
 
     def _run_tuning_session(self, max_trials: int = 50) -> None:
         self._running = True
+        bag_proc = None
         try:
             log_dir = os.path.expanduser(
                 f'~/stable_bot_repo/tuning_data/auto_tune_{_now_utc_compact()}')
@@ -304,6 +348,13 @@ class AutoTuneNode(Node):
             log_path = os.path.join(log_dir, 'log.jsonl')
             summary_path = os.path.join(log_dir, 'summary.json')
             self.get_logger().info(f'auto_tune log → {log_dir}')
+
+            # Spawn the bag recorder. /auto_tune/trial events tagged in
+            # the bag itself become natural subsection markers — replay
+            # tools can split on those timestamps. Same MCAP format as
+            # the IVA / vision-debug bags.
+            bag_dir = os.path.join(log_dir, 'bag')
+            bag_proc = self._start_bag(bag_dir)
 
             self._status.update({
                 'state': 'running',
@@ -342,6 +393,10 @@ class AutoTuneNode(Node):
             consec_bad = 0
             t_start = time.time()
             knob_idx = 0
+            sign_locked: dict[str, bool] = {
+                k.name: False for k in KNOBS if k.categorical}
+            sign_reject_count: dict[str, int] = {
+                k.name: 0 for k in KNOBS if k.categorical}
             for trial in range(1, max_trials + 1):
                 if self._abort:
                     self.get_logger().info('auto_tune aborted by user')
@@ -349,20 +404,34 @@ class AutoTuneNode(Node):
 
                 # Periodic Z reset so accumulated tilt-induced drift
                 # doesn't turn the platform into a bowl pulling the
-                # ball to the center bolt.
+                # ball to the center bolt. Blocking + 5s dwell so the
+                # platform actually reaches Z=NOMINAL and fully levels
+                # before the next trial starts.
                 if (RESET_Z_EVERY_N_TRIALS > 0
                         and (trial - 1) % RESET_Z_EVERY_N_TRIALS == 0):
-                    if self._reset_pose_to_nominal(blocking=False):
-                        self.get_logger().info(
-                            f'  Z reset → {NOMINAL_Z_MM:.0f} mm')
-                        # Give the IK time to settle before next trial.
-                        self._sleep_with_abort(0.5)
+                    self.get_logger().info(
+                        f'  Z reset → {NOMINAL_Z_MM:.0f} mm '
+                        f'+ {RESET_LEVEL_DWELL_S:.0f} s level')
+                    # Cut any in-flight controls before the pose move.
+                    self._publish_mode('LEVEL_HOLD')
+                    self._sleep_with_abort(0.3)
+                    # Blocking SetPose call so we don't move on until
+                    # the platform reaches the commanded pose. Cap at
+                    # 4 s in case the service hangs.
+                    self._reset_pose_to_nominal(blocking=True)
+                    self._sleep_with_abort(RESET_LEVEL_DWELL_S)
+                    if self._abort:
+                        break
 
-                # Pick a knob round-robin (skip categorical signs unless
-                # we've stalled on continuous knobs — flipping signs
-                # mid-tune is destructive, do it only when stuck).
-                kn = KNOBS[knob_idx % len(KNOBS)]
-                knob_idx += 1
+                # Pick a knob round-robin, skipping any sign-knob that
+                # has been locked because flipping it lowered fitness
+                # (strong evidence the current sign is correct).
+                for _ in range(len(KNOBS)):
+                    kn = KNOBS[knob_idx % len(KNOBS)]
+                    knob_idx += 1
+                    if kn.categorical and sign_locked.get(kn.name):
+                        continue
+                    break
                 direction = random.choice([+1, -1])
 
                 if kn.categorical:
@@ -401,6 +470,21 @@ class AutoTuneNode(Node):
                         self.get_logger().info(
                             f'  step annealed: {kn.name} step → '
                             f'{steps[kn.name]:.4f}')
+                    # Sign-flip rejection counter — lock the sign once
+                    # SIGN_FLIP_LOCK_AFTER_REJECTS hits. The flip
+                    # showed fitness DROPS, so the current sign is
+                    # the correct one; future trials don't waste
+                    # budget retrying.
+                    if kn.categorical:
+                        sign_reject_count[kn.name] += 1
+                        if (sign_reject_count[kn.name]
+                                >= SIGN_FLIP_LOCK_AFTER_REJECTS):
+                            sign_locked[kn.name] = True
+                            self.get_logger().info(
+                                f'  {kn.name} locked at '
+                                f'{best_gains.get(kn.name, 0):+.0f} '
+                                f'after {sign_reject_count[kn.name]} '
+                                f'rejected flip(s)')
                 self._append_trial_log(
                     log_path, trial, test_gains, r, f, c,
                     step_taken=f'{step_repr} ({"accepted" if accepted else "rejected"})',
@@ -452,6 +536,9 @@ class AutoTuneNode(Node):
                 self._reset_pose_to_nominal(blocking=False)
             except Exception:
                 pass
+            # Stop the bag recorder cleanly so the mcap finalizes.
+            if bag_proc is not None:
+                self._stop_bag(bag_proc)
             self._running = False
 
     def _run_trial(self, gains: dict) -> TrialResult:
@@ -727,6 +814,91 @@ class AutoTuneNode(Node):
         msg = String()
         msg.data = json.dumps(self._status)
         self.pub_status.publish(msg)
+
+    # ----- Bag recorder ----------------------------------------------------
+
+    def _start_bag(self, out_dir: str):
+        """Spawn `ros2 bag record` for the auto-tune topic set, mcap.
+        Returns the Popen handle (None on failure). Same pattern as
+        gui_server's vision-debug bag recorder."""
+        try:
+            os.makedirs(os.path.dirname(out_dir), exist_ok=True)
+            cmd = (
+                'source /opt/ros/kilted/setup.bash && '
+                'source /home/sorak/ros2_ws/install/local_setup.bash && '
+                f'exec ros2 bag record -s mcap -o {out_dir} '
+                + ' '.join(AUTOTUNE_BAG_TOPICS)
+            )
+            proc = subprocess.Popen(
+                ['/bin/bash', '-c', cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid)
+            self.get_logger().info(f'auto_tune bag → {out_dir}')
+            # Tiny pause so ros2 bag finishes opening writers before
+            # the first /auto_tune/status hits.
+            time.sleep(0.3)
+            return proc
+        except Exception as e:
+            self.get_logger().warn(
+                f'failed to spawn bag recorder: {e!r}')
+            return None
+
+    def _stop_bag(self, proc) -> None:
+        """SIGTERM the bag recorder process group so the mcap
+        finalizes cleanly (SIGKILL would leave the file unrecoverable
+        unless mcap has a reindex tool, which it does, but cleaner
+        to do it right)."""
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=5.0)
+            self.get_logger().info('auto_tune bag closed')
+        except Exception as e:
+            self.get_logger().warn(f'bag stop: {e!r}')
+
+    # ----- Restore-best service --------------------------------------------
+
+    def _scan_history(self) -> list[dict]:
+        """Walk every tuning_data/auto_tune_*/summary.json and return
+        a list of {dir, n_trials, best_fitness, best_gains, mtime}.
+        Sorted by mtime descending (newest first)."""
+        root = os.path.expanduser('~/stable_bot_repo/tuning_data')
+        out = []
+        for sj in glob.glob(os.path.join(root, 'auto_tune_*', 'summary.json')):
+            try:
+                with open(sj) as f:
+                    d = json.load(f)
+                d['dir'] = os.path.dirname(sj)
+                d['mtime'] = os.path.getmtime(sj)
+                out.append(d)
+            except Exception:
+                continue
+        out.sort(key=lambda r: r['mtime'], reverse=True)
+        return out
+
+    def _do_restore_best(self, req, res):
+        history = self._scan_history()
+        if not history:
+            res.success = False
+            res.message = 'no auto_tune sessions found in tuning_data/'
+            return res
+        best = max(history, key=lambda r: r.get('best_fitness', 0.0))
+        gains = best.get('best_gains', {})
+        if not gains:
+            res.success = False
+            res.message = (f'best session ({best["dir"]}) has no '
+                           f'gains recorded')
+            return res
+        if not self._apply_gains(gains):
+            res.success = False
+            res.message = 'gain save failed'
+            return res
+        res.success = True
+        res.message = (
+            f'restored gains from {os.path.basename(best["dir"])} '
+            f'(f={best.get("best_fitness", 0):.3f}, '
+            f'n={best.get("n_trials", 0)} trials)')
+        self.get_logger().info(res.message)
+        return res
 
 
 def main():

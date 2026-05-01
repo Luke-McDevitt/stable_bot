@@ -1860,6 +1860,148 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(
                     {'ok': False, 'message': f'push failed: {e}'}, 500)
             return
+        # ----- Auto-tune session endpoints -----
+        if self.path == '/auto_tune/digest':
+            # Body: {"session": "<dirname under tuning_data/>"}.
+            # Defaults to the latest session if omitted. Runs
+            # digest_auto_tune_bag.py on the session — produces
+            # fitness_curve.png + gain_trajectory.png +
+            # target_coverage.png + digest.summary.json next to
+            # log.jsonl.
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = (json.loads(self.rfile.read(length) or b'{}')
+                        if length else {})
+            except Exception:
+                self._send_json({'ok': False,
+                                 'message': 'bad JSON'}, 400)
+                return
+            session = body.get('session', '').strip()
+            try:
+                root = os.path.expanduser('~/stable_bot_repo/tuning_data')
+                if not session:
+                    sessions = sorted(
+                        d for d in os.listdir(root)
+                        if d.startswith('auto_tune_'))
+                    if not sessions:
+                        self._send_json(
+                            {'ok': False,
+                             'message': 'no auto_tune sessions found'},
+                            404)
+                        return
+                    session = sessions[-1]
+                session_dir = os.path.join(root, session)
+                if not os.path.isdir(session_dir):
+                    self._send_json(
+                        {'ok': False,
+                         'message': f'session not found: {session}'},
+                        404)
+                    return
+                script = os.path.expanduser(
+                    '~/stable_bot_repo/stewart_bringup/scripts/'
+                    'digest_auto_tune_bag.py')
+                r = subprocess.run(
+                    ['python3', script, session_dir],
+                    capture_output=True, text=True, timeout=30)
+                ok = (r.returncode == 0)
+                self._send_json({
+                    'ok': ok,
+                    'message': (r.stdout or r.stderr).strip().split('\n')[-1],
+                    'session': session,
+                    'stdout': (r.stdout or '')[-2000:],
+                    'stderr': (r.stderr or '')[-2000:],
+                }, status=200 if ok else 500)
+            except Exception as e:
+                self._send_json(
+                    {'ok': False, 'message': f'digest failed: {e}'},
+                    500)
+            return
+        if self.path == '/auto_tune/push':
+            # git add + commit + push the latest auto_tune_<UTC>/
+            # session directory (log.jsonl + summary.json + digest
+            # PNGs + the bag mcap if it exists). Per-session push
+            # with a commit message that includes the best fitness.
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            try:
+                body = (json.loads(self.rfile.read(length) or b'{}')
+                        if length else {})
+            except Exception:
+                self._send_json({'ok': False,
+                                 'message': 'bad JSON'}, 400)
+                return
+            session = body.get('session', '').strip()
+            try:
+                repo = os.path.expanduser('~/stable_bot_repo')
+                root = os.path.join(repo, 'tuning_data')
+                if not session:
+                    sessions = sorted(
+                        d for d in os.listdir(root)
+                        if d.startswith('auto_tune_'))
+                    if not sessions:
+                        self._send_json(
+                            {'ok': False,
+                             'message': 'no auto_tune sessions found'},
+                            404)
+                        return
+                    session = sessions[-1]
+                rel = os.path.join('tuning_data', session)
+                add = subprocess.run(
+                    ['git', '-C', repo, 'add', '-f', rel],
+                    capture_output=True, text=True, timeout=10)
+                if add.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': f'git add failed: {add.stderr.strip()}',
+                    }, 500)
+                    return
+                diff = subprocess.run(
+                    ['git', '-C', repo, 'diff', '--cached', '--quiet'],
+                    capture_output=True, text=True)
+                if diff.returncode == 0:
+                    self._send_json({
+                        'ok': True,
+                        'message': 'no changes to commit'})
+                    return
+                # Read summary.json for a meaningful commit message.
+                try:
+                    with open(os.path.join(root, session,
+                                           'summary.json')) as f:
+                        sd = json.load(f) or {}
+                    fmsg = (f"f={sd.get('best_fitness', 0):.3f}, "
+                            f"n={sd.get('n_trials', 0)} trials")
+                except Exception:
+                    fmsg = 'auto-tune session'
+                msg = f'auto_tune: {session} ({fmsg})'
+                commit = subprocess.run(
+                    ['git', '-C', repo, 'commit', '-m', msg],
+                    capture_output=True, text=True, timeout=15)
+                if commit.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': (
+                            f'commit failed: '
+                            f'{commit.stderr.strip()}'),
+                    }, 500)
+                    return
+                push = subprocess.run(
+                    ['git', '-C', repo, 'push'],
+                    capture_output=True, text=True, timeout=30)
+                if push.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': (
+                            f'push failed: {push.stderr.strip()}'),
+                    }, 500)
+                    return
+                self._send_json({
+                    'ok': True,
+                    'message': f'pushed {session}'})
+            except Exception as e:
+                self._send_json(
+                    {'ok': False,
+                     'message': f'push failed: {e}'},
+                    500)
+            return
         # ----- Demo-run bag recorder endpoints -----
         if self.path == '/demo/start':
             length = int(self.headers.get('Content-Length', 0) or 0)
