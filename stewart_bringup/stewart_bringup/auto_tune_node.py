@@ -289,6 +289,28 @@ STEP_ID_OL_CV_THRESHOLD       = 0.30   # coefficient of variation
                                        # (std/mean) above which we
                                        # refuse to recommend gains
 
+# ----- Stiction characterisation parameters -----
+# Hardware property: the static-friction breakaway tilt θ_s
+# (foam-on-vinyl, typically 3-8°). Below θ_s, the ball is held by
+# friction regardless of how long the tilt is applied. Knowing θ_s
+# directly informs:
+#   - max_tilt_deg floor for closed-loop control (must be > θ_s)
+#   - open-loop tilt magnitude default (use θ_s + 1° to guarantee
+#     motion during plant ID)
+#   - stiction-relief boost target (θ_s + small margin instead of
+#     full max_tilt)
+# Procedure: from a known starting marker, ramp pitch from 0 at a
+# slow rate until the ball moves a detectable amount. Record the
+# IMU-actual tilt at motion onset.
+STEP_ID_STICTION_RAMP_RATE_DEG_S = 0.5   # how fast to ramp tilt
+STEP_ID_STICTION_MAX_TILT_DEG    = 8.0   # safety cap; if no motion
+                                          # by here, fail the trial
+STEP_ID_STICTION_MOTION_MM       = 5.0   # ball-displacement threshold
+                                          # to declare "moving"
+STEP_ID_STICTION_PRE_FLAT_S      = 1.0   # hold flat this long before
+                                          # ramping to give a clean
+                                          # baseline position
+
 # Closed-loop verification parameters
 STEP_ID_GOTO_TIMEOUT_S        = 25.0   # per-trial goto timeout
 STEP_ID_TARGET_OCCLUSION_S    = 1.0    # target marker continuously
@@ -697,6 +719,23 @@ class AutoTuneNode(Node):
         # tuner doing right now."
         self.create_service(
             Trigger, '/step_id/start', self._srv_step_id_start)
+        # Per-phase entry points so the operator can run sub-pieces
+        # of STEP_ID independently. Each spawns its own session
+        # directory + bag. Useful when:
+        #   - You only want to measure stiction breakaway today
+        #   - You already have plant-ID gains and just want to
+        #     re-run verification with a tweaked Kp/Kd
+        #   - You want stiction-only as a fast pre-flight check
+        #     before kicking off the full session
+        self.create_service(
+            Trigger, '/step_id/run_stiction',
+            self._srv_step_id_run_stiction)
+        self.create_service(
+            Trigger, '/step_id/run_open_loop',
+            self._srv_step_id_run_open_loop)
+        self.create_service(
+            Trigger, '/step_id/run_verification',
+            self._srv_step_id_run_verification)
         # Operator handshake for the hard-pause inter-trial gate
         # (see STEP_ID_OPERATOR_PROMPT_S in the constants block).
         # When the session is waiting for the ball to be placed on
@@ -1649,6 +1688,89 @@ class AutoTuneNode(Node):
         res.message = 'step_id started'
         return res
 
+    def _srv_step_id_run_stiction(self, req, res):
+        """Run ONLY the stiction-characterisation phase. Operator
+        places ball on any marker; we ramp tilt 0→max at slow rate
+        until the ball moves; record breakaway angle. Skips OL plant
+        ID and closed-loop verification."""
+        if self._running or self._step_id_running:
+            res.success = False
+            res.message = 'auto_tune already running'
+            return res
+        if not self._step_id_marker_layout:
+            res.success = False
+            res.message = 'marker_layout.yaml not loaded'
+            return res
+        ok, msg = self._check_preflight()
+        if not ok:
+            res.success = False
+            res.message = f'preflight failed: {msg}'
+            return res
+        self._abort = False
+        self._step_id_operator_confirmed = False
+        import threading
+        self._step_id_thread = threading.Thread(
+            target=self._run_stiction_session, daemon=True)
+        self._step_id_thread.start()
+        res.success = True
+        res.message = 'stiction characterisation started'
+        return res
+
+    def _srv_step_id_run_open_loop(self, req, res):
+        """Run ONLY the open-loop plant-ID phase (n replicates +
+        recommendation). Skips stiction characterisation and
+        closed-loop verification."""
+        if self._running or self._step_id_running:
+            res.success = False
+            res.message = 'auto_tune already running'
+            return res
+        if not self._step_id_marker_layout:
+            res.success = False
+            res.message = 'marker_layout.yaml not loaded'
+            return res
+        ok, msg = self._check_preflight()
+        if not ok:
+            res.success = False
+            res.message = f'preflight failed: {msg}'
+            return res
+        self._abort = False
+        self._step_id_operator_confirmed = False
+        import threading
+        self._step_id_thread = threading.Thread(
+            target=self._run_open_loop_only_session, daemon=True)
+        self._step_id_thread.start()
+        res.success = True
+        res.message = 'open-loop plant ID started'
+        return res
+
+    def _srv_step_id_run_verification(self, req, res):
+        """Run ONLY the closed-loop verification phase (4 marker-pair
+        goto trials with whatever gains are currently active +
+        post-hoc refinement analysis). Skips stiction
+        characterisation and open-loop plant ID."""
+        if self._running or self._step_id_running:
+            res.success = False
+            res.message = 'auto_tune already running'
+            return res
+        if not self._step_id_marker_layout:
+            res.success = False
+            res.message = 'marker_layout.yaml not loaded'
+            return res
+        ok, msg = self._check_preflight()
+        if not ok:
+            res.success = False
+            res.message = f'preflight failed: {msg}'
+            return res
+        self._abort = False
+        self._step_id_operator_confirmed = False
+        import threading
+        self._step_id_thread = threading.Thread(
+            target=self._run_verification_only_session, daemon=True)
+        self._step_id_thread.start()
+        res.success = True
+        res.message = 'closed-loop verification started'
+        return res
+
     def _srv_step_id_operator_confirm(self, req, res):
         """Operator clicked the Confirm button after placing the ball
         on the prompted marker. The session loop polls this flag."""
@@ -2535,6 +2657,628 @@ class AutoTuneNode(Node):
             self.get_logger().warn(
                 f'failed to spawn step_id bag recorder: {e!r}')
             return None
+
+    # ----- Stiction characterisation ---------------------------------------
+
+    def _run_stiction_trial(self, start_marker: int,
+                            log_path: str) -> dict:
+        """Ramp pitch tilt from 0° at STEP_ID_STICTION_RAMP_RATE_DEG_S
+        until the ball moves more than STEP_ID_STICTION_MOTION_MM.
+        Records the IMU-actual tilt at motion onset.
+
+        Direction: derived from start_marker's position so the ball
+        moves toward the platform centre (same safety logic as the
+        open-loop trial). Operator should place the ball on a marker
+        OFF the centre (any of 0-7) before triggering.
+
+        Returns dict embedded in the session JSON. Carries 't', 'x',
+        'y', 'imu_pitch_deg', 'imu_roll_deg' samples so the digest
+        can plot the ramp + motion-onset point.
+        """
+        out: dict = {
+            'start_marker': int(start_marker),
+            'aborted': False,
+        }
+        if self._set_pose_cli is None:
+            out['aborted'] = True
+            out['abort_reason'] = (
+                'jugglebot_interfaces.SetPose unavailable — stiction '
+                'characterisation cannot command tilt')
+            return out
+        # Direction: drive ball toward centre. Same axis-decision
+        # logic as the open-loop trial. We only ramp ONE axis (the
+        # dominant one for the start marker) for clarity.
+        roll_dir, pitch_dir = self._safe_open_loop_direction(
+            start_marker, magnitude_deg=1.0)
+        # Normalize to ±1 so we can scale by ramping magnitude.
+        rdir = 1.0 if roll_dir > 0 else (-1.0 if roll_dir < 0 else 0.0)
+        pdir = 1.0 if pitch_dir > 0 else (-1.0 if pitch_dir < 0 else 0.0)
+        if rdir == 0.0 and pdir == 0.0:
+            out['aborted'] = True
+            out['abort_reason'] = (
+                'could not pick a safe ramp direction for marker '
+                f'{start_marker}')
+            return out
+        # Pre-flat baseline so we can detect motion as displacement
+        # from rest.
+        start_z = float(self._step_id_start_z_mm)
+        out['start_z_mm'] = start_z
+        self._publish_mode('LEVEL_HOLD')
+        self._sleep_with_abort(0.3)
+        if self._set_pose_cli is not None:
+            try:
+                req = SetPose.Request()
+                req.x = 0.0
+                req.y = 0.0
+                req.z = start_z
+                req.roll = 0.0
+                req.pitch = 0.0
+                req.yaw = 0.0
+                req.blocking = True
+                self._set_pose_cli.call_async(req)
+            except Exception as e:
+                out['aborted'] = True
+                out['abort_reason'] = f'pre-flat set_pose failed: {e!r}'
+                return out
+        self._sleep_with_abort(STEP_ID_STICTION_PRE_FLAT_S)
+        if self._abort:
+            out['aborted'] = True
+            out['abort_reason'] = 'aborted before ramp'
+            return out
+        ball0 = self._latest_ball_xy()
+        if ball0 is None:
+            out['aborted'] = True
+            out['abort_reason'] = 'no ball state at trial start'
+            return out
+        out['ball_start_xy'] = list(ball0)
+        # Ramp loop — one SetPose per ~50 ms tick. Tilt magnitude
+        # increases at STEP_ID_STICTION_RAMP_RATE_DEG_S.
+        samples: list[dict] = []
+        breakaway_tilt_imu_deg: Optional[float] = None
+        breakaway_t_s: Optional[float] = None
+        t0 = time.monotonic()
+        max_ramp_duration = (
+            STEP_ID_STICTION_MAX_TILT_DEG
+            / STEP_ID_STICTION_RAMP_RATE_DEG_S + 1.0)
+        ramp_dt = 0.05  # 20 Hz SetPose update rate
+        last_set_pose_t = 0.0
+        while not self._abort:
+            now = time.monotonic()
+            elapsed = now - t0
+            if elapsed > max_ramp_duration:
+                break
+            target_tilt_mag = (elapsed
+                               * STEP_ID_STICTION_RAMP_RATE_DEG_S)
+            if target_tilt_mag > STEP_ID_STICTION_MAX_TILT_DEG:
+                target_tilt_mag = STEP_ID_STICTION_MAX_TILT_DEG
+            roll_cmd = rdir * target_tilt_mag
+            pitch_cmd = pdir * target_tilt_mag
+            # Throttle SetPose to ~20 Hz to avoid hammering the
+            # control node (the level loop / IK is at a similar rate
+            # so finer commands don't help).
+            if now - last_set_pose_t > ramp_dt:
+                last_set_pose_t = now
+                try:
+                    req = SetPose.Request()
+                    req.x = 0.0
+                    req.y = 0.0
+                    req.z = start_z
+                    req.roll = float(roll_cmd)
+                    req.pitch = float(pitch_cmd)
+                    req.yaw = 0.0
+                    req.blocking = False
+                    self._set_pose_cli.call_async(req)
+                except Exception:
+                    pass
+            # Record sample if /ball_state is fresh.
+            if self._ball_state is not None:
+                p = self._ball_state.pose.position
+                imu = self._step_id_imu_rpy or (0.0, 0.0)
+                disp = math.hypot(float(p.x) - ball0[0],
+                                  float(p.y) - ball0[1])
+                samples.append({
+                    't': elapsed,
+                    'x': float(p.x), 'y': float(p.y),
+                    'imu_pitch_deg': float(imu[1]),
+                    'imu_roll_deg': float(imu[0]),
+                    'cmd_tilt_deg': float(target_tilt_mag),
+                    'disp_mm': float(disp),
+                })
+                # Motion detection: displacement above threshold.
+                # Take the IMU-actual tilt at this moment as θ_s.
+                if (breakaway_tilt_imu_deg is None
+                        and disp > STEP_ID_STICTION_MOTION_MM):
+                    if abs(pdir) > abs(rdir):
+                        breakaway_tilt_imu_deg = abs(float(imu[1]))
+                    else:
+                        breakaway_tilt_imu_deg = abs(float(imu[0]))
+                    breakaway_t_s = elapsed
+                    self.get_logger().info(
+                        f'  stiction breakaway at t={elapsed:.2f}s, '
+                        f'IMU tilt = {breakaway_tilt_imu_deg:.2f}° '
+                        f'(commanded = {target_tilt_mag:.2f}°)')
+                    # Hold tilt 0.3 s longer to capture the post-
+                    # breakaway acceleration (informative for later
+                    # plant-ID), then break.
+                    end_at = now + 0.3
+                    while not self._abort and time.monotonic() < end_at:
+                        n2 = time.monotonic()
+                        elap2 = n2 - t0
+                        if self._ball_state is not None:
+                            p2 = self._ball_state.pose.position
+                            imu2 = self._step_id_imu_rpy or (0.0, 0.0)
+                            d2 = math.hypot(
+                                float(p2.x) - ball0[0],
+                                float(p2.y) - ball0[1])
+                            samples.append({
+                                't': elap2,
+                                'x': float(p2.x), 'y': float(p2.y),
+                                'imu_pitch_deg': float(imu2[1]),
+                                'imu_roll_deg': float(imu2[0]),
+                                'cmd_tilt_deg': float(target_tilt_mag),
+                                'disp_mm': float(d2),
+                            })
+                        time.sleep(0.02)
+                    break
+            time.sleep(0.01)
+        # Return platform to flat — important to do this even on
+        # failure so the platform isn't left tilted.
+        if self._set_pose_cli is not None:
+            try:
+                req = SetPose.Request()
+                req.x = 0.0
+                req.y = 0.0
+                req.z = start_z
+                req.roll = 0.0
+                req.pitch = 0.0
+                req.yaw = 0.0
+                req.blocking = False
+                self._set_pose_cli.call_async(req)
+            except Exception:
+                pass
+        out['samples'] = samples
+        out['ramp_rate_deg_per_s'] = float(
+            STEP_ID_STICTION_RAMP_RATE_DEG_S)
+        out['max_tilt_searched_deg'] = float(
+            STEP_ID_STICTION_MAX_TILT_DEG)
+        out['ramp_axis_pitch_dir'] = float(pdir)
+        out['ramp_axis_roll_dir'] = float(rdir)
+        if breakaway_tilt_imu_deg is None:
+            out['aborted'] = True
+            out['abort_reason'] = (
+                f'no motion detected up to '
+                f'{STEP_ID_STICTION_MAX_TILT_DEG:.1f}° tilt — '
+                f'either stiction is unusually high (clean ball/'
+                f'platform contact) or vision lost the ball; check '
+                f'manually')
+        else:
+            out['breakaway_tilt_imu_deg'] = float(
+                breakaway_tilt_imu_deg)
+            out['breakaway_t_s'] = float(breakaway_t_s or 0.0)
+            # μ_s = tan(θ_s). Standard physics for a ball on an
+            # inclined plane: at the breakaway tilt, the gravity
+            # component along the surface equals the maximum static
+            # friction force, which gives μ_s = tan(θ_s).
+            out['static_friction_mu'] = float(
+                math.tan(math.radians(breakaway_tilt_imu_deg)))
+            out['recommended_max_tilt_deg'] = float(
+                breakaway_tilt_imu_deg + 2.5)
+            out['recommended_open_loop_tilt_deg'] = float(
+                breakaway_tilt_imu_deg + 1.0)
+        # Log to disk.
+        try:
+            with open(log_path, 'a') as f:
+                f.write(json.dumps({
+                    'algo': 'step_id_stiction',
+                    'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ',
+                                        time.gmtime()),
+                    **{k: v for k, v in out.items()
+                       if k != 'samples'},
+                    'n_samples': len(samples),
+                }) + '\n')
+        except Exception:
+            pass
+        # Trial event for GUI history.
+        try:
+            msg = String()
+            msg.data = json.dumps({
+                'phase': 'stiction',
+                'start_marker': int(start_marker),
+                'breakaway_tilt_imu_deg': out.get(
+                    'breakaway_tilt_imu_deg'),
+                'static_friction_mu': out.get('static_friction_mu'),
+                'aborted': out.get('aborted', False),
+            })
+            self.pub_trial.publish(msg)
+        except Exception:
+            pass
+        return out
+
+    # ----- Standalone phase runners ---------------------------------------
+    #
+    # These are used by the new per-phase /step_id/run_* services.
+    # Each creates its own session directory + bag, runs ONE phase,
+    # then exits cleanly. Lets the operator iterate on a single
+    # piece (e.g., re-run verification with new gains) without
+    # paying the cost of a full session.
+
+    def _run_stiction_session(self) -> None:
+        """Stiction-only session. Detects starting marker → runs
+        ramp trial → writes summary.json with breakaway angle +
+        recommendations. ~10-25 s wall-clock."""
+        self._step_id_running = True
+        bag_proc = None
+        try:
+            log_dir = os.path.expanduser(
+                f'~/stable_bot_repo/tuning_data/'
+                f'step_id_{_now_utc_compact()}_stiction')
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, 'log.jsonl')
+            summary_path = os.path.join(log_dir, 'summary.json')
+            bag_dir = os.path.join(log_dir, 'bag')
+            self.get_logger().info(f'stiction-only log → {log_dir}')
+            bag_proc = self._start_step_id_bag(bag_dir)
+
+            session = {
+                'started_at': time.strftime(
+                    '%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                'log_dir': log_dir,
+                'mode': 'stiction_only',
+                'vision_backend_at_start':
+                    self._vision_backend_snapshot(),
+                'phases': {},
+            }
+            self._status.update({
+                'state': 'step_id_starting',
+                'log_dir': log_dir,
+                'started_at': session['started_at'],
+                'prompt': 'Place ball on any marker '
+                          '(stiction characterisation).',
+            })
+            self._publish_status()
+
+            self._status['state'] = 'step_id_detecting_marker'
+            self._publish_status()
+            start_marker, reason = self._detect_starting_marker(
+                timeout_s=300.0)
+            if start_marker is None:
+                self._fail_step_id(log_dir, summary_path, session,
+                                   f'detect failed: {reason}')
+                return
+            session['start_marker'] = int(start_marker)
+            self._status.update({
+                'state': 'step_id_stiction_ramp',
+                'prompt': (f'Ramping tilt from 0° at '
+                           f'{STEP_ID_STICTION_RAMP_RATE_DEG_S:.1f}°/s '
+                           f'from marker {start_marker} — watching '
+                           f'for ball motion onset.'),
+            })
+            self._publish_status()
+            stiction_trial = self._run_stiction_trial(
+                start_marker, log_path)
+            session['phases']['stiction'] = stiction_trial
+
+            if stiction_trial.get('aborted'):
+                self._fail_step_id(
+                    log_dir, summary_path, session,
+                    f'stiction trial: '
+                    f'{stiction_trial.get("abort_reason")}')
+                return
+            theta_s = stiction_trial['breakaway_tilt_imu_deg']
+            mu_s = stiction_trial['static_friction_mu']
+            rec_max_tilt = stiction_trial['recommended_max_tilt_deg']
+            rec_ol_tilt = stiction_trial[
+                'recommended_open_loop_tilt_deg']
+            self._status.update({
+                'state': 'step_id_done',
+                'prompt': (
+                    f'Stiction breakaway θ_s = {theta_s:.2f}° '
+                    f'(μ_s = {mu_s:.3f}). Recommended max_tilt_deg '
+                    f'≥ {rec_max_tilt:.1f}°, open-loop tilt mag '
+                    f'≥ {rec_ol_tilt:.1f}°.'),
+            })
+            self._publish_status()
+            self._write_step_id_summary(summary_path, session)
+            self.get_logger().info(
+                f'stiction session complete: θ_s={theta_s:.2f}°, '
+                f'μ_s={mu_s:.3f} → suggest max_tilt≥{rec_max_tilt:.1f}°')
+        except Exception as e:
+            self.get_logger().error(f'stiction session crashed: {e!r}')
+            self._status['state'] = 'step_id_crashed'
+            self._status['prompt'] = f'crashed: {e!r}'
+            self._publish_status()
+        finally:
+            try:
+                self._stop_platform_definitively()
+            except Exception:
+                pass
+            if bag_proc is not None:
+                self._stop_bag(bag_proc)
+            self._step_id_running = False
+
+    def _run_open_loop_only_session(self) -> None:
+        """Open-loop-plant-ID-only session. Detects start marker →
+        runs n replicates → produces recommendation. Skips
+        verification."""
+        self._step_id_running = True
+        bag_proc = None
+        try:
+            log_dir = os.path.expanduser(
+                f'~/stable_bot_repo/tuning_data/'
+                f'step_id_{_now_utc_compact()}_open_loop')
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, 'log.jsonl')
+            summary_path = os.path.join(log_dir, 'summary.json')
+            bag_dir = os.path.join(log_dir, 'bag')
+            self.get_logger().info(f'open-loop-only log → {log_dir}')
+            bag_proc = self._start_step_id_bag(bag_dir)
+
+            current_gains = _load_gains_yaml()
+            session = {
+                'started_at': time.strftime(
+                    '%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                'log_dir': log_dir,
+                'mode': 'open_loop_only',
+                'current_gains': {
+                    k: float(v) for k, v in current_gains.items()
+                    if isinstance(v, (int, float))},
+                'vision_backend_at_start':
+                    self._vision_backend_snapshot(),
+                'phases': {},
+            }
+            self._status.update({
+                'state': 'step_id_starting',
+                'log_dir': log_dir,
+                'started_at': session['started_at'],
+                'prompt': 'Place ball on any marker (OL plant ID).',
+            })
+            self._publish_status()
+
+            self._status['state'] = 'step_id_detecting_marker'
+            self._publish_status()
+            start_marker, reason = self._detect_starting_marker(
+                timeout_s=300.0)
+            if start_marker is None:
+                self._fail_step_id(log_dir, summary_path, session,
+                                   f'detect failed: {reason}')
+                return
+            session['start_marker'] = int(start_marker)
+            ok = self._run_open_loop_phase_into(
+                session, log_path, summary_path,
+                current_gains, start_marker)
+            if not ok:
+                return
+            self._status.update({
+                'state': 'step_id_done',
+                'prompt': (
+                    'Open-loop plant ID complete. See recommendation '
+                    'in step_id_summary.json.'),
+            })
+            self._publish_status()
+            self._write_step_id_summary(summary_path, session)
+        except Exception as e:
+            self.get_logger().error(
+                f'open-loop session crashed: {e!r}')
+            self._status['state'] = 'step_id_crashed'
+            self._status['prompt'] = f'crashed: {e!r}'
+            self._publish_status()
+        finally:
+            try:
+                self._stop_platform_definitively()
+            except Exception:
+                pass
+            if bag_proc is not None:
+                self._stop_bag(bag_proc)
+            self._step_id_running = False
+
+    def _run_verification_only_session(self) -> None:
+        """Verification-only session. Runs the 4-trial closed-loop
+        marker-pair sequence with whatever gains are currently
+        active. Useful for "I changed my gains, did anything
+        improve?" iteration."""
+        self._step_id_running = True
+        bag_proc = None
+        try:
+            log_dir = os.path.expanduser(
+                f'~/stable_bot_repo/tuning_data/'
+                f'step_id_{_now_utc_compact()}_verification')
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, 'log.jsonl')
+            summary_path = os.path.join(log_dir, 'summary.json')
+            bag_dir = os.path.join(log_dir, 'bag')
+            self.get_logger().info(f'verification-only log → {log_dir}')
+            bag_proc = self._start_step_id_bag(bag_dir)
+
+            current_gains = _load_gains_yaml()
+            session = {
+                'started_at': time.strftime(
+                    '%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                'log_dir': log_dir,
+                'mode': 'verification_only',
+                'current_gains': {
+                    k: float(v) for k, v in current_gains.items()
+                    if isinstance(v, (int, float))},
+                'vision_backend_at_start':
+                    self._vision_backend_snapshot(),
+                'phases': {},
+            }
+            self._status.update({
+                'state': 'step_id_starting',
+                'log_dir': log_dir,
+                'started_at': session['started_at'],
+                'prompt': (
+                    'Verification-only run: 4 marker-pair gotos '
+                    'with current gains.'),
+            })
+            self._publish_status()
+            self._run_verification_phase_into(
+                session, log_path, summary_path)
+            self._status.update({
+                'state': 'step_id_done',
+                'prompt': (
+                    'Verification complete. See verification_summary '
+                    'in step_id_recommendation.json (after digest).'),
+            })
+            self._publish_status()
+            self._write_step_id_summary(summary_path, session)
+        except Exception as e:
+            self.get_logger().error(
+                f'verification session crashed: {e!r}')
+            self._status['state'] = 'step_id_crashed'
+            self._status['prompt'] = f'crashed: {e!r}'
+            self._publish_status()
+        finally:
+            try:
+                self._stop_platform_definitively()
+            except Exception:
+                pass
+            if bag_proc is not None:
+                self._stop_bag(bag_proc)
+            self._step_id_running = False
+
+    # Helpers shared between the per-phase sessions and the full
+    # _run_step_id_session. Just a refactor of the existing flow
+    # into reusable chunks; behaviour unchanged for the full path.
+
+    def _run_open_loop_phase_into(self, session, log_path,
+                                  summary_path, current_gains,
+                                  start_marker):
+        """Run n open-loop replicates, aggregate, compute
+        recommendation, and stash everything into `session`. Returns
+        True on success, False on (and after calling _fail_step_id)."""
+        tilt_mag = float(self._step_id_tilt_magnitude_deg)
+        n_reps = int(self._step_id_n_replicates)
+        ol_replicates: list[dict] = []
+        current_start = start_marker
+        for rep in range(n_reps):
+            if rep > 0:
+                self._status.update({
+                    'state': 'step_id_open_loop',
+                    'prompt': (
+                        f'Open-loop replicate {rep+1}/{n_reps}: '
+                        f'place ball on any marker.'),
+                })
+                self._publish_status()
+                new_start = self._wait_for_ball_on_any_marker()
+                if new_start is None:
+                    self.get_logger().warn(
+                        f'  replicate {rep+1}: never confirmed; '
+                        f'proceeding with {len(ol_replicates)} reps')
+                    break
+                current_start = new_start
+                self._sleep_with_abort(STEP_ID_INTER_TRIAL_SETTLE_S)
+                if self._abort:
+                    break
+            roll_cmd, pitch_cmd = self._safe_open_loop_direction(
+                current_start, magnitude_deg=tilt_mag)
+            self._status.update({
+                'state': 'step_id_open_loop',
+                'prompt': (
+                    f'Open-loop replicate {rep+1}/{n_reps}: '
+                    f'{tilt_mag:.1f}° tilt from m{current_start}'),
+            })
+            self._publish_status()
+            ol = self._run_open_loop_trial(
+                current_start, roll_cmd, pitch_cmd, log_path)
+            if ol.get('aborted'):
+                self.get_logger().warn(
+                    f'  replicate {rep+1}: '
+                    f'{ol.get("abort_reason")}')
+                continue
+            ol_replicates.append(ol)
+        if not ol_replicates:
+            self._fail_step_id(
+                None, summary_path, session,
+                'all open-loop replicates aborted')
+            return False
+        g_effs = [t['g_eff_mm_s2_per_deg']
+                  for t in ol_replicates
+                  if t.get('g_eff_mm_s2_per_deg', 0) > 0]
+        tds_obs = [t.get('td_observed_s', 0.15)
+                   for t in ol_replicates]
+        achievements = [t.get('imu_achievement_ratio', 0.0)
+                        for t in ol_replicates]
+        if not g_effs:
+            self._fail_step_id(None, summary_path, session,
+                               'no usable G_eff fits')
+            return False
+        g_eff_mean = float(np.mean(g_effs))
+        g_eff_std = (float(np.std(g_effs, ddof=1))
+                     if len(g_effs) > 1 else 0.0)
+        g_eff_cv = (g_eff_std / g_eff_mean
+                    if g_eff_mean > 0 else 1.0)
+        td_mean = float(np.mean(tds_obs))
+        achievement_mean = float(np.mean(achievements))
+        session['phases']['open_loop_aggregate'] = {
+            'n_replicates': len(g_effs),
+            'g_eff_mean_mm_s2_per_deg': g_eff_mean,
+            'g_eff_std_mm_s2_per_deg': g_eff_std,
+            'g_eff_cv': g_eff_cv,
+            'g_effs': [float(g) for g in g_effs],
+            'td_mean_s': td_mean,
+            'imu_achievement_mean': achievement_mean,
+        }
+        session['phases']['open_loop_replicates'] = ol_replicates
+        session['phases']['open_loop'] = ol_replicates[0]
+        if (len(g_effs) >= 2 and g_eff_cv > STEP_ID_OL_CV_THRESHOLD):
+            self._fail_step_id(
+                None, summary_path, session,
+                f'plant gain too inconsistent across '
+                f'{len(g_effs)} replicates: G_eff = '
+                f'{g_eff_mean:.0f} ± {g_eff_std:.0f} '
+                f'(cv={g_eff_cv*100:.0f}%)')
+            return False
+        if g_eff_mean < 20.0:
+            self._fail_step_id(
+                None, summary_path, session,
+                f'G_eff={g_eff_mean:.1f} mm/s²/° too low to '
+                f'recommend gains; check armed + level + tilt '
+                f'magnitude.')
+            return False
+        recommended = self._compute_recommended_gains(
+            g_eff_mm_s2_per_deg=g_eff_mean,
+            td_observed_s=td_mean,
+            current_gains=current_gains)
+        recommended['g_eff_std_mm_s2_per_deg'] = g_eff_std
+        recommended['g_eff_cv'] = g_eff_cv
+        recommended['n_replicates'] = len(g_effs)
+        session['phases']['recommendation'] = recommended
+        return True
+
+    def _run_verification_phase_into(self, session, log_path,
+                                     summary_path):
+        """Run the 4 marker-pair goto trials, store under
+        session.phases.verification. Each trial waits for the
+        operator to confirm ball on a chosen marker, then commands
+        BALL_TRACK_GOTO at +1 / +2 / +1 / +2 marker offsets."""
+        verification_trials = []
+        VERIFICATION_OFFSETS = [1, 2, 1, 2]
+        for i, off_target in enumerate(VERIFICATION_OFFSETS):
+            self._status.update({
+                'state': f'step_id_verification_trial_{i+1}',
+                'verification_trial_idx': i + 1,
+                'verification_trial_count':
+                    len(VERIFICATION_OFFSETS),
+                'verification_offset': int(off_target),
+                'prompt': (
+                    f'Trial {i+1}/{len(VERIFICATION_OFFSETS)}: '
+                    f'place ball on any marker; goto = +'
+                    f'{off_target} markers clockwise.'),
+            })
+            self._publish_status()
+            detected_start = self._wait_for_ball_on_any_marker()
+            if detected_start is None:
+                self.get_logger().warn(
+                    f'  trial {i+1}: operator never confirmed')
+                break
+            target = (detected_start + off_target) % 8
+            self._sleep_with_abort(STEP_ID_INTER_TRIAL_DWELL_S)
+            if self._abort:
+                break
+            trial_data = self._run_closed_loop_marker_trial(
+                detected_start, target, i + 1, log_path)
+            verification_trials.append(trial_data)
+        session['phases']['verification'] = verification_trials
 
     # ----- Open-loop tilt-step trial ---------------------------------------
 

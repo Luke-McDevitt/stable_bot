@@ -1715,6 +1715,94 @@
         </button>
         <span id="stepid-apply-msg" class="text-xs text-slate-400 mono"></span>
       </div>
+      <!-- Per-phase sub-sections. Each runs ONE step of STEP_ID
+           independently via its own /step_id/run_* service. The
+           top-of-panel "Start step-ID" button still runs all three
+           in sequence; these are for "I just want to remeasure
+           stiction" or "re-run verification with new gains" loops. -->
+
+      <details class="border-t border-slate-700 pt-3 mt-3"
+               id="stepid-stiction-details">
+        <summary class="cursor-pointer text-xs uppercase text-slate-400">
+          1. Stiction characterisation
+          <span id="stepid-stiction-summary" class="text-slate-500"></span>
+        </summary>
+        <p class="text-xs text-slate-500 mt-2 mb-2">
+          Place ball on any marker. We ramp pitch tilt from 0° at
+          0.5°/s until the ball moves. The IMU-actual tilt at
+          motion onset is the static-friction breakaway angle θ_s
+          — a hardware property that informs every other gain
+          (max_tilt floor, OL tilt magnitude, stiction relief
+          threshold). ~10–20 s wall-clock.
+        </p>
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <button id="stepid-stiction-start-btn"
+                  class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs">
+            ▶ Start stiction
+          </button>
+          <span id="stepid-stiction-msg"
+                class="text-xs text-slate-400 mono"></span>
+        </div>
+        <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-400">
+          <div>θ_s (breakaway tilt):
+            <span id="stepid-stiction-theta" class="mono text-emerald-400">—</span>
+          </div>
+          <div>μ_s (friction coef):
+            <span id="stepid-stiction-mu" class="mono text-slate-200">—</span>
+          </div>
+          <div>recommended max_tilt:
+            <span id="stepid-stiction-rec-max-tilt" class="mono text-slate-200">—</span>
+          </div>
+          <div>recommended OL tilt:
+            <span id="stepid-stiction-rec-ol-tilt" class="mono text-slate-200">—</span>
+          </div>
+        </div>
+      </details>
+
+      <details class="border-t border-slate-700 pt-3 mt-3"
+               id="stepid-ol-details">
+        <summary class="cursor-pointer text-xs uppercase text-slate-400">
+          2. Open-loop plant ID (G_eff → recommended Kp/Kd)
+        </summary>
+        <p class="text-xs text-slate-500 mt-2 mb-2">
+          Runs N replicates (default 3) of the open-loop tilt-step
+          trial. Each replicate fits G_eff via linear regression of
+          v(t) vs ∫θ(τ)dτ on smoothed ball position. Aggregate
+          mean ± std → analytic Kp/Kd recommendation.
+        </p>
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <button id="stepid-ol-start-btn"
+                  class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs">
+            ▶ Start open-loop
+          </button>
+          <span id="stepid-ol-msg"
+                class="text-xs text-slate-400 mono"></span>
+        </div>
+      </details>
+
+      <details class="border-t border-slate-700 pt-3 mt-3"
+               id="stepid-verif-details">
+        <summary class="cursor-pointer text-xs uppercase text-slate-400">
+          3. Closed-loop verification (4 marker-pair gotos)
+        </summary>
+        <p class="text-xs text-slate-500 mt-2 mb-2">
+          Runs the 4-trial verification (offsets +1, +2, +1, +2)
+          with whatever gains are currently saved in
+          ball_track_gains.yaml. Use this after editing gains to
+          see whether they actually settle the ball. Post-trial
+          analysis suggests refined gains in
+          step_id_recommendation.json.
+        </p>
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <button id="stepid-verif-start-btn"
+                  class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs">
+            ▶ Start verification
+          </button>
+          <span id="stepid-verif-msg"
+                class="text-xs text-slate-400 mono"></span>
+        </div>
+      </details>
+
       <details class="border-t border-slate-700 pt-3 mt-3"
                id="stepid-bags-details">
         <summary class="cursor-pointer text-xs uppercase text-slate-400">
@@ -2365,6 +2453,15 @@ function setupROSInterface() {
     serviceType: 'std_srvs/srv/Trigger' });
   srv.stepid_start = new ROSLIB.Service({
     ros, name: '/step_id/start', serviceType: 'std_srvs/srv/Trigger' });
+  srv.stepid_run_stiction = new ROSLIB.Service({
+    ros, name: '/step_id/run_stiction',
+    serviceType: 'std_srvs/srv/Trigger' });
+  srv.stepid_run_open_loop = new ROSLIB.Service({
+    ros, name: '/step_id/run_open_loop',
+    serviceType: 'std_srvs/srv/Trigger' });
+  srv.stepid_run_verification = new ROSLIB.Service({
+    ros, name: '/step_id/run_verification',
+    serviceType: 'std_srvs/srv/Trigger' });
   srv.stepid_operator_confirm = new ROSLIB.Service({
     ros, name: '/step_id/operator_confirm',
     serviceType: 'std_srvs/srv/Trigger' });
@@ -4870,6 +4967,47 @@ function initVisionGUI() {
       (r) => { if (promptEl) promptEl.innerText = r.message || 'stopped'; },
       (e) => { if (promptEl) promptEl.innerText = 'stop failed: ' + e; });
   });
+  // Per-phase Start buttons. Each calls its dedicated /step_id/run_*
+  // service. They all publish start-Z, tilt-mag, n-replicates first
+  // (so the operator's input values are picked up regardless of
+  // whether they touched them this session).
+  function _stepIdRunPhase(srvName, msgEl, label) {
+    const srv2 = srv[srvName];
+    if (!srv2) return;
+    _publishStepIdStartZ();
+    _publishStepIdTiltMag();
+    _publishStepIdNReplicates();
+    if (msgEl) msgEl.innerText = `starting ${label}…`;
+    setTimeout(() => {
+      srv2.callService(new ROSLIB.ServiceRequest({}),
+        (r) => { if (msgEl)
+          msgEl.innerText = r.success ? `${label} running…`
+                                       : (r.message || 'failed');
+        },
+        (e) => { if (msgEl)
+          msgEl.innerText = `${label} failed: ${e}`; });
+    }, 100);
+  }
+  const stepidStictionStart = $('stepid-stiction-start-btn');
+  if (stepidStictionStart) stepidStictionStart.addEventListener(
+      'click', () => {
+    _stepIdRunPhase('stepid_run_stiction',
+                    document.getElementById('stepid-stiction-msg'),
+                    'stiction');
+  });
+  const stepidOlStart = $('stepid-ol-start-btn');
+  if (stepidOlStart) stepidOlStart.addEventListener('click', () => {
+    _stepIdRunPhase('stepid_run_open_loop',
+                    document.getElementById('stepid-ol-msg'),
+                    'open-loop');
+  });
+  const stepidVerifStart = $('stepid-verif-start-btn');
+  if (stepidVerifStart) stepidVerifStart.addEventListener(
+      'click', () => {
+    _stepIdRunPhase('stepid_run_verification',
+                    document.getElementById('stepid-verif-msg'),
+                    'verification');
+  });
   if (stepidConfirmBtn) stepidConfirmBtn.addEventListener('click', () => {
     if (!srv.stepid_operator_confirm) return;
     srv.stepid_operator_confirm.callService(new ROSLIB.ServiceRequest({}),
@@ -6880,6 +7018,41 @@ function onAutotuneStatus(s) {
 
 function onAutotuneTrial(t) {
   if (!t) return;
+  // Stiction-trial event handler — populates the four readouts in
+  // the Stiction sub-section. The trial event is also pushed into
+  // the autotune-history list (below) for the trial log.
+  if (t.phase === 'stiction') {
+    const setText = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.innerText = val;
+    };
+    if (t.aborted) {
+      setText('stiction-msg', 'aborted');
+      setText('stepid-stiction-theta', '—');
+      setText('stepid-stiction-mu', '—');
+      setText('stepid-stiction-rec-max-tilt', '—');
+      setText('stepid-stiction-rec-ol-tilt', '—');
+    } else {
+      const theta = t.breakaway_tilt_imu_deg;
+      const mu = t.static_friction_mu;
+      if (theta != null) {
+        setText('stepid-stiction-theta',
+                Number(theta).toFixed(2) + '°');
+      }
+      if (mu != null) {
+        setText('stepid-stiction-mu',
+                Number(mu).toFixed(3));
+      }
+      if (theta != null) {
+        setText('stepid-stiction-rec-max-tilt',
+                (theta + 2.5).toFixed(1) + '°');
+        setText('stepid-stiction-rec-ol-tilt',
+                (theta + 1.0).toFixed(1) + '°');
+        setText('stepid-stiction-summary',
+                ` (θ_s=${theta.toFixed(2)}°)`);
+      }
+    }
+  }
   // Prepend (most recent first) and cap at 200 rows so the DOM
   // doesn't grow without bound on long sessions.
   _autotuneHistory.unshift(t);
