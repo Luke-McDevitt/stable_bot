@@ -585,7 +585,18 @@ class AutoTuneNode(Node):
                 duration_s=0.0, settled=False, settling_time_s=0.0,
                 aborted=True,
                 abort_reason='no safe target found (ball at rim?)')
-        # 5. Publish goto
+        # 5. Publish goto. Diagnostic log: confirms the math here is
+        # exact. Picker is target = ball + D·(cos θ, sin θ), so the
+        # actual_dist printout should always equal TRIAL_DISTANCE_MM
+        # to within float-precision rounding. If it ever doesn't,
+        # there's a bug to find.
+        actual_dist = math.hypot(target[0] - ball_xy[0],
+                                 target[1] - ball_xy[1])
+        self.get_logger().info(
+            f'  ball=({ball_xy[0]:+.1f}, {ball_xy[1]:+.1f}) → '
+            f'target=({target[0]:+.1f}, {target[1]:+.1f})  '
+            f'dist={actual_dist:.1f}mm '
+            f'(expected {TRIAL_DISTANCE_MM:.0f})')
         self._publish_mode('BALL_TRACK_GOTO',
                            extra={'x_mm': target[0], 'y_mm': target[1]})
         # 6. Collect samples

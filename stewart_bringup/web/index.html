@@ -6336,6 +6336,26 @@ function onBallState(m) {
   renderPredPath();
 }
 
+// Hide the ref-marker if /ball_ref hasn't been received in this
+// long. ref_generator only publishes during BALL_TRACK_*; during
+// LEVEL_HOLD (between auto-tune trials, after Stop) the topic goes
+// silent. Without staleness, the marker persists at the previous
+// target — which is misleading when the ball has drifted to a new
+// resting position. Operator was seeing "the waypoint is the wrong
+// distance from the ball" — the waypoint was last trial's, not
+// the upcoming one.
+const REF_MARKER_STALE_MS = 1500;
+let _refMarkerLastMs = 0;
+function _refMarkerStaleTick() {
+  const m = document.getElementById('ref-marker');
+  if (!m) return;
+  if (_refMarkerLastMs > 0 &&
+      performance.now() - _refMarkerLastMs > REF_MARKER_STALE_MS) {
+    m.setAttribute('visibility', 'hidden');
+  }
+}
+setInterval(_refMarkerStaleTick, 250);
+
 function onBallRef(p) {
   // /ball_ref arrives in IMU frame (ref_generator rotates the SVG
   // click target). Display in platform frame so the marker shows up
@@ -6345,6 +6365,7 @@ function onBallRef(p) {
   m.setAttribute('cx', rx);
   m.setAttribute('cy', ry);
   m.setAttribute('visibility', 'visible');
+  _refMarkerLastMs = performance.now();
 }
 
 function _autotuneSetMsg(text, ok) {
