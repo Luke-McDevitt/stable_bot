@@ -26,13 +26,13 @@ Environment=OAK_ENABLE_DEPTH=0
 # Myriad X SHAVE budget. V0.5c was a dead end (NaN output, wrong
 # detection ceiling); kept in code for git-history fallback only.
 Environment=OAK_DISABLE_V0_NN=1
-# Bump mono FPS to 60 to test whether the OAK firmware ties RGB
-# sensor rate to the slowest sensor in the pipeline. With mono at
-# 15 fps, observed RGB throttled to ~14 fps despite cam_rgb being
-# configured at 60 — known OAK quirk. If RGB rate jumps after
-# this, the hypothesis is confirmed; if not, the bottleneck is
-# elsewhere (NN compute / blob structure).
-Environment=OAK_MONO_FPS=60
+# Mono FPS stays at 15 (default). 2026-05-01: tried OAK_MONO_FPS=60
+# to test the hypothesis that mono rate gates RGB; at 60 fps mono,
+# platform_pose_node's ArUco solve was dropping out (pose=0 in
+# /oak/health), which broke cv2's platform mask and made the cv2
+# fallback detector unusable. The real RGB throttling fix was
+# elsewhere (XLinkOut/ImageManip non-blocking + cv2 skip when YOLO
+# is the active backend).
 ExecStart=/bin/bash -c 'source /opt/ros/kilted/setup.bash && \
                         source /home/sorak/ros2_ws/install/local_setup.bash && \
                         exec ros2 launch stewart_bringup stewart_gui_launch.py'

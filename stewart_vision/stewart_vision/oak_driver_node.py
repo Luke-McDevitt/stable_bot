@@ -2154,21 +2154,23 @@ class OakDriverNode(Node):
         # When OAK_V0_BACKEND=nn we still pull from this queue (depth
         # debug overlay + latency reporting use _last_rgb_bgr and
         # rgb_raw timestamps) but skip the cv2 detection block.
+        # Decide whether we actually need to decode the rgb_raw frame
+        # this tick. getCvFrame() copies ~1.5 MB of pixel data and is
+        # the single largest cost in the host loop besides cv2 detect.
+        # Skip both when the only consumer of the BGR pixels (cv2 +
+        # debug overlay) is inactive — saves ~300 ms/sec at 30 Hz.
+        cv2_subs = (self.pub_v0_cv2.get_subscription_count() > 0
+                    or self.pub_v0_debug.get_subscription_count() > 0)
+        do_cv2 = (self.v0_backend == 'cv2') or cv2_subs
         rgb_raw = self.q_rgb_raw.tryGet()
         if rgb_raw is not None:
             # Only count this as a V0 attempt when cv2 is the active
             # backend — the NN backend block above already counts.
             if self.v0_backend == 'cv2':
                 self._n_v0_attempts += 1
-            frame = rgb_raw.getCvFrame()  # BGR uint8
-            self._last_rgb_bgr = frame
-            # Translate the OAK frame timestamp into ROS-clock space
-            # so /ball_xy_mono and /ball_state carry the actual capture
-            # time, not "now". The controller's lookahead becomes
-            # self-correcting: it can subtract the real age instead of
-            # assuming a fixed control_latency_s. dai.Clock and the ROS
-            # clock have different epochs (steady vs system), so we
-            # compute the live offset and apply it.
+            # Single capture-timestamp calc — used for both /oak/health
+            # latency and the cv2 publish stamp below. Costs nothing
+            # without the pixel decode; do it before the early return.
             try:
                 capture_dai = rgb_raw.getTimestamp().total_seconds()
                 now_dai = dai.Clock.now().total_seconds()
@@ -2176,28 +2178,20 @@ class OakDriverNode(Node):
                 ros_capture = self.get_clock().now() - Duration(
                     seconds=age_s)
                 v0_stamp = ros_capture.to_msg()
-                v0_age_s = age_s   # for /oak/health
+                self._v0_last_age_s = age_s
             except Exception:
                 v0_stamp = self.get_clock().now().to_msg()
-                v0_age_s = float('nan')
-            self._v0_last_age_s = v0_age_s
-            # Run cv2 detection only when actually needed:
-            #   - cv2 is the active backend (controller consumes it)
-            #   - someone is subscribed to /oak/ball/v0/cv2_pixel
-            #     (GUI's blue circle toggle is on)
-            #   - someone is subscribed to /oak/v0/debug_image
-            #     (HSV-tuning overlay)
-            # cv2 inRange + findContours on a 540p frame costs ~10 ms
-            # of host CPU. At 30 Hz of rgb_raw frames that's 300 ms/sec
-            # of CPU burn — single-threaded, on the same thread that
-            # has to drain the YOLO output queue. Confirmed via
-            # benchmark_v1_yolo.py: device-side YOLO ceiling is 30 Hz,
-            # but live oak_driver was capping at 17 Hz because cv2
-            # work was eating the host's tick budget.
-            cv2_subs = (self.pub_v0_cv2.get_subscription_count() > 0
-                        or self.pub_v0_debug.get_subscription_count() > 0)
-            do_cv2 = (self.v0_backend == 'cv2') or cv2_subs
-            if do_cv2:
+                self._v0_last_age_s = float('nan')
+            # Skip the pixel decode + cv2 work when nobody needs it.
+            # getCvFrame() copies ~1.5 MB of BGR data — single biggest
+            # avoidable host-CPU cost in the loop.
+            if not do_cv2:
+                return
+            frame = rgb_raw.getCvFrame()  # BGR uint8
+            self._last_rgb_bgr = frame
+            # We only reach here if do_cv2 was True (we early-returned
+            # above otherwise). Run the HSV+contour cv2 detection now.
+            if True:
                 # Pre-crop to the platform-mask bbox so HSV+morph+contour
                 # only run on ~25 % of the frame area. Falls back to full-
                 # frame if bbox isn't ready yet (no pose received).
