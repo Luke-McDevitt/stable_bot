@@ -136,24 +136,72 @@ echo "==> [7/8] restart services"
 sudo systemctl restart stable_bot_gui.service
 sudo systemctl restart stable_bot.service
 
-echo "==> [8/8] verify (5 s soak)"
-sleep 5
+echo "==> [8/8] verify (poll until new SHA appears in journal, max 60 s)"
 EXPECTED=$(git -C "$REPO" rev-parse --short HEAD | tr -d '[:space:]')
 echo "  expected git sha: $EXPECTED"
-# Pull the last 500 lines once and inspect — running journalctl twice
-# sometimes raced when the journal hadn't flushed yet, and grep -q in
-# a pipeline interacts badly with pipefail in some bash versions.
-JOURNAL=$(journalctl -u stable_bot.service -n 500 --no-pager 2>/dev/null || true)
+# Capture the journalctl cursor RIGHT NOW so the poll only sees lines
+# logged after this point. A previous restart's [boot] banner with
+# the OLD SHA must NOT be mistaken for the new restart — that's the
+# bug the fixed-5s-sleep version had: OAK driver takes 10-20 s to
+# finish booting and print its banner, so the script was reading a
+# stale banner from a prior restart and reporting a false SHA
+# mismatch.
+#
+# journalctl prints "-- cursor: <token>" with --show-cursor; subsequent
+# --after-cursor=<token> returns only lines logged after that moment.
+CURSOR=$(journalctl -u stable_bot.service -n 0 --show-cursor 2>/dev/null \
+         | awk -F 'cursor: ' '/-- cursor: /{print $2; exit}')
+DEADLINE=$((SECONDS + 60))
+BOOT_LINE=""
+SAW_NONMATCH_BANNER=0
+while [ $SECONDS -lt $DEADLINE ]; do
+    if [ -n "$CURSOR" ]; then
+        NEW_LINES=$(journalctl -u stable_bot.service \
+                    --after-cursor="$CURSOR" --no-pager 2>/dev/null \
+                    || true)
+    else
+        # Fallback: no cursor (rare — empty journal for the unit?).
+        # Use a tail-window. False matches are possible here but it's
+        # better than refusing to verify at all.
+        NEW_LINES=$(journalctl -u stable_bot.service -n 200 --no-pager \
+                    2>/dev/null || true)
+    fi
+    BANNER=$(echo "$NEW_LINES" | grep '\[boot\] oak_driver' \
+             | tail -1 || true)
+    if [ -n "$BANNER" ]; then
+        if [[ "$BANNER" == *"code sha=$EXPECTED"* ]]; then
+            BOOT_LINE="$BANNER"
+            break
+        else
+            # An old-SHA banner can still appear if a previous service
+            # process logged AFTER our cursor (e.g. systemd staggered
+            # the restart). Log it once for diagnosis but keep polling.
+            if [ $SAW_NONMATCH_BANNER -eq 0 ]; then
+                echo "  ... saw banner with non-matching SHA (likely an" \
+                     "in-flight restart), continuing to poll"
+                SAW_NONMATCH_BANNER=1
+            fi
+        fi
+    fi
+    sleep 2
+done
 echo "  recent oak_driver banner / config:"
-echo "$JOURNAL" | grep -E '\[boot\]|Building OAK|Depth subsystem' | tail -5 || true
-BOOT_LINE=$(echo "$JOURNAL" | grep '\[boot\] oak_driver' | tail -1 || true)
-if [ -n "$BOOT_LINE" ] && [[ "$BOOT_LINE" == *"code sha=$EXPECTED"* ]]; then
-    echo "  ✓ live code SHA matches HEAD ($EXPECTED)"
-elif [ -n "$BOOT_LINE" ]; then
-    echo "  ! SHA mismatch — running code is older than HEAD."
-    echo "    expected: $EXPECTED"
-    echo "    line    : $BOOT_LINE"
+if [ -n "$CURSOR" ]; then
+    journalctl -u stable_bot.service --after-cursor="$CURSOR" \
+               --no-pager 2>/dev/null \
+        | grep -E '\[boot\]|Building OAK|Depth subsystem' \
+        | tail -5 || true
 else
-    echo "  ! no [boot] banner found in last 500 lines — service may still be starting up."
-    echo "    Re-run:  journalctl -u stable_bot.service -n 500 --no-pager | grep '\[boot\]'"
+    journalctl -u stable_bot.service -n 200 --no-pager 2>/dev/null \
+        | grep -E '\[boot\]|Building OAK|Depth subsystem' \
+        | tail -5 || true
+fi
+if [ -n "$BOOT_LINE" ]; then
+    echo "  ✓ live code SHA matches HEAD ($EXPECTED) [matched in $SECONDS s]"
+else
+    echo "  ! no matching [boot] banner within 60 s — service may still be"
+    echo "    starting (OAK takes 10-20 s of pipeline build before printing"
+    echo "    the banner; under heavy load it can be longer). Verify manually:"
+    echo "      journalctl -u stable_bot.service -n 200 --no-pager | grep '\[boot\]' | tail -1"
+    echo "    expected: code sha=$EXPECTED"
 fi
