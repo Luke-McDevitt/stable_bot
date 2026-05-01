@@ -510,9 +510,9 @@ def _initial_accel_g_eff(trial: dict, window_s: float = 0.20
 
 
 def _refine_summary(session: dict) -> dict:
-    """Add closed-loop initial-acceleration G_eff estimates to the
-    summary so the digest reports both open-loop and closed-loop
-    measurements and their cross-validation agreement."""
+    """Add closed-loop initial-acceleration G_eff estimates +
+    cross-check vs open-loop + verification-feedback refinement
+    to the summary."""
     out = dict(session)
     closed = out.get('phases', {}).get('verification', [])
     cl_g = [_initial_accel_g_eff(t) for t in closed]
@@ -523,7 +523,267 @@ def _refine_summary(session: dict) -> dict:
             'mean': float(np.mean(cl_g)),
             'std': float(np.std(cl_g)),
         }
+    # Cross-check: does the open-loop G_eff predict the closed-loop
+    # initial accelerations? Per-trial: predicted_accel = G_eff · θ_cmd
+    # where θ_cmd = min(Kp · D_initial, max_tilt). If the open-loop
+    # fit was right, observed accel ≈ predicted across all 4
+    # verification trials. Mean ratio of observed/predicted near 1.0
+    # = good agreement; far from 1.0 = open-loop fit is unreliable
+    # (probably stiction-contaminated; recommendation suspect).
+    out['cross_check'] = _cross_check_open_loop_vs_closed_loop(
+        out, closed)
+    # Verification feedback: detect failure patterns and propose
+    # refined gains. Operator can apply these (or not) via the
+    # editable inputs in the GUI panel.
+    out['verification_analysis'] = _analyze_verification_for_refinement(
+        closed, out.get('phases', {}).get('recommendation', {}),
+        out.get('current_gains', {}))
     return out
+
+
+def _cross_check_open_loop_vs_closed_loop(session: dict,
+                                          trials: list[dict]
+                                          ) -> dict:
+    """Per-trial: compute the initial commanded tilt (Kp · D, clipped
+    at max_tilt) using the controller gains that were active during
+    the verification trials (i.e., session.current_gains, not the
+    recommendation). Predict the initial ball acceleration via
+    open-loop G_eff. Compare to the observed initial acceleration.
+
+    A high level of agreement (mean ratio ≈ 1.0) means the open-loop
+    fit captured the plant correctly; a big disagreement means the
+    open-loop fit is suspect — usually stiction-contaminated, since
+    closed-loop saturates max_tilt initially and overcomes stiction
+    fast, while open-loop's small tilts are stiction-held.
+
+    Returns a dict suitable for embedding in step_id_summary.json.
+    Empty when there's no open-loop G_eff or no verification trials.
+    """
+    if not trials:
+        return {}
+    rec = session.get('phases', {}).get('recommendation', {}) or {}
+    cur = session.get('current_gains', {}) or {}
+    g_eff_ol = rec.get('g_eff_used') or rec.get(
+        'g_eff_open_loop_mm_s2_per_deg')
+    if not g_eff_ol or g_eff_ol < 1.0:
+        return {'note': 'no open-loop G_eff to cross-check against'}
+    kp_active = float(cur.get('kp', 0.015))
+    max_tilt_active = float(cur.get('max_tilt_deg', 2.5))
+    rows = []
+    ratios = []
+    for t in trials:
+        accel = _initial_accel_g_eff(t, window_s=0.20)
+        if accel is None or accel <= 0:
+            continue
+        target = t.get('target_xy', [0, 0])
+        start = t.get('ball_start_xy', [0, 0])
+        d_initial = math.hypot(target[0] - start[0],
+                               target[1] - start[1])
+        cmd_tilt = min(kp_active * d_initial, max_tilt_active)
+        predicted_accel = g_eff_ol * cmd_tilt
+        if predicted_accel < 1.0:
+            continue
+        ratio = accel / predicted_accel
+        rows.append({
+            'trial_idx': int(t.get('trial_idx', 0)),
+            'd_initial_mm': float(d_initial),
+            'cmd_tilt_deg': float(cmd_tilt),
+            'observed_accel_mm_s2': float(accel),
+            'predicted_accel_mm_s2': float(predicted_accel),
+            'ratio': float(ratio),
+        })
+        ratios.append(ratio)
+    if not ratios:
+        return {'note': 'no usable closed-loop initial-accel data'}
+    mean_ratio = float(np.mean(ratios))
+    # Agreement quality: ratio in [0.7, 1.4] → good; outside →
+    # flag the recommendation. Asymmetric range because saturation
+    # truncation tends to underestimate observed (controller can't
+    # produce more tilt than commanded), so values <1 are slightly
+    # more expected than values >1.
+    if 0.7 <= mean_ratio <= 1.4:
+        agreement = 'good'
+    elif 0.4 <= mean_ratio <= 2.0:
+        agreement = 'fair'
+    else:
+        agreement = 'poor'
+    return {
+        'g_eff_open_loop': float(g_eff_ol),
+        'per_trial': rows,
+        'mean_ratio_observed_vs_predicted': mean_ratio,
+        'agreement_quality': agreement,
+        'note': (
+            f'mean observed/predicted accel ratio = {mean_ratio:.2f} '
+            f'across {len(rows)} trials; '
+            + ('OK — open-loop G_eff is consistent with closed-loop '
+               'initial dynamics' if agreement == 'good'
+               else 'WARNING — open-loop fit may be stiction-'
+                    'contaminated or have wrong tilt direction; '
+                    'recommendation should be treated with caution')),
+    }
+
+
+def _analyze_verification_for_refinement(
+        trials: list[dict],
+        recommendation: dict,
+        current_gains: dict) -> dict:
+    """Look at verification-trial outcomes and propose refined gains
+    when patterns suggest the recommendation needs adjustment.
+
+    Failure modes detected:
+      - All 4 trials failed AND median peak velocity > 1500 mm/s →
+        vision-noise-dominated Kd → halve Kd
+      - All 4 failed AND median peak velocity < 200 mm/s → ball
+        wasn't moving → Kp too low (or stiction unaddressed) →
+        bump Kp 50%, suggest enabling stiction relief
+      - All 4 failed AND mean late-trial radius > 150 mm → orbital
+        limit cycle → recommend operator activate the velocity
+        sanity-gate AND stiction relief; halve Kd as defensive
+      - All 4 settled AND median settling time > 2× predicted →
+        too conservative → bump Kp 30%
+      - All 4 settled AND any trial overshot > 50% of step distance
+        → too aggressive → bump Kd 30%
+
+    Output is analysis-only — operator chooses to apply or not via
+    the GUI editable-gain inputs. No automatic re-run.
+    """
+    if not trials or not recommendation:
+        return {'note': 'no trials or no recommendation to refine'}
+    n = len(trials)
+    n_settled = sum(1 for t in trials if t.get('settled'))
+    settling_times = [t['settled_at_s']
+                      for t in trials
+                      if t.get('settled') and t.get('settled_at_s')]
+    # Per-trial robustified peak velocity (95th percentile, not max,
+    # to filter glitches) and overshoot.
+    peak_vs = []
+    overshoots = []
+    late_radii = []
+    for t in trials:
+        samples = t.get('samples', [])
+        if len(samples) < 10:
+            continue
+        ts = np.array([s['t'] for s in samples])
+        xs = np.array([s['x'] for s in samples])
+        ys = np.array([s['y'] for s in samples])
+        vx = np.gradient(xs, ts)
+        vy = np.gradient(ys, ts)
+        speeds = np.hypot(vx, vy)
+        peak_vs.append(float(np.percentile(speeds, 95)))
+        # Overshoot: max of (distance past target along start→target
+        # direction). If the ball goes past the target then comes
+        # back, we want the max excursion.
+        target = t.get('target_xy', [0, 0])
+        start = t.get('ball_start_xy', [0, 0])
+        d_axis_x = target[0] - start[0]
+        d_axis_y = target[1] - start[1]
+        d_axis_len = math.hypot(d_axis_x, d_axis_y)
+        if d_axis_len > 1.0:
+            ux = d_axis_x / d_axis_len
+            uy = d_axis_y / d_axis_len
+            # Project ball position onto start→target axis;
+            # subtract d_axis_len so 0 = at target. Positive
+            # values = past target (overshoot).
+            proj = ((xs - start[0]) * ux + (ys - start[1]) * uy
+                    - d_axis_len)
+            overshoot = float(np.max(proj))
+            overshoots.append(max(0.0, overshoot))
+        # Late-trial radius (last 25% of samples) — if ball is
+        # orbiting, this stabilises near the rim.
+        late_start = max(1, int(0.75 * len(samples)))
+        late_xs = xs[late_start:]
+        late_ys = ys[late_start:]
+        late_radii.append(float(
+            np.mean(np.hypot(late_xs, late_ys))))
+    median_peak_v = (float(np.median(peak_vs))
+                     if peak_vs else None)
+    median_overshoot = (float(np.median(overshoots))
+                        if overshoots else None)
+    median_late_radius = (float(np.median(late_radii))
+                          if late_radii else None)
+    median_settle_time = (float(np.median(settling_times))
+                          if settling_times else None)
+    refined = {
+        'kp': recommendation.get('kp'),
+        'kd': recommendation.get('kd'),
+        'ki': recommendation.get('ki'),
+        'max_tilt_deg': recommendation.get('max_tilt_deg'),
+    }
+    reasons = []
+    advisory = []
+    if n_settled == 0 and n > 0:
+        # All failed. Diagnose by velocity profile.
+        if median_peak_v is not None and median_peak_v > 1500.0:
+            refined['kd'] = (recommendation.get('kd', 0.03) * 0.5)
+            reasons.append(
+                f'all 4 trials failed; median peak velocity '
+                f'{median_peak_v:.0f} mm/s suggests vision-noise-'
+                f'driven Kd instability — Kd halved')
+        elif median_peak_v is not None and median_peak_v < 200.0:
+            refined['kp'] = (recommendation.get('kp', 0.015) * 1.5)
+            reasons.append(
+                f'all 4 trials failed; median peak velocity '
+                f'{median_peak_v:.0f} mm/s is below typical drive '
+                f'levels — Kp +50% to overcome friction floor')
+            advisory.append(
+                'consider activating stiction relief via the '
+                'stiction_break_s / stiction_v_threshold_mm_s gains')
+        if (median_late_radius is not None
+                and median_late_radius > 150.0):
+            advisory.append(
+                f'mean late-trial radius {median_late_radius:.0f} mm '
+                f'(rim is 200) suggests orbital limit cycle. The '
+                f'velocity-sanity-gate (stewart_control_node, '
+                f'BT_MAX_BALL_VEL_MM_S=800) and stiction-relief '
+                f'PID modification are the structural fixes for '
+                f'this; lower Kd as a stopgap')
+            if 'Kd halved' not in ' '.join(reasons):
+                refined['kd'] = (recommendation.get('kd', 0.03) * 0.7)
+                reasons.append(
+                    'orbital limit cycle suspected — Kd reduced 30% '
+                    'as defensive measure')
+    elif n_settled == n and median_settle_time is not None:
+        # All settled — fine-tune.
+        # Predicted settling time from ωn, ζ:
+        # for ζ=0.7, t_2pct ≈ 4 / (ζ · ωn) ≈ 5.7 / ωn
+        omega_n = recommendation.get('omega_n_rad_s', 4.0)
+        if omega_n > 0:
+            predicted_settle = 5.7 / omega_n
+            if median_settle_time > 2.0 * predicted_settle:
+                refined['kp'] = (
+                    recommendation.get('kp', 0.015) * 1.3)
+                reasons.append(
+                    f'all settled but median settling time '
+                    f'{median_settle_time:.1f} s exceeds predicted '
+                    f'{predicted_settle:.1f} s by 2×; recommendation '
+                    f'too conservative — Kp +30%')
+        if (median_overshoot is not None
+                and median_overshoot > 50.0):
+            refined['kd'] = (recommendation.get('kd', 0.03) * 1.3)
+            reasons.append(
+                f'all settled but median overshoot '
+                f'{median_overshoot:.0f} mm — too aggressive; '
+                f'Kd +30% for more damping')
+    else:
+        reasons.append(
+            f'{n_settled}/{n} trials settled — partial success, no '
+            f'automatic refinement (insufficient signal). Inspect '
+            f'phase_plane.png and ball_paths_combined.png to '
+            f'decide manually.')
+    refined_changed = any(
+        refined.get(k) != recommendation.get(k)
+        for k in ('kp', 'kd', 'ki', 'max_tilt_deg'))
+    return {
+        'n_trials': n,
+        'n_settled': n_settled,
+        'median_peak_velocity_mm_s': median_peak_v,
+        'median_settling_time_s': median_settle_time,
+        'median_overshoot_mm': median_overshoot,
+        'median_late_radius_mm': median_late_radius,
+        'refined_gains': refined if refined_changed else None,
+        'refinement_reasons': reasons,
+        'advisory': advisory,
+    }
 
 
 def _recommended_gains_png(session: dict, out_path: Path) -> None:
@@ -587,23 +847,57 @@ def _write_recommendation(session: dict, out_path: Path) -> None:
     rec = session.get('phases', {}).get('recommendation', {})
     cur = session.get('current_gains', {})
     closed_g = session.get('closed_loop_initial_accel_mm_s2', {})
+    cross_check = session.get('cross_check', {})
+    verif_analysis = session.get('verification_analysis', {})
+    aggregate = session.get('phases', {}).get('open_loop_aggregate',
+                                              {})
     summary = {
         'current_gains': cur,
         'recommended_gains': {
             'kp': rec.get('kp'),
             'kd': rec.get('kd'),
             'ki': rec.get('ki'),
+            'max_tilt_deg': rec.get('max_tilt_deg'),
         },
+        # If verification suggested a refinement, surface it here
+        # alongside the original analytic recommendation. Operator
+        # picks which to apply via the GUI editable inputs.
+        'refined_gains': (verif_analysis.get('refined_gains')
+                          if verif_analysis else None),
+        'refinement_reasons': (verif_analysis.get('refinement_reasons')
+                               if verif_analysis else None),
+        'advisory': (verif_analysis.get('advisory')
+                     if verif_analysis else None),
         'omega_n_rad_s': rec.get('omega_n_rad_s'),
         'zeta': rec.get('zeta'),
         'g_eff_open_loop_mm_s2_per_deg': rec.get('g_eff_used'),
+        'g_eff_open_loop_std_mm_s2_per_deg':
+            aggregate.get('g_eff_std_mm_s2_per_deg'),
+        'g_eff_open_loop_cv': aggregate.get('g_eff_cv'),
+        'n_open_loop_replicates': aggregate.get('n_replicates'),
         'td_observed_s': rec.get('td_observed_s'),
         'closed_loop_initial_accel_mm_s2': closed_g,
+        'cross_check_open_loop_vs_closed_loop': cross_check,
+        'verification_summary': {
+            'n_trials': verif_analysis.get('n_trials'),
+            'n_settled': verif_analysis.get('n_settled'),
+            'median_settling_time_s':
+                verif_analysis.get('median_settling_time_s'),
+            'median_peak_velocity_mm_s':
+                verif_analysis.get('median_peak_velocity_mm_s'),
+            'median_overshoot_mm':
+                verif_analysis.get('median_overshoot_mm'),
+            'median_late_radius_mm':
+                verif_analysis.get('median_late_radius_mm'),
+        } if verif_analysis else {},
         'recommendation_valid': rec.get('valid', False),
         'note': rec.get('note', ''),
     }
     with open(out_path, 'w') as f:
-        json.dump(summary, f, indent=2)
+        json.dump(summary, f, indent=2,
+                  default=lambda o: float(o) if isinstance(o,
+                                                            np.floating)
+                  else None)
 
 
 def main():

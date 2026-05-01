@@ -4430,8 +4430,70 @@ class StewartControlNode(Node):
                                        + ki * integ_x)
                     tilt_roll  = rs * (kp * ey_lead + kd * edot_y
                                        + ki * integ_y)
-                    stiction_started_t = None
                     phase_code = 5   # PID
+
+                    # ----- Stiction relief --------------------------
+                    # The PD recommendation `Kp = ωn²/G_eff` assumes
+                    # a linear plant ẍ = G·θ. The real foam-on-vinyl
+                    # plant is fully stuck below static-friction
+                    # breakaway (~3° on this hardware) — when the
+                    # PID's commanded tilt is below that threshold
+                    # AND the ball is essentially still AND the
+                    # error is non-trivial, we'd integrator-wind for
+                    # several seconds before the ball broke loose,
+                    # by which point we'd overshoot. Adding a small
+                    # I-term doesn't fix this — by the time the
+                    # integrator is large enough to break stiction,
+                    # it's also too large for the post-breakaway
+                    # dynamics → big overshoot, limit cycle.
+                    #
+                    # Borrow the bang-bang STICTION_BREAK pattern:
+                    # if velocity has been below stiction_v_threshold
+                    # for stiction_break_s while the error is still
+                    # outside err_tol, scale the (PID-computed)
+                    # commanded tilt magnitude up to max_tilt while
+                    # preserving the PID's chosen direction.
+                    # Direction of the kick comes from the PID
+                    # output (which knows about lead-compensation
+                    # and integrator state), not from raw unit-error
+                    # — so the relief naturally aligns with the
+                    # controller's intent rather than fighting it.
+                    #
+                    # If the PID output is essentially zero
+                    # (settled or contradictory damping), fall back
+                    # to unit-error direction toward the target.
+                    err_tol_pid = float(g.get('err_tol_mm', 15.0))
+                    stiction_v_pid = float(
+                        g.get('stiction_v_threshold_mm_s', 20.0))
+                    stiction_break_s_pid = float(
+                        g.get('stiction_break_s', 0.6))
+                    if (vel_mag < stiction_v_pid
+                            and err_mag > err_tol_pid):
+                        if stiction_started_t is None:
+                            stiction_started_t = now
+                        elif (now - stiction_started_t
+                              > stiction_break_s_pid):
+                            # Stiction relief active — boost magnitude
+                            # to max_tilt, preserve direction.
+                            pid_mag = math.hypot(tilt_pitch, tilt_roll)
+                            if pid_mag > 1e-3:
+                                scale = max_tilt / pid_mag
+                                tilt_pitch *= scale
+                                tilt_roll *= scale
+                            else:
+                                # PID is essentially zero (e.g., Kd
+                                # exactly cancelled Kp on noise) —
+                                # use the unit-error direction
+                                # straight toward the target.
+                                tilt_pitch = ps * ux * max_tilt
+                                tilt_roll = rs * uy * max_tilt
+                            phase_code = 4   # STICTION_BREAK
+                    else:
+                        # Ball is moving (vel ≥ threshold) or close
+                        # enough to target (err ≤ tol): no relief
+                        # needed; reset the timer so a future stuck
+                        # event has to re-accumulate the dwell.
+                        stiction_started_t = None
 
                 # Saturate.
                 tilt_pitch = max(-max_tilt, min(max_tilt, tilt_pitch))

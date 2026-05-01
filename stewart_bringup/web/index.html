@@ -1614,6 +1614,13 @@
                  class="bg-slate-700 rounded px-1 py-0.5 mono w-16">
           <span>°</span>
         </label>
+        <label class="flex items-center gap-1 text-xs text-slate-400"
+               title="Number of open-loop tilt-step replicates for plant identification. Default 3 — single-trial G_eff varied 5× across recent sessions on the same hardware, so we now run multiple trials and refuse to recommend gains when the spread is high. 1 = fast methodology iteration; 3-5 = thorough plant ID. Operator places the ball on any marker between replicates.">
+          <span>OL reps</span>
+          <input id="stepid-n-replicates" type="number" step="1" value="3"
+                 min="1" max="6"
+                 class="bg-slate-700 rounded px-1 py-0.5 mono w-12">
+        </label>
       </div>
       <div id="stepid-prompt"
            class="text-xs bg-slate-900 rounded px-2 py-1 text-amber-300 mb-2 mono">
@@ -2528,6 +2535,10 @@ function setupROSInterface() {
   // STEP_ID open-loop tilt magnitude (deg).
   topic.stepid_tilt_mag = new ROSLIB.Topic({
     ros, name: '/step_id/cmd_tilt_magnitude',
+    messageType: 'std_msgs/msg/Float64' });
+  // STEP_ID open-loop replicate count (rounded to int on the node side).
+  topic.stepid_n_replicates = new ROSLIB.Topic({
+    ros, name: '/step_id/cmd_n_replicates',
     messageType: 'std_msgs/msg/Float64' });
 
   // Ball state (KF posterior, platform-frame mm)
@@ -4763,6 +4774,15 @@ function initVisionGUI() {
       topic.stepid_tilt_mag.publish(new ROSLIB.Message({ data: m }));
     } catch (e) {}
   }
+  const stepidNReplicatesInput = $('stepid-n-replicates');
+  function _publishStepIdNReplicates() {
+    if (!topic.stepid_n_replicates || !stepidNReplicatesInput) return;
+    const n = parseFloat(stepidNReplicatesInput.value);
+    if (!isFinite(n)) return;
+    try {
+      topic.stepid_n_replicates.publish(new ROSLIB.Message({ data: n }));
+    } catch (e) {}
+  }
   if (stepidStartZInput) {
     stepidStartZInput.addEventListener('change', _publishStepIdStartZ);
     setTimeout(_publishStepIdStartZ, 1500);
@@ -4771,13 +4791,19 @@ function initVisionGUI() {
     stepidTiltMagInput.addEventListener('change', _publishStepIdTiltMag);
     setTimeout(_publishStepIdTiltMag, 1500);
   }
+  if (stepidNReplicatesInput) {
+    stepidNReplicatesInput.addEventListener('change',
+                                            _publishStepIdNReplicates);
+    setTimeout(_publishStepIdNReplicates, 1500);
+  }
   if (stepidStartBtn) stepidStartBtn.addEventListener('click', () => {
     if (!srv.stepid_start) return;
-    // Re-publish start-Z and tilt-magnitude right before Start so
-    // the latest input values definitely land at the node before
-    // the session begins.
+    // Re-publish start-Z, tilt-magnitude and replicate count right
+    // before Start so the latest input values definitely land at
+    // the node before the session begins.
     _publishStepIdStartZ();
     _publishStepIdTiltMag();
+    _publishStepIdNReplicates();
     const promptEl = document.getElementById('stepid-prompt');
     if (promptEl) promptEl.innerText = 'starting…';
     // Brief delay so the Float64 lands at auto_tune_node before the

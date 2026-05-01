@@ -254,6 +254,21 @@ STEP_ID_PRE_TILT_LEVEL_S      = 1.0    # hold flat for this long before
                                        # has a clean t=0 baseline
 STEP_ID_POST_TILT_LEVEL_S     = 1.0    # hold flat after tilting so the
                                        # ball decelerates within the bag
+# Number of open-loop tilt-step trials to run for plant identification.
+# Default 3 — single-trial plant ID was the #1 weakness called out in
+# the post-202650Z critique: across four consecutive sessions on the
+# same hardware, single-trial G_eff varied 35 → 224 → 92 → 64 (5×
+# spread). With n=3 we get a sample mean ± std and can refuse to
+# recommend gains when the cv exceeds STEP_ID_OL_CV_THRESHOLD —
+# clear "plant is too noisy / stiction is too unpredictable for
+# analytic tuning" failure mode rather than shipping a bad number.
+# Override at runtime via /step_id/cmd_n_replicates (Float64; nearest
+# integer). Operator can dial down to 1 for fast iteration on
+# methodology, or up to 5 for high-confidence runs.
+STEP_ID_OL_REPLICATES_DEFAULT = 3
+STEP_ID_OL_CV_THRESHOLD       = 0.30   # coefficient of variation
+                                       # (std/mean) above which we
+                                       # refuse to recommend gains
 
 # Closed-loop verification parameters
 STEP_ID_GOTO_TIMEOUT_S        = 25.0   # per-trial goto timeout
@@ -576,6 +591,13 @@ class AutoTuneNode(Node):
         self.create_subscription(
             Float64, '/step_id/cmd_tilt_magnitude',
             self._on_step_id_tilt_magnitude_cmd, 1)
+        # Operator-set number of open-loop replicates for plant ID.
+        # See STEP_ID_OL_REPLICATES_DEFAULT in the constants block.
+        self._step_id_n_replicates: int = (
+            STEP_ID_OL_REPLICATES_DEFAULT)
+        self.create_subscription(
+            Float64, '/step_id/cmd_n_replicates',
+            self._on_step_id_n_replicates_cmd, 1)
         # Latest IMU rpy (deg), so the open-loop trial can verify the
         # platform actually achieved the commanded tilt vs failing
         # silently. /platform_rpy is the IMU body roll/pitch/yaw at
@@ -1452,6 +1474,20 @@ class AutoTuneNode(Node):
                                       float(msg.data[1]))
             self._step_id_imu_rpy_t = time.monotonic()
 
+    def _on_step_id_n_replicates_cmd(self, msg: Float64) -> None:
+        """GUI sets the open-loop replicate count. Float64 because
+        the existing /step_id/cmd_* topics are all Float64; we round
+        to nearest int and clamp."""
+        n = int(round(float(msg.data)))
+        if n < 1 or n > 6:
+            self.get_logger().warn(
+                f'/step_id/cmd_n_replicates={n} outside [1, 6]; '
+                f'ignoring')
+            return
+        self._step_id_n_replicates = n
+        self.get_logger().info(
+            f'STEP_ID open-loop replicate count set to {n}')
+
     def _check_preflight(self) -> tuple[bool, str]:
         """Pre-flight check before starting any tuning session.
         Returns (ok, message). Currently checks:
@@ -1960,77 +1996,201 @@ class AutoTuneNode(Node):
                 f'step_id: ball detected on marker {start_marker}')
             session['start_marker'] = int(start_marker)
 
-            # --- Phase 2: open-loop characterization ---------------------
+            # --- Phase 2: open-loop characterization (REPLICATED) ----
+            #
+            # Run the open-loop tilt step n_replicates times to get
+            # mean ± std of G_eff. Single-trial plant ID was the #1
+            # weakness called out in the critique: same hardware
+            # produced G_eff=35, 224, 92, 64 across four consecutive
+            # sessions (5× spread). With n=3 replicates we get a
+            # sample mean and can refuse to recommend gains if
+            # the spread (cv = std/mean) exceeds threshold.
+            #
+            # Between replicates the operator places the ball back on
+            # any marker (using the same any-marker-confirm gate as
+            # the verification trials). This gives n independent
+            # trials, each from a clean starting state. The first
+            # replicate uses the start_marker that the operator
+            # already placed the ball on at session start.
             tilt_mag = float(self._step_id_tilt_magnitude_deg)
-            self._status.update({
-                'state': 'step_id_open_loop',
-                'prompt': (f'Characterizing plant — tilting platform '
-                           f'{tilt_mag:.1f}° from marker {start_marker}.'),
-            })
-            self._publish_status()
-            roll_cmd, pitch_cmd = self._safe_open_loop_direction(
-                start_marker, magnitude_deg=tilt_mag)
-            self.get_logger().info(
-                f'step_id phase 2: open-loop tilt step '
-                f'(roll={roll_cmd:+.2f}°, pitch={pitch_cmd:+.2f}°) '
-                f'from marker {start_marker}')
-            ol_trial = self._run_open_loop_trial(
-                start_marker, roll_cmd, pitch_cmd, log_path)
-            session['phases']['open_loop'] = ol_trial
+            n_reps = int(self._step_id_n_replicates)
+            ol_replicates: list[dict] = []
+            current_start = start_marker
+            for rep in range(n_reps):
+                # Replicate 0 uses the original start_marker. For
+                # replicate ≥1 we ask the operator to place the ball
+                # on any marker — they may pick a different one or
+                # the same; each placement is independent.
+                if rep > 0:
+                    self._status.update({
+                        'state': 'step_id_open_loop',
+                        'prompt': (
+                            f'Open-loop replicate {rep+1}/{n_reps}: '
+                            f'place ball on any marker (the previous '
+                            f'trial ran from marker '
+                            f'{current_start}; ball has since moved).'),
+                    })
+                    self._publish_status()
+                    new_start = self._wait_for_ball_on_any_marker()
+                    if new_start is None:
+                        self.get_logger().warn(
+                            f'  replicate {rep+1}: operator never '
+                            f'confirmed — proceeding with '
+                            f'{len(ol_replicates)} replicate(s) so far')
+                        break
+                    current_start = new_start
+                    self._sleep_with_abort(
+                        STEP_ID_INTER_TRIAL_SETTLE_S)
+                    if self._abort:
+                        break
+                roll_cmd, pitch_cmd = self._safe_open_loop_direction(
+                    current_start, magnitude_deg=tilt_mag)
+                self._status.update({
+                    'state': 'step_id_open_loop',
+                    'prompt': (
+                        f'Open-loop replicate {rep+1}/{n_reps}: '
+                        f'tilting {tilt_mag:.1f}° from marker '
+                        f'{current_start} (roll={roll_cmd:+.1f}°, '
+                        f'pitch={pitch_cmd:+.1f}°)'),
+                })
+                self._publish_status()
+                self.get_logger().info(
+                    f'step_id phase 2 replicate {rep+1}/{n_reps}: '
+                    f'open-loop from marker {current_start} '
+                    f'(roll={roll_cmd:+.2f}°, pitch={pitch_cmd:+.2f}°)')
+                ol = self._run_open_loop_trial(
+                    current_start, roll_cmd, pitch_cmd, log_path)
+                if ol.get('aborted'):
+                    self.get_logger().warn(
+                        f'  replicate {rep+1} aborted: '
+                        f'{ol.get("abort_reason")}; continuing')
+                    continue
+                ol_replicates.append(ol)
 
-            if ol_trial.get('aborted'):
+            if not ol_replicates:
                 self._fail_step_id(
                     log_dir, summary_path, session,
-                    f'open-loop trial failed: {ol_trial.get("abort_reason")}')
+                    'all open-loop replicates aborted; nothing to fit. '
+                    'Check armed + level + ball detection, then retry.')
                 return
 
+            # Aggregate G_eff across replicates. Use whichever fit
+            # method each replicate selected (parabolic vs velocity-
+            # based) so the mean reflects the full robust pipeline.
+            g_effs = [t['g_eff_mm_s2_per_deg']
+                      for t in ol_replicates
+                      if t.get('g_eff_mm_s2_per_deg', 0) > 0]
+            tds_obs = [t.get('td_observed_s', 0.15)
+                       for t in ol_replicates]
+            achievements = [t.get('imu_achievement_ratio', 0.0)
+                            for t in ol_replicates]
+            if not g_effs:
+                self._fail_step_id(
+                    log_dir, summary_path, session,
+                    'no usable G_eff fits across '
+                    f'{len(ol_replicates)} replicates')
+                return
+            g_eff_mean = float(np.mean(g_effs))
+            g_eff_std = float(np.std(g_effs, ddof=1)
+                              if len(g_effs) > 1 else 0.0)
+            g_eff_cv = (g_eff_std / g_eff_mean
+                        if g_eff_mean > 0 else 1.0)
+            td_mean = float(np.mean(tds_obs))
+            achievement_mean = float(np.mean(achievements))
+
+            aggregate = {
+                'n_replicates': len(g_effs),
+                'g_eff_mean_mm_s2_per_deg': g_eff_mean,
+                'g_eff_std_mm_s2_per_deg': g_eff_std,
+                'g_eff_cv': g_eff_cv,
+                'g_effs': [float(g) for g in g_effs],
+                'td_mean_s': td_mean,
+                'imu_achievement_mean': achievement_mean,
+            }
+            session['phases']['open_loop_aggregate'] = aggregate
+            session['phases']['open_loop_replicates'] = ol_replicates
+            # Back-compat: keep phases.open_loop = first replicate so
+            # the existing digest's plant_gain_fit.png works without
+            # change. The new digest reads open_loop_aggregate when
+            # available and falls back to open_loop otherwise.
+            session['phases']['open_loop'] = ol_replicates[0]
+            self.get_logger().info(
+                f'step_id phase 2 aggregate: G_eff = {g_eff_mean:.1f} '
+                f'± {g_eff_std:.1f} mm/s²/° '
+                f'(cv={g_eff_cv*100:.0f}%, n={len(g_effs)})')
+
             # --- Phase 3: compute recommended gains ----------------------
-            g_eff = ol_trial.get('g_eff_mm_s2_per_deg', 0.0)
-            # Sanity gate: physical floor is roughly 60 mm/s²/° (level-PI
-            # losing half its setpoint) up to 200 mm/s²/° (slight
-            # over-tilt). G_eff well below 20 means the BALL didn't
-            # move much. Use the IMU achievement ratio to discriminate
-            # the two physically-distinct failure modes:
+            g_eff = g_eff_mean
+            # Spread gate: refuse to recommend if the replicates
+            # disagree by more than 30%. Either stiction is making
+            # the plant gain unpredictable (different friction
+            # breakaway each trial), or vision is intermittently
+            # corrupting one of the fits, or the IMU achievement is
+            # inconsistent. Whatever the cause, an analytic gain
+            # derived from such a noisy estimate is dangerous.
+            if g_eff_cv > STEP_ID_OL_CV_THRESHOLD:
+                msg = (
+                    f'plant gain too inconsistent across '
+                    f'{len(g_effs)} replicates: G_eff = '
+                    f'{g_eff_mean:.0f} ± {g_eff_std:.0f} '
+                    f'(cv={g_eff_cv*100:.0f}%). Likely causes: '
+                    f'stiction breakaway varying trial-to-trial '
+                    f'(tighten platform, more lighting, retry); '
+                    f'vision intermittently noisy (check OAK '
+                    f'health log lines); IMU level state varying '
+                    f'(consistently disable/enable level before '
+                    f'each session). Refusing to recommend gains '
+                    f'from a noisy estimate.')
+                self._fail_step_id(log_dir, summary_path, session, msg)
+                return
+            # Sanity gate (per-trial mean): physical floor is roughly
+            # 60 mm/s²/°. G_eff well below 20 means the BALL didn't
+            # move much across replicates. Use the mean IMU
+            # achievement to discriminate the two physically-distinct
+            # failure modes:
             #   - achieved < 0.5 × commanded → platform didn't tilt
             #     (arming or level-loop issue)
             #   - achieved ≈ commanded but ball still didn't move
             #     → static friction held the ball. Bigger tilt needed.
             if g_eff < 20.0:
-                ratio = ol_trial.get('imu_achievement_ratio', 0.0)
-                achieved = ol_trial.get('imu_achieved_tilt_deg', 0.0)
-                commanded = ol_trial.get('imu_commanded_tilt_deg',
-                                         tilt_mag)
-                if ratio < 0.5:
+                first = ol_replicates[0]
+                achieved = first.get('imu_achieved_tilt_deg', 0.0)
+                commanded = first.get('imu_commanded_tilt_deg',
+                                      tilt_mag)
+                if achievement_mean < 0.5:
                     msg = (
-                        f'open-loop trial: commanded {commanded:.2f}° '
-                        f'tilt but IMU only reached {achieved:.2f}° '
-                        f'({ratio*100:.0f}% of commanded). Platform is '
-                        f'not physically tilting. Confirm the system '
-                        f'is armed and the level loop is enabled, '
-                        f'then restart.')
+                        f'open-loop trials: commanded {commanded:.2f}° '
+                        f'tilt but IMU only reached '
+                        f'{achievement_mean*100:.0f}% of commanded '
+                        f'on average. Platform is not physically '
+                        f'tilting. Confirm the system is armed and '
+                        f'the level loop is enabled, then restart.')
                 else:
                     suggested = max(commanded + 1.5,
                                     min(commanded * 2.0, 6.0))
                     msg = (
-                        f'open-loop trial: platform tilted to '
-                        f'{achieved:.2f}° per IMU '
-                        f'({ratio*100:.0f}% of commanded {commanded:.2f}°), '
-                        f'but ball barely moved (G_eff='
-                        f'{g_eff:.1f} mm/s²/°). Likely cause: static '
-                        f'friction holding the ball. Increase the '
-                        f'open-loop tilt magnitude — try '
+                        f'open-loop trials: platform tilted to '
+                        f'{achievement_mean*100:.0f}% of commanded '
+                        f'{commanded:.2f}° on average, but ball barely '
+                        f'moved (G_eff={g_eff:.1f} mm/s²/°). Likely '
+                        f'cause: static friction holding the ball. '
+                        f'Increase the open-loop tilt magnitude — try '
                         f'{suggested:.1f}° via the GUI input — and '
                         f'restart.')
                 self._fail_step_id(log_dir, summary_path, session, msg)
                 return
             recommended = self._compute_recommended_gains(
                 g_eff_mm_s2_per_deg=g_eff,
-                td_observed_s=ol_trial.get('td_observed_s', 0.15),
+                td_observed_s=td_mean,
                 current_gains=current_gains)
+            recommended['g_eff_std_mm_s2_per_deg'] = g_eff_std
+            recommended['g_eff_cv'] = g_eff_cv
+            recommended['n_replicates'] = len(g_effs)
             session['phases']['recommendation'] = recommended
             self.get_logger().info(
                 f'step_id phase 3: recommended gains '
-                f'(based on G_eff={g_eff:.1f} mm/s²/°): '
+                f'(based on G_eff={g_eff:.1f}±{g_eff_std:.1f} mm/s²/°, '
+                f'n={len(g_effs)}): '
                 f'kp={recommended["kp"]:.4f} '
                 f'kd={recommended["kd"]:.4f}')
             self._status.update({
