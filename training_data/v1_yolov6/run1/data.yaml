@@ -1,0 +1,5 @@
+train: ./images/train
+val: ./images/valid
+
+nc: 3
+names: ['aruco', 'ball', 'hand']
