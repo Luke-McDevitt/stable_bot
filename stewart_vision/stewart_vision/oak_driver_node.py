@@ -1323,12 +1323,16 @@ class OakDriverNode(Node):
         self.q_v0_nn = (
             self.device.getOutputQueue('v0_nn', 1, False)
             if self._v0_blob_path is not None else None)
-        # Host queue size 3 (vs the others' 1) so brief host stalls
-        # — e.g. a 30 ms cv2 spike or GC pause — don't cost YOLO
-        # frames. Non-blocking so we still drop oldest if we fall
-        # multi-frame behind.
+        # Host queue size 1, non-blocking — latest-only. Tested
+        # queue=3 first (to absorb brief host stalls without dropping
+        # frames), but on-Pi latency measurement showed YOLO at
+        # 150 ms mean vs cv2's 96 ms — the extra queue depth was
+        # adding ~100 ms of buffering when device output rate
+        # exceeded host drain rate. Shrinking back to 1 trades a
+        # few dropped frames for fresher data, which is what the
+        # controller actually wants.
         self.q_v1_yolo = (
-            self.device.getOutputQueue('v1_yolo', 3, False)
+            self.device.getOutputQueue('v1_yolo', 1, False)
             if self._v1_blob_path is not None else None)
         # Runtime camera-control input queue — drives autofocus on/off
         # and manual focus position from the GUI without rebuilding
@@ -1837,7 +1841,7 @@ class OakDriverNode(Node):
                 self.device.getOutputQueue('v0_nn', 1, False)
                 if self._v0_blob_path is not None else None)
             self.q_v1_yolo = (
-                self.device.getOutputQueue('v1_yolo', 3, False)
+                self.device.getOutputQueue('v1_yolo', 1, False)
                 if self._v1_blob_path is not None else None)
             self.q_cam_ctrl = self.device.getInputQueue('cam_rgb_control')
             if self.enable_depth:
