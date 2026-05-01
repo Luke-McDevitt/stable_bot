@@ -149,17 +149,35 @@ AUTOTUNE_BAG_TOPICS = [
     '/status',
 ]
 
-# Optimizer
-NOISE_FLOOR            = 0.02
-ANNEAL_TRIGGER         = 3       # consec non-improves → step *= ANNEAL_FACTOR
-ANNEAL_FACTOR          = 0.7
-SAFETY_BAD_TRIALS      = 5       # 5x f<0.10 → halt
+# Optimizer (Twiddle / coordinate descent with adaptive steps).
+#
+# Sebastian Thrun's "Twiddle" algorithm (AI for Robotics / Udacity
+# SDC course) — well-tested for low-dim noisy black-box optimization,
+# specifically PID tuning. Per knob: try +step, then -step, then
+# shrink. Step grows ×1.1 on success, shrinks ×0.9 on both-directions
+# failure. NO explicit noise floor: step adaptation absorbs noise
+# (a noisy "miss" just moves us to the next knob; eventually we'll
+# revisit at a smaller step where the signal is bigger relative to
+# the perturbation).
+#
+# Earlier hand-rolled hill-climb had three bugs operator caught:
+#   - NOISE_FLOOR=0.02 was wider than typical step improvements
+#     (~0.018) → real improvements rejected as "noise."
+#   - Only ever tried +step (random direction); never the opposite.
+#   - Aggressive ×0.7 step shrink after 3 fails → converged to
+#     micro-steps before exploring enough.
+#
+# Twiddle's step grows on success — so a series of accepted moves
+# accelerates the search rather than slowing it. And shrink only
+# fires after BOTH directions of a knob fail, doubling the
+# information per shrink decision.
+TWIDDLE_GROW           = 1.1
+TWIDDLE_SHRINK         = 0.9
+SAFETY_BAD_TRIALS      = 5       # 5x f<SAFETY_BAD_THRESH → halt
 SAFETY_BAD_THRESH      = 0.10
-# Lucky-baseline fix: if N consecutive trials are rejected against
-# the current best, re-evaluate the current best to get a fresh
-# fitness sample. Update best_fitness with a weighted average so
-# a one-shot lucky high regresses toward the truth instead of
-# trapping the optimizer ("nothing beats trial 0").
+# Lucky-baseline guard. If the running best hasn't been beaten in
+# N trials, re-evaluate it to refresh the fitness measurement.
+# This regresses lucky one-shot highs toward the truth.
 REEVAL_AFTER_REJECTIONS = 6
 REEVAL_WEIGHT_NEW       = 0.6    # new sample gets 60% weight, old 40%
 # Sign knobs (pitch_sign, roll_sign) are categorical and direction-
@@ -383,7 +401,13 @@ class AutoTuneNode(Node):
 
             gains = _load_gains_yaml()
             steps = {k.name: k.step for k in KNOBS}
-            consec_no_improve = {k.name: 0 for k in KNOBS}
+            # Twiddle state: per knob, what's the next direction to
+            # try? 'plus' → next perturbation is +step. 'minus' →
+            # +step already failed, try -step next. 'next' → both
+            # failed, shrink and move on. Continuous knobs only;
+            # categorical signs use the existing sign-lock mechanism.
+            twiddle_state: dict[str, str] = {
+                k.name: 'plus' for k in KNOBS if not k.categorical}
 
             # Evaluate the starting point first.
             self.get_logger().info(
@@ -438,30 +462,39 @@ class AutoTuneNode(Node):
                     if self._abort:
                         break
 
-                # Pick a knob round-robin, skipping any sign-knob that
-                # has been locked because flipping it lowered fitness
-                # (strong evidence the current sign is correct).
-                for _ in range(len(KNOBS)):
+                # Twiddle knob picker: round-robin through unlocked
+                # knobs. For each, the state machine determines which
+                # direction to try (plus, minus, or move on).
+                for _ in range(len(KNOBS) * 2):
                     kn = KNOBS[knob_idx % len(KNOBS)]
                     knob_idx += 1
                     if kn.categorical and sign_locked.get(kn.name):
                         continue
                     break
-                direction = random.choice([+1, -1])
 
+                # Build candidate gains based on the knob's state.
                 if kn.categorical:
+                    # Sign knobs: try a flip. Sign-lock mechanism
+                    # remains the same.
                     test_gains = dict(best_gains)
                     test_gains[kn.name] = (
                         -1.0 if best_gains.get(kn.name, 1.0) > 0 else 1.0)
                     step_repr = f'{kn.name} flip → {test_gains[kn.name]:+.0f}'
+                    direction = 'flip'
                 else:
-                    delta = direction * steps[kn.name]
+                    state = twiddle_state[kn.name]
                     cur = float(best_gains.get(kn.name, 0.0))
+                    if state == 'plus':
+                        delta = +steps[kn.name]
+                        direction = 'plus'
+                    else:  # 'minus'
+                        delta = -steps[kn.name]
+                        direction = 'minus'
                     new = max(kn.lo, min(kn.hi, cur + delta))
                     test_gains = dict(best_gains)
                     test_gains[kn.name] = new
                     step_repr = (f'{kn.name} {cur:.4f} → {new:.4f} '
-                                 f'(Δ={delta:+.4f})')
+                                 f'(Δ={delta:+.4f}, dir={direction})')
 
                 self.get_logger().info(
                     f'Trial {trial}/{max_trials}: {step_repr}')
@@ -471,27 +504,48 @@ class AutoTuneNode(Node):
                         f'  trial aborted: {r.abort_reason} — skipping')
                     continue
                 f, c = self._compute_fitness(r)
-                accepted = f > best_fitness + NOISE_FLOOR
+                # Direct comparison — NO noise floor. Twiddle's
+                # step adaptation handles noise: a noisy reject
+                # just moves on to the next knob; we'll revisit
+                # this knob later at a different step size where
+                # the signal/noise ratio may differ. Real
+                # improvements (even small ones) get recorded.
+                accepted = f > best_fitness
                 if accepted:
                     best_fitness = f
                     best_gains = dict(test_gains)
-                    consec_no_improve[kn.name] = 0
                     consec_rejections = 0
+                    if not kn.categorical:
+                        # Twiddle "grow on success": expand the step
+                        # so subsequent moves in this direction can
+                        # cover more ground per trial.
+                        steps[kn.name] *= TWIDDLE_GROW
+                        # Reset state to 'plus' so the next visit to
+                        # this knob continues exploring the same
+                        # productive direction first.
+                        twiddle_state[kn.name] = ('plus' if direction == 'plus'
+                                                  else 'minus')
+                        self.get_logger().info(
+                            f'  ✓ accepted; step expanded: '
+                            f'{kn.name} step → {steps[kn.name]:.4f}')
                 else:
                     consec_rejections += 1
-                    consec_no_improve[kn.name] += 1
-                    if (not kn.categorical
-                            and consec_no_improve[kn.name] >= ANNEAL_TRIGGER):
-                        steps[kn.name] *= ANNEAL_FACTOR
-                        consec_no_improve[kn.name] = 0
-                        self.get_logger().info(
-                            f'  step annealed: {kn.name} step → '
-                            f'{steps[kn.name]:.4f}')
-                    # Sign-flip rejection counter — lock the sign once
-                    # SIGN_FLIP_LOCK_AFTER_REJECTS hits. The flip
-                    # showed fitness DROPS, so the current sign is
-                    # the correct one; future trials don't waste
-                    # budget retrying.
+                    if not kn.categorical:
+                        # Twiddle state advance.
+                        if twiddle_state[kn.name] == 'plus':
+                            # +step failed; queue -step for next visit.
+                            twiddle_state[kn.name] = 'minus'
+                            self.get_logger().info(
+                                f'  ✗ rejected (+); will try - next visit')
+                        else:
+                            # Both directions failed — shrink and reset.
+                            steps[kn.name] *= TWIDDLE_SHRINK
+                            twiddle_state[kn.name] = 'plus'
+                            self.get_logger().info(
+                                f'  ✗ rejected (-); both dirs failed — '
+                                f'step shrunk: {kn.name} → '
+                                f'{steps[kn.name]:.4f}')
+                    # Sign-knob lock-after-N-rejects (unchanged).
                     if kn.categorical:
                         sign_reject_count[kn.name] += 1
                         if (sign_reject_count[kn.name]
@@ -505,7 +559,7 @@ class AutoTuneNode(Node):
                 self._append_trial_log(
                     log_path, trial, test_gains, r, f, c,
                     step_taken=f'{step_repr} ({"accepted" if accepted else "rejected"})',
-                    algo='hill_climb')
+                    algo='twiddle')
 
                 # Safety: 5 consecutive bad trials → halt.
                 if f < SAFETY_BAD_THRESH:
