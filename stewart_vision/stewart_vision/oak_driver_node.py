@@ -791,6 +791,10 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
         v0_manip.initialConfig.setFrameType(
             dai.RawImgFrame.Type.BGR888p)
         v0_manip.setMaxOutputFrameSize(V0_W * V0_H * 3)
+        # Non-blocking + queue=1 on ImageManip input prevents
+        # backpressure to cam_rgb when the downstream NN is slow.
+        v0_manip.inputImage.setBlocking(False)
+        v0_manip.inputImage.setQueueSize(1)
         cam_rgb.video.link(v0_manip.inputImage)
         v0_nn = pipeline.create(dai.node.NeuralNetwork)
         v0_nn.setBlobPath(v0_blob_path)
@@ -812,6 +816,13 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
         v1_manip.initialConfig.setFrameType(
             dai.RawImgFrame.Type.BGR888p)
         v1_manip.setMaxOutputFrameSize(V1_W * V1_H * 3)
+        # Non-blocking + queue=1 on ImageManip input — same fix as
+        # the XLinkOut: prevents the upstream cam_rgb from being
+        # throttled when the YOLO inference (~25-30 ms) can't keep
+        # up with the camera's 60 Hz frame rate. v1_manip drops
+        # frames here instead of stalling cam_rgb's output.
+        v1_manip.inputImage.setBlocking(False)
+        v1_manip.inputImage.setQueueSize(1)
         cam_rgb.video.link(v1_manip.inputImage)
         v1_nn = pipeline.create(dai.node.NeuralNetwork)
         v1_nn.setBlobPath(v1_blob_path)
