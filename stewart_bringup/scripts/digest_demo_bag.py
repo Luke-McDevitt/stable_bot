@@ -405,6 +405,148 @@ def _demo_label_from_dir(bag_dir):
     return 'unknown'
 
 
+def _next_gain_recommendation(err_mag: np.ndarray,
+                              err_t_s: np.ndarray,
+                              state_v: np.ndarray,
+                              cmd_pitch: np.ndarray,
+                              cmd_roll: np.ndarray,
+                              gains: dict | None,
+                              demo_mode: str | None) -> dict:
+    """Per-demo-run gain refinement suggestion. Reads:
+      - final 5 s tracking error magnitude (did it settle?)
+      - peak ball velocity (vision-noise-filtered via 95th percentile)
+      - fraction of trial spent at max_tilt saturation
+      - whether commanded tilt oscillates above ~3 Hz (Kd-driven
+        noise — would benefit from a Kd reduction)
+
+    Returns a dict with 'suggestion' (string), 'suggested_gains'
+    (dict, keys present only if changed), and a 'rationale' list.
+
+    The suggestion is conservative: 30-50% changes per axis at most,
+    so the operator can iterate fast without overshooting. Multiple
+    issues → suggest the dominant fix first; the next demo run picks
+    up the next one.
+    """
+    if not gains or err_mag.size == 0 or demo_mode != 'BALL_TRACK_GOTO':
+        return {'suggestion': 'no recommendation '
+                              '(non-goto demo or insufficient data)',
+                'suggested_gains': {}, 'rationale': []}
+    kp = float(gains.get('kp', 0.015))
+    kd = float(gains.get('kd', 0.030))
+    ki = float(gains.get('ki', 0.001))
+    max_tilt = float(gains.get('max_tilt_deg', 2.5))
+    err_tol = float(gains.get('err_tol_mm', 15.0))
+    # Settle window = last 5 s of trial (or last quarter, whichever
+    # is bigger — short trials need a different definition).
+    if err_t_s.size:
+        t_end = float(err_t_s[-1])
+        tail_t = max(t_end - 5.0, t_end * 0.75)
+    else:
+        tail_t = 0.0
+    tail_mask = err_t_s >= tail_t
+    tail_err = err_mag[tail_mask] if tail_mask.any() else err_mag
+    settled = bool(tail_err.size and float(np.median(tail_err))
+                   < err_tol * 1.5)
+    median_tail_err = (float(np.median(tail_err))
+                       if tail_err.size else float('inf'))
+    p95_err = (float(np.percentile(err_mag, 95))
+               if err_mag.size else 0.0)
+    # Vision-noise-filtered peak speed (95th percentile of |v|).
+    if state_v.size:
+        speed = np.linalg.norm(state_v, axis=1)
+        speed = speed[np.isfinite(speed)]
+        peak_speed = (float(np.percentile(speed, 95))
+                      if speed.size else 0.0)
+    else:
+        peak_speed = 0.0
+    # Saturation fraction: how much of the trial was the cmd tilt
+    # at max_tilt? Indicates the controller is bang-bang-like.
+    sat_frac = 0.0
+    if cmd_pitch.size and cmd_roll.size:
+        cmd_mag = np.maximum(np.abs(cmd_pitch), np.abs(cmd_roll))
+        # 95% of max_tilt counts as "saturated" (small float slack).
+        sat_frac = float(np.mean(cmd_mag > 0.95 * max_tilt))
+    # High-frequency oscillation in commanded tilt = Kd amplifying
+    # noise. Detect via std of frame-to-frame cmd_tilt deltas.
+    cmd_jitter = 0.0
+    if cmd_pitch.size > 5:
+        d_cmd = np.diff(cmd_pitch)
+        cmd_jitter = float(np.std(d_cmd))
+    rationale: list[str] = []
+    sg: dict = {}
+    suggestion = 'fine-tune from here'
+    # Decision tree, ordered by severity.
+    if median_tail_err > 100.0 and peak_speed < 80.0:
+        # Ball barely moved.
+        rationale.append(
+            f'final-5s err={median_tail_err:.0f}mm '
+            f'with peak speed {peak_speed:.0f}mm/s — ball not '
+            f'breaking stiction or Kp far too low.')
+        sg['kp'] = round(kp * 1.5, 4)
+        sg['max_tilt_deg'] = max(max_tilt, round(sg['kp'] * 60, 1))
+        suggestion = (f'Kp +50% (→{sg["kp"]:.3f}) '
+                      f'and raise max_tilt to {sg["max_tilt_deg"]:.1f}° '
+                      f'so the controller has enough authority to '
+                      f'break stiction at this error magnitude.')
+    elif (median_tail_err > 60.0 and sat_frac > 0.5
+          and peak_speed > 300.0):
+        # Saturated + still bouncing around → too aggressive.
+        rationale.append(
+            f'cmd tilt at saturation {sat_frac*100:.0f}% of trial; '
+            f'peak speed {peak_speed:.0f}mm/s — likely orbital '
+            f'limit cycle.')
+        sg['kp'] = round(kp * 0.7, 4)
+        suggestion = (f'Kp -30% (→{sg["kp"]:.3f}) — controller is '
+                      f'saturated most of the trial; back off Kp '
+                      f'to keep error ranges in the linear zone.')
+    elif (cmd_jitter > 0.4 and median_tail_err > 30.0):
+        # High-frequency cmd tilt jitter → vision-noise + Kd issue.
+        rationale.append(
+            f'cmd tilt jitter std={cmd_jitter:.2f}°/tick suggests '
+            f'Kd is amplifying vision noise into the tilt command.')
+        sg['kd'] = round(kd * 0.6, 4)
+        suggestion = (f'Kd -40% (→{sg["kd"]:.3f}) — Kd is feeding '
+                      f'vision noise back as tilt command. With less '
+                      f'Kd the controller will be slower but smoother.')
+    elif median_tail_err > 30.0 and not settled:
+        # Generic "not settled, not saturated, no jitter" → modest
+        # bump in Kp.
+        rationale.append(
+            f'final-5s err={median_tail_err:.0f}mm > '
+            f'1.5×err_tol={err_tol*1.5:.0f}mm but no clear failure '
+            f'mode; nudge Kp up.')
+        sg['kp'] = round(kp * 1.3, 4)
+        suggestion = (f'Kp +30% (→{sg["kp"]:.3f}) — ball got near '
+                      f'target but didn\'t settle within tolerance.')
+    elif settled and median_tail_err > err_tol:
+        # Settled but with steady-state offset → bump Ki.
+        rationale.append(
+            f'settled at err={median_tail_err:.0f}mm > tol '
+            f'{err_tol:.0f}mm; steady-state offset.')
+        sg['ki'] = round(ki * 2.0, 4)
+        suggestion = (f'Ki ×2 (→{sg["ki"]:.4f}) — settled with a '
+                      f'steady-state offset; small Ki bump should '
+                      f'integrate the bias out.')
+    elif settled:
+        rationale.append(
+            f'settled cleanly at err={median_tail_err:.0f}mm < '
+            f'{err_tol*1.5:.0f}mm; no obvious refinement needed.')
+        suggestion = 'looks good — ship it or run a longer trial.'
+    return {
+        'suggestion': suggestion,
+        'suggested_gains': sg,
+        'rationale': rationale,
+        'metrics': {
+            'settled': settled,
+            'median_tail_err_mm': median_tail_err,
+            'p95_err_mm': p95_err,
+            'peak_speed_mm_s': peak_speed,
+            'saturation_fraction': sat_frac,
+            'cmd_jitter_deg_per_tick': cmd_jitter,
+        },
+    }
+
+
 def digest(bag_dir: str):
     print(f"[demo-digest] reading {bag_dir}")
     data = _read_bag(bag_dir)
@@ -457,6 +599,17 @@ def digest(bag_dir: str):
     label = _demo_label_from_dir(bag_dir)
     gains_at_record = _gains_at_record(status_d)
 
+    # Iteration-actionable gain recommendation. Reads the active
+    # gains, the trial outcome, and the controller's actual
+    # behaviour (saturation / cmd-jitter / peak speed) and proposes
+    # the single most-impactful next gain change. Saves the operator
+    # from re-analysing each iteration.
+    bt_diag_t_local, bt_diag_local = data['bt_diag']
+    cmd_pitch_arr = (bt_diag_local[:, 2]
+                     if bt_diag_local.size else np.zeros((0,)))
+    cmd_roll_arr = (bt_diag_local[:, 3]
+                    if bt_diag_local.size else np.zeros((0,)))
+
     # Demo-side params (radius, n_waypoints, arrival_tol_mm, dwell_s,
     # max_wait_s, dir, mode='waypoint'/'continuous', period_s, ...)
     # extracted from the latest mode:BALL_TRACK_* /control_cmd in the
@@ -479,6 +632,12 @@ def digest(bag_dir: str):
         demo_params['y_mm'] = float(np.median(ref_xy[:, 1]))
         demo_params['_target_source'] = 'ball_ref_median'
 
+    next_step = _next_gain_recommendation(
+        err_mag, err_t_s,
+        state_v if state_v.size else np.zeros((0, 2)),
+        cmd_pitch_arr, cmd_roll_arr,
+        gains_at_record, demo_mode)
+
     summary = {
         'bag': os.path.abspath(bag_dir),
         'demo_label': label,
@@ -487,6 +646,7 @@ def digest(bag_dir: str):
         'duration_s': duration_s,
         'topic_counts': dict(sorted(data['counts'].items())),
         'gains_at_record': gains_at_record,
+        'next_step': next_step,
         'ball_state_n': int(state_t.size),
         'ball_ref_n':   int(ref_t.size),
         'mono_n': int(mono_t.size),
@@ -575,6 +735,31 @@ def digest(bag_dir: str):
               f"depth={cfg.get('enable_depth')}")
     if gains_at_record:
         print(f"  gains: {gains_at_record}")
+
+    # ----- Iteration-actionable next-step recommendation -----
+    # Big banner so the operator can read it at a glance after each
+    # demo run. The 'next_step' block also lands in
+    # digest.summary.json for tooling that wants the structured form.
+    ns = summary.get('next_step') or {}
+    if ns.get('suggestion'):
+        print()
+        print(f"  ┌─ NEXT STEP ──────────────────────────────────")
+        print(f"  │ {ns['suggestion']}")
+        sg = ns.get('suggested_gains') or {}
+        if sg:
+            parts = ', '.join(f"{k}={v}" for k, v in sg.items())
+            print(f"  │ Try: {parts}")
+        m = ns.get('metrics') or {}
+        if m:
+            settled_str = '✓' if m.get('settled') else '✗'
+            print(f"  │ settled={settled_str}  "
+                  f"tail_err={m.get('median_tail_err_mm', 0):.0f}mm  "
+                  f"peak_v={m.get('peak_speed_mm_s', 0):.0f}mm/s  "
+                  f"sat={m.get('saturation_fraction', 0)*100:.0f}%  "
+                  f"jitter={m.get('cmd_jitter_deg_per_tick', 0):.2f}°")
+        for r in ns.get('rationale') or []:
+            print(f"  │ ({r})")
+        print(f"  └──────────────────────────────────────────────")
 
     # ----- Plot -----
     try:
