@@ -575,19 +575,25 @@ def _git_push_iva_bag(name):
     # Skip commit if nothing was actually staged (re-pushing same bag).
     diff = subprocess.run(['git', 'diff', '--cached', '--quiet'],
                           cwd=repo_dir)
-    if diff.returncode == 0:
+    nothing_to_commit = (diff.returncode == 0)
+    if nothing_to_commit:
         out_lines.append('(nothing to commit — bag already in HEAD)')
-        # Still attempt push in case earlier commit didn't reach origin.
-        if _run(['git', 'push']):
-            out_lines.append('✓ pushed')
-            return True, '\n'.join(out_lines)
-        return False, '\n'.join(out_lines)
-
-    if not _run(['git', 'commit', '-m', msg]):
+    else:
+        if not _run(['git', 'commit', '-m', msg]):
+            return False, '\n'.join(out_lines)
+    # Pull --rebase before pushing so a concurrent push from elsewhere
+    # (laptop, another GUI session) doesn't reject this push with
+    # "fetch first." The /auto_tune/bags/push and /step_id/bags/push
+    # handlers do this; the IVA push handler used to skip it and
+    # surfaced a confusing "rejected" message to the operator any
+    # time a concurrent push had landed (observed 2026-05-01 when an
+    # IVA sweep collided with a code commit pushed seconds earlier).
+    if not _run(['git', 'pull', '--rebase']):
         return False, '\n'.join(out_lines)
     if not _run(['git', 'push']):
         return False, '\n'.join(out_lines)
-    out_lines.append('✓ pushed to origin')
+    out_lines.append(
+        '✓ pushed' if nothing_to_commit else '✓ pushed to origin')
     return True, '\n'.join(out_lines)
 
 
@@ -897,17 +903,24 @@ def _push_vision_bag_to_git(name):
         return False, '\n'.join(out_lines)
     diff = subprocess.run(['git', 'diff', '--cached', '--quiet'],
                           cwd=repo_dir)
-    if diff.returncode == 0:
+    nothing_to_commit = (diff.returncode == 0)
+    if nothing_to_commit:
         out_lines.append('(nothing to commit — digest already in HEAD)')
-        if _run(['git', 'push']):
-            out_lines.append('✓ pushed')
-            return True, '\n'.join(out_lines)
-        return False, '\n'.join(out_lines)
-    if not _run(['git', 'commit', '-m', msg]):
+    else:
+        if not _run(['git', 'commit', '-m', msg]):
+            return False, '\n'.join(out_lines)
+    # Pull --rebase before push to handle concurrent pushes from
+    # other sources (laptop, other GUI sessions). Without this, a
+    # "fetch first" rejection surfaces as a confusing GUI error
+    # any time someone else has pushed in the seconds before this
+    # call (observed 2026-05-01 with an IVA-sweep collision).
+    if not _run(['git', 'pull', '--rebase']):
         return False, '\n'.join(out_lines)
     if not _run(['git', 'push']):
         return False, '\n'.join(out_lines)
-    out_lines.append('✓ pushed to origin (digest only)')
+    out_lines.append(
+        '✓ pushed' if nothing_to_commit
+        else '✓ pushed to origin (digest only)')
     return True, '\n'.join(out_lines)
 
 
@@ -1242,17 +1255,24 @@ def _push_demo_bag_to_git(name):
         return False, '\n'.join(out_lines)
     diff = subprocess.run(['git', 'diff', '--cached', '--quiet'],
                           cwd=repo_dir)
-    if diff.returncode == 0:
+    nothing_to_commit = (diff.returncode == 0)
+    if nothing_to_commit:
         out_lines.append('(nothing to commit — digest already in HEAD)')
-        if _run(['git', 'push']):
-            out_lines.append('✓ pushed')
-            return True, '\n'.join(out_lines)
-        return False, '\n'.join(out_lines)
-    if not _run(['git', 'commit', '-m', msg]):
+    else:
+        if not _run(['git', 'commit', '-m', msg]):
+            return False, '\n'.join(out_lines)
+    # Pull --rebase before push to handle concurrent pushes from
+    # other sources (laptop, other GUI sessions). Without this, a
+    # "fetch first" rejection surfaces as a confusing GUI error
+    # any time someone else has pushed in the seconds before this
+    # call (observed 2026-05-01 with an IVA-sweep collision).
+    if not _run(['git', 'pull', '--rebase']):
         return False, '\n'.join(out_lines)
     if not _run(['git', 'push']):
         return False, '\n'.join(out_lines)
-    out_lines.append('✓ pushed to origin (digest only)')
+    out_lines.append(
+        '✓ pushed' if nothing_to_commit
+        else '✓ pushed to origin (digest only)')
     return True, '\n'.join(out_lines)
 
 
