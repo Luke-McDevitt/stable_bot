@@ -1,0 +1,69 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260501T022556Z_vision_debug",
+  "duration_s": 144.092118446,
+  "topic_counts": {
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 7220,
+    "/ball_xy_oak": 0,
+    "/control_cmd": 29,
+    "/control_result": 0,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/spatial": 0,
+    "/oak/ball/v0/diagnostic": 2088,
+    "/oak/ball/v0/rgb_pixel": 2089,
+    "/oak/depth_blob/debug_image": 0,
+    "/oak/latency_ms": 2358,
+    "/oak/rgb/image_compressed": 2358,
+    "/platform/imu/data": 42912,
+    "/platform_pose": 1745,
+    "/platform_pose/markers_visible": 1745,
+    "/platform_rpy": 2834,
+    "/status": 288
+  },
+  "rich_diagnostic_present": false,
+  "v0": {
+    "detections_n": 2089,
+    "rate_hz_mean": 14.477083333333333,
+    "rate_hz_max": 27.0,
+    "largest_silence_s": 14.491305532
+  },
+  "depth_blob": {
+    "detections_n": 0,
+    "rate_hz_mean": 0.0,
+    "rate_hz_max": 0.0,
+    "largest_silence_s": 0.0,
+    "frame_diag_n": 0,
+    "fail_histogram": {}
+  },
+  "platform_frame_mm": {
+    "v0_xy_n": 7220,
+    "depth_xy_n": 0,
+    "detector_disagreement_mm": {
+      "n": 0
+    }
+  },
+  "pixel_space": {
+    "detector_disagreement_px": {
+      "n": 0
+    }
+  },
+  "markers_visible": {
+    "n": 1745,
+    "mean": 7.523209169054441,
+    "min": 3,
+    "max": 9
+  },
+  "platform_pose_z_mm": {
+    "n": 1745,
+    "mean": 873.5407291920982,
+    "std": 2.5874159034770776,
+    "p05": 870.048283322205,
+    "p50": 873.3983696707348,
+    "p95": 876.7049941890282,
+    "min": 861.7994909339935,
+    "max": 911.1078928649453
+  },
+  "rich_diagnostic_stats": {},
+  "debug_image_frames": 0
+}
