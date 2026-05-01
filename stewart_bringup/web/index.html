@@ -1611,6 +1611,14 @@
                  class="bg-slate-700 rounded px-1 py-0.5 mono w-16">
           <span>mm</span>
         </label>
+        <label class="flex items-center gap-1 text-xs text-slate-400"
+               title="Open-loop tilt magnitude. Default 3° matches accel_tilt_deg from the bang-bang config — the smallest tilt that reliably overcomes foam-on-vinyl static friction. If the diagnosis says 'platform tilted but ball didn't move,' increase this here and re-run. Hard cap 8°.">
+          <span>tilt mag</span>
+          <input id="stepid-tilt-mag" type="number" step="0.5" value="3.0"
+                 min="0.5" max="8.0"
+                 class="bg-slate-700 rounded px-1 py-0.5 mono w-16">
+          <span>°</span>
+        </label>
       </div>
       <div id="stepid-prompt"
            class="text-xs bg-slate-900 rounded px-2 py-1 text-amber-300 mb-2 mono">
@@ -2469,6 +2477,10 @@ function setupROSInterface() {
   // and stores latest; the trial reads it on session start.
   topic.stepid_start_z = new ROSLIB.Topic({
     ros, name: '/step_id/cmd_start_z',
+    messageType: 'std_msgs/msg/Float64' });
+  // STEP_ID open-loop tilt magnitude (deg).
+  topic.stepid_tilt_mag = new ROSLIB.Topic({
+    ros, name: '/step_id/cmd_tilt_magnitude',
     messageType: 'std_msgs/msg/Float64' });
 
   // Ball state (KF posterior, platform-frame mm)
@@ -4683,6 +4695,7 @@ function initVisionGUI() {
   const stepidConfirmBtn = $('stepid-confirm-btn');
   const stepidPromoteBtn = $('stepid-promote-btn');
   const stepidStartZInput = $('stepid-start-z');
+  const stepidTiltMagInput = $('stepid-tilt-mag');
   // Publish start-Z on every change so the node's stored value
   // stays in sync with the input even before Start is pressed.
   function _publishStepIdStartZ() {
@@ -4693,17 +4706,29 @@ function initVisionGUI() {
       topic.stepid_start_z.publish(new ROSLIB.Message({ data: z }));
     } catch (e) {}
   }
+  function _publishStepIdTiltMag() {
+    if (!topic.stepid_tilt_mag || !stepidTiltMagInput) return;
+    const m = parseFloat(stepidTiltMagInput.value);
+    if (!isFinite(m)) return;
+    try {
+      topic.stepid_tilt_mag.publish(new ROSLIB.Message({ data: m }));
+    } catch (e) {}
+  }
   if (stepidStartZInput) {
     stepidStartZInput.addEventListener('change', _publishStepIdStartZ);
-    // Publish once at GUI ready so a fresh node picks up the value
-    // even if the operator never touches the input before Start.
     setTimeout(_publishStepIdStartZ, 1500);
+  }
+  if (stepidTiltMagInput) {
+    stepidTiltMagInput.addEventListener('change', _publishStepIdTiltMag);
+    setTimeout(_publishStepIdTiltMag, 1500);
   }
   if (stepidStartBtn) stepidStartBtn.addEventListener('click', () => {
     if (!srv.stepid_start) return;
-    // Re-publish start-Z right before Start so the latest input
-    // value definitely lands at the node before the session begins.
+    // Re-publish start-Z and tilt-magnitude right before Start so
+    // the latest input values definitely land at the node before
+    // the session begins.
     _publishStepIdStartZ();
+    _publishStepIdTiltMag();
     const promptEl = document.getElementById('stepid-prompt');
     if (promptEl) promptEl.innerText = 'starting…';
     // Brief delay so the Float64 lands at auto_tune_node before the

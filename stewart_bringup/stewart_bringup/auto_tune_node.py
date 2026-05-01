@@ -64,7 +64,8 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_services_default
 
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Bool, Float64, Int32MultiArray, String
+from std_msgs.msg import (Bool, Float32MultiArray, Float64,
+                          Int32MultiArray, String)
 from std_srvs.srv import Trigger
 
 # SetPose lives in jugglebot_interfaces; we use it to reset platform Z
@@ -523,6 +524,29 @@ class AutoTuneNode(Node):
         self.create_subscription(
             Float64, '/step_id/cmd_start_z',
             self._on_step_id_start_z_cmd, 1)
+        # Operator-set tilt magnitude for the open-loop trial. Default
+        # 3° matches the bang-bang accel_tilt_deg — empirically the
+        # smallest tilt that reliably overcomes foam-on-vinyl static
+        # friction. The previous default 1° was below the stiction
+        # breakaway threshold; the ball stayed put even though the
+        # platform did tilt, producing G_eff fits well below the
+        # physical floor.
+        self._step_id_tilt_magnitude_deg: float = 3.0
+        self.create_subscription(
+            Float64, '/step_id/cmd_tilt_magnitude',
+            self._on_step_id_tilt_magnitude_cmd, 1)
+        # Latest IMU rpy (deg), so the open-loop trial can verify the
+        # platform actually achieved the commanded tilt vs failing
+        # silently. /platform_rpy is the IMU body roll/pitch/yaw at
+        # ~20 Hz. We diagnose post-trial: if achieved < 50% of
+        # commanded → platform didn't tilt (arming/level issue);
+        # if achieved ≈ commanded but ball didn't move → static
+        # friction holding the ball, need a larger tilt.
+        self._step_id_imu_rpy: Optional[tuple[float, float]] = None
+        self._step_id_imu_rpy_t: float = 0.0
+        self.create_subscription(
+            Float32MultiArray, '/platform_rpy',
+            self._on_platform_rpy, 10)
         self.pub_cmd = self.create_publisher(String, '/control_cmd', 10)
         # Latched-style status: rosbridge clients pick up the latest
         # snapshot on connect (we'll re-publish it every status update).
@@ -1367,6 +1391,26 @@ class AutoTuneNode(Node):
         self.get_logger().info(
             f'STEP_ID start height set to {z:.1f} mm')
 
+    def _on_step_id_tilt_magnitude_cmd(self, msg: Float64) -> None:
+        """GUI updates the open-loop tilt magnitude for STEP_ID. Hard
+        upper bound of 8° so a typo in the input can't blow past
+        max_tilt and send the ball flying."""
+        deg = float(msg.data)
+        if deg < 0.5 or deg > 8.0:
+            self.get_logger().warn(
+                f'/step_id/cmd_tilt_magnitude={deg:.1f}° outside '
+                f'reasonable envelope [0.5, 8.0]; ignoring')
+            return
+        self._step_id_tilt_magnitude_deg = deg
+        self.get_logger().info(
+            f'STEP_ID open-loop tilt magnitude set to {deg:.2f}°')
+
+    def _on_platform_rpy(self, msg: Float32MultiArray) -> None:
+        if len(msg.data) >= 2:
+            self._step_id_imu_rpy = (float(msg.data[0]),
+                                      float(msg.data[1]))
+            self._step_id_imu_rpy_t = time.monotonic()
+
     def _check_preflight(self) -> tuple[bool, str]:
         """Pre-flight check before starting any tuning session.
         Returns (ok, message). Currently checks:
@@ -1640,10 +1684,15 @@ class AutoTuneNode(Node):
                        ball[1] - marker_xy_imu[1])
         return d <= STEP_ID_BALL_ON_MARKER_TOL_MM
 
-    def _safe_open_loop_direction(self, marker_id: int
+    def _safe_open_loop_direction(self, marker_id: int,
+                                  magnitude_deg: Optional[float] = None
                                   ) -> tuple[float, float]:
         """Choose a (roll_deg, pitch_deg) command that drives the ball
         from the start marker toward the platform centre.
+
+        magnitude_deg: tilt magnitude in degrees. None falls back to
+        STEP_ID_OPEN_LOOP_TILT_DEG (the legacy constant). Operator
+        normally sets this via /step_id/cmd_tilt_magnitude.
 
         Sign math (from controls_journey.md):
           +pitch  → +X edge moves DOWN → ball slides toward +X
@@ -1659,7 +1708,8 @@ class AutoTuneNode(Node):
         if xy is None:
             return (0.0, 0.0)
         x, y = xy
-        mag = STEP_ID_OPEN_LOOP_TILT_DEG
+        mag = (float(magnitude_deg) if magnitude_deg is not None
+               else STEP_ID_OPEN_LOOP_TILT_DEG)
         if abs(x) >= abs(y):
             # Use pitch. +pitch drives ball toward +X; we want toward 0,
             # so pitch sign = -sign(x).
@@ -1745,17 +1795,18 @@ class AutoTuneNode(Node):
             session['start_marker'] = int(start_marker)
 
             # --- Phase 2: open-loop characterization ---------------------
+            tilt_mag = float(self._step_id_tilt_magnitude_deg)
             self._status.update({
                 'state': 'step_id_open_loop',
                 'prompt': (f'Characterizing plant — tilting platform '
-                           f'1° from marker {start_marker}.'),
+                           f'{tilt_mag:.1f}° from marker {start_marker}.'),
             })
             self._publish_status()
             roll_cmd, pitch_cmd = self._safe_open_loop_direction(
-                start_marker)
+                start_marker, magnitude_deg=tilt_mag)
             self.get_logger().info(
                 f'step_id phase 2: open-loop tilt step '
-                f'(roll={roll_cmd:+.1f}°, pitch={pitch_cmd:+.1f}°) '
+                f'(roll={roll_cmd:+.2f}°, pitch={pitch_cmd:+.2f}°) '
                 f'from marker {start_marker}')
             ol_trial = self._run_open_loop_trial(
                 start_marker, roll_cmd, pitch_cmd, log_path)
@@ -1771,18 +1822,40 @@ class AutoTuneNode(Node):
             g_eff = ol_trial.get('g_eff_mm_s2_per_deg', 0.0)
             # Sanity gate: physical floor is roughly 60 mm/s²/° (level-PI
             # losing half its setpoint) up to 200 mm/s²/° (slight
-            # over-tilt). G_eff well below 20 means the platform didn't
-            # actually move during the open-loop tilt — most likely
-            # cause is unarmed legs. Refuse to compute gains from
-            # garbage; tell the operator what to fix.
+            # over-tilt). G_eff well below 20 means the BALL didn't
+            # move much. Use the IMU achievement ratio to discriminate
+            # the two physically-distinct failure modes:
+            #   - achieved < 0.5 × commanded → platform didn't tilt
+            #     (arming or level-loop issue)
+            #   - achieved ≈ commanded but ball still didn't move
+            #     → static friction held the ball. Bigger tilt needed.
             if g_eff < 20.0:
-                self._fail_step_id(
-                    log_dir, summary_path, session,
-                    (f'open-loop fit found G_eff={g_eff:.1f} mm/s²/° '
-                     f'(physical floor ~60). Platform likely did not '
-                     f'tilt during the trial. Confirm the system is '
-                     f'armed and the level loop is enabled, then '
-                     f'restart.'))
+                ratio = ol_trial.get('imu_achievement_ratio', 0.0)
+                achieved = ol_trial.get('imu_achieved_tilt_deg', 0.0)
+                commanded = ol_trial.get('imu_commanded_tilt_deg',
+                                         tilt_mag)
+                if ratio < 0.5:
+                    msg = (
+                        f'open-loop trial: commanded {commanded:.2f}° '
+                        f'tilt but IMU only reached {achieved:.2f}° '
+                        f'({ratio*100:.0f}% of commanded). Platform is '
+                        f'not physically tilting. Confirm the system '
+                        f'is armed and the level loop is enabled, '
+                        f'then restart.')
+                else:
+                    suggested = max(commanded + 1.5,
+                                    min(commanded * 2.0, 6.0))
+                    msg = (
+                        f'open-loop trial: platform tilted to '
+                        f'{achieved:.2f}° per IMU '
+                        f'({ratio*100:.0f}% of commanded {commanded:.2f}°), '
+                        f'but ball barely moved (G_eff='
+                        f'{g_eff:.1f} mm/s²/°). Likely cause: static '
+                        f'friction holding the ball. Increase the '
+                        f'open-loop tilt magnitude — try '
+                        f'{suggested:.1f}° via the GUI input — and '
+                        f'restart.')
+                self._fail_step_id(log_dir, summary_path, session, msg)
                 return
             recommended = self._compute_recommended_gains(
                 g_eff_mm_s2_per_deg=g_eff,
@@ -2057,8 +2130,11 @@ class AutoTuneNode(Node):
                 break
             if self._ball_state is not None:
                 p = self._ball_state.pose.position
+                imu = self._step_id_imu_rpy or (0.0, 0.0)
                 samples.append({'t': now - t0,
                                 'x': float(p.x), 'y': float(p.y),
+                                'imu_roll_deg': float(imu[0]),
+                                'imu_pitch_deg': float(imu[1]),
                                 'phase': 'tilt'})
             time.sleep(0.01)
 
@@ -2081,8 +2157,11 @@ class AutoTuneNode(Node):
             now = time.monotonic()
             if self._ball_state is not None:
                 p = self._ball_state.pose.position
+                imu = self._step_id_imu_rpy or (0.0, 0.0)
                 samples.append({'t': now - t0,
                                 'x': float(p.x), 'y': float(p.y),
+                                'imu_roll_deg': float(imu[0]),
+                                'imu_pitch_deg': float(imu[1]),
                                 'phase': 'flat'})
             time.sleep(0.01)
         out['samples'] = samples
@@ -2097,6 +2176,42 @@ class AutoTuneNode(Node):
         out['td_observed_s'] = float(td)
         out['fit'] = fit_meta
 
+        # IMU achievement diagnosis. During the fit window, what tilt
+        # did the platform actually reach (per the IMU) vs what we
+        # commanded? Lets the failure path differentiate "platform
+        # didn't tilt" (arming/level issue) from "platform tilted but
+        # ball didn't move" (stiction, need bigger tilt).
+        fit_window = fit_meta.get('fit_window_s', [0.0, 0.0])
+        commanded_mag = math.hypot(roll_deg, pitch_deg)
+        achievement_ratio = 0.0
+        achieved_imu_tilt_deg = 0.0
+        try:
+            tilt_imu_samples = [
+                s for s in samples
+                if (s.get('phase') == 'tilt'
+                    and 'imu_roll_deg' in s
+                    and fit_window[0] <= s['t'] <= fit_window[1])
+            ]
+            if tilt_imu_samples:
+                # Use the same axis the command used so we don't
+                # average a deliberately-near-zero axis with the
+                # commanded one.
+                if abs(pitch_deg) >= abs(roll_deg):
+                    vals = [abs(s['imu_pitch_deg'])
+                            for s in tilt_imu_samples]
+                else:
+                    vals = [abs(s['imu_roll_deg'])
+                            for s in tilt_imu_samples]
+                achieved_imu_tilt_deg = float(sum(vals) / len(vals))
+                if commanded_mag > 1e-3:
+                    achievement_ratio = (achieved_imu_tilt_deg
+                                         / commanded_mag)
+        except Exception:
+            pass
+        out['imu_commanded_tilt_deg'] = float(commanded_mag)
+        out['imu_achieved_tilt_deg'] = achieved_imu_tilt_deg
+        out['imu_achievement_ratio'] = achievement_ratio
+
         # Log the trial event so the GUI's history panel sees it.
         msg = String()
         msg.data = json.dumps({
@@ -2106,6 +2221,8 @@ class AutoTuneNode(Node):
             'pitch_deg': float(pitch_deg),
             'g_eff_mm_s2_per_deg': float(g_eff),
             'td_observed_s': float(td),
+            'imu_achieved_tilt_deg': float(achieved_imu_tilt_deg),
+            'imu_achievement_ratio': float(achievement_ratio),
             'n_samples': len(samples),
         })
         self.pub_trial.publish(msg)

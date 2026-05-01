@@ -76,7 +76,17 @@ def _plant_gain_fit_png(session: dict, out_path: Path) -> None:
     fit_window = fit.get('fit_window_s', [0.0, 0.5])
     d = ((xs - baseline_xy[0]) * motion_unit[0]
          + (ys - baseline_xy[1]) * motion_unit[1])
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4), dpi=100)
+    # IMU-rpy time series for verification: did the platform actually
+    # tilt? Pulled from the per-sample imu_*_deg fields written by
+    # auto_tune_node. Falls back to all-zero if the trial bag predates
+    # the IMU recording change.
+    imu_roll = np.array([s.get('imu_roll_deg', 0.0) for s in samples])
+    imu_pitch = np.array([s.get('imu_pitch_deg', 0.0) for s in samples])
+    commanded_roll = ol.get('roll_deg', 0.0)
+    commanded_pitch = ol.get('pitch_deg', 0.0)
+    achieved = ol.get('imu_achieved_tilt_deg', 0.0)
+    ratio = ol.get('imu_achievement_ratio', 0.0)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4), dpi=100)
     # Left: raw x(t) and y(t) with phase colours.
     ax = axes[0]
     ax.plot(ts, xs, '-', color='#3b82f6', label='x [mm]')
@@ -90,8 +100,29 @@ def _plant_gain_fit_png(session: dict, out_path: Path) -> None:
     ax.set_title('open-loop tilt-step: raw ball trajectory')
     ax.grid(alpha=0.25)
     ax.legend(loc='best', fontsize=8)
-    # Right: 1-D projection + parabolic fit.
+    # Middle: commanded vs achieved tilt.
     ax = axes[1]
+    ax.plot(ts, imu_roll, '-', color='#3b82f6',
+            label='IMU roll [°]')
+    ax.plot(ts, imu_pitch, '-', color='#ef4444',
+            label='IMU pitch [°]')
+    ax.axhline(commanded_roll, color='#3b82f6',
+               linestyle=':', linewidth=1.0,
+               label=f'commanded roll={commanded_roll:+.2f}°')
+    ax.axhline(commanded_pitch, color='#ef4444',
+               linestyle=':', linewidth=1.0,
+               label=f'commanded pitch={commanded_pitch:+.2f}°')
+    ax.axvspan(fit_window[0], fit_window[1], color='#10b981',
+               alpha=0.15)
+    ax.set_xlabel('t [s] since tilt cmd')
+    ax.set_ylabel('platform tilt [°]')
+    ax.set_title(
+        f'IMU achievement: {achieved:.2f}° '
+        f'({ratio*100:.0f}% of commanded)')
+    ax.grid(alpha=0.25)
+    ax.legend(loc='best', fontsize=7)
+    # Right: 1-D projection + parabolic fit.
+    ax = axes[2]
     ax.plot(ts, d, 'o', color='#60a5fa', markersize=3,
             alpha=0.7, label='ball displacement (projected)')
     if fit_window[1] > fit_window[0]:
