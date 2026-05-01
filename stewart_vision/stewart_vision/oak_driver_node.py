@@ -1008,6 +1008,14 @@ class OakDriverNode(Node):
 
         self._v0_blob_path = _search_blob(f'v0_{V0_W}x{V0_H}.blob')
         self._v1_blob_path = _search_blob(V1_BLOB_NAME)
+        # OAK_DISABLE_V0_NN=1 — skip the V0.5c color-filter NN entirely
+        # so V1 YOLO has the full Myriad X SHAVE budget. With both NN
+        # nodes loaded, each runs at ~half its solo throughput. Disable
+        # V0 once you've committed to V1 and the V1 detection is solid.
+        if os.environ.get('OAK_DISABLE_V0_NN', '0') == '1':
+            self._v0_blob_path = None
+            self.get_logger().info(
+                "V0 NN disabled via OAK_DISABLE_V0_NN=1")
         if self._v0_blob_path:
             self.get_logger().info(
                 f"V0 NN blob available: {self._v0_blob_path}")
@@ -1579,6 +1587,8 @@ class OakDriverNode(Node):
                 return None
             self._v0_blob_path = _search_blob(f'v0_{V0_W}x{V0_H}.blob')
             self._v1_blob_path = _search_blob(V1_BLOB_NAME)
+            if os.environ.get('OAK_DISABLE_V0_NN', '0') == '1':
+                self._v0_blob_path = None
             self.get_logger().info(
                 f"  blobs: V0={self._v0_blob_path or 'MISSING'}, "
                 f"V1={self._v1_blob_path or 'MISSING'}")
