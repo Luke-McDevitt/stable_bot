@@ -143,13 +143,27 @@ class PlatformPoseNode(Node):
         # Pose-from-board: returns rvec, tvec for the board origin in the
         # camera frame. The board origin = platform-frame origin by
         # construction (markers were placed symmetrically around it).
-        rvec = np.zeros(3, dtype=np.float64)
-        tvec = np.zeros(3, dtype=np.float64)
+        #
+        # OpenCV 4.7+ removed cv2.aruco.estimatePoseBoard. Replacement
+        # is Board.matchImagePoints() to lift detected corners to 3D
+        # board points, then solvePnP. Falls through to the legacy API
+        # on older OpenCV builds.
         try:
-            ok, rvec, tvec = cv2.aruco.estimatePoseBoard(
-                corners, ids, self.board, self.K, self.dist, rvec, tvec)
+            if hasattr(self.board, 'matchImagePoints'):
+                obj_pts, img_pts = self.board.matchImagePoints(corners, ids)
+                if obj_pts is None or len(obj_pts) < 4:
+                    return  # solvePnP needs at least 4 correspondences
+                ok, rvec, tvec = cv2.solvePnP(
+                    obj_pts, img_pts, self.K, self.dist,
+                    flags=cv2.SOLVEPNP_ITERATIVE)
+            else:
+                rvec = np.zeros(3, dtype=np.float64)
+                tvec = np.zeros(3, dtype=np.float64)
+                ok, rvec, tvec = cv2.aruco.estimatePoseBoard(
+                    corners, ids, self.board, self.K, self.dist,
+                    rvec, tvec)
         except Exception as e:
-            self.get_logger().warn(f"estimatePoseBoard failed: {e}")
+            self.get_logger().warn(f"pose-from-board failed: {e}")
             return
         if not ok:
             return
