@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'stewart_control_node = stewart_bringup.stewart_control_node:main',
+            'auto_tune_node = stewart_bringup.auto_tune_node:main',
         ],
     },
 )
