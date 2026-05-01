@@ -112,9 +112,12 @@
                     cx="0" cy="0" r="2"
                     fill="#3b82f6"
                     visibility="hidden"/>
-            <!-- NN V0 detector circle — solid emerald. Drawn from
-                 /oak/ball/v0/nn_pixel; lets the operator compare the
-                 two detectors at a glance. -->
+            <!-- V1 YOLO detector circle — solid emerald. Drawn from
+                 /oak/ball/v0/yolo_pixel (the on-device YOLO model
+                 superseded the V0.5c color-filter NN at 60 Hz). The
+                 SVG IDs keep the legacy "-nn" suffix so existing CSS
+                 / JS hooks don't break, but the underlying topic is
+                 now the YOLO one. -->
             <circle id="vis-overlay-ball-nn"
                     cx="0" cy="0" r="0"
                     fill="none" stroke="#10b981" stroke-width="2"
@@ -162,9 +165,9 @@
             <span class="text-blue-400">cv2 circle</span>
           </label>
           <label class="flex items-center gap-2"
-                 title="Show what the on-device NN picks up, EMERALD circle. Updates whenever the NN blob produces a confident-enough detection.">
+                 title="Show the on-device YOLO detector's bounding-box centroid as an EMERALD ring. Subscribed to /oak/ball/v0/yolo_pixel (which the v6n / v8n model publishes at ~30-60 Hz). Independent of the active-backend ball-circle.">
             <input id="vis-show-nn-circle" type="checkbox">
-            <span class="text-emerald-400">NN circle</span>
+            <span class="text-emerald-400">YOLO circle</span>
           </label>
         </div>
         <!-- Detector toggle for option 2 (V0 + platform mask) vs
@@ -581,6 +584,23 @@
       <p class="text-xs text-slate-500 mt-1">
         SVG units = mm in platform frame. Click to set Demo-2 target when armed.
       </p>
+      <!-- Active ball-detector source for the controller chain. The
+           selected backend's detections feed into /oak/ball/v0/rgb_pixel
+           which downstream nodes (ball_localizer → ball_kf →
+           ref_generator → controller) consume. cv2 = host-side HSV
+           detector at ~21 Hz, v1_yolo = on-device YOLO at ~30-60 Hz.
+           Switching is instant — just an in-memory flag flip on the
+           Pi (no pipeline rebuild). -->
+      <div class="flex items-center gap-2 text-xs mt-2 text-slate-400">
+        <span>controller source:</span>
+        <select id="demo-ball-source"
+                class="bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-xs"
+                title="Which ball-detection backend feeds the closed-loop controller. Switching publishes to /oak/cmd_v0_backend; the OAK driver picks the new source on its next NN tick.">
+          <option value="v1_yolo" selected>YOLO (on-device, ~30–60 Hz)</option>
+          <option value="cv2">cv2 (host HSV, ~21 Hz)</option>
+        </select>
+        <span id="demo-ball-source-status" class="text-xs mono"></span>
+      </div>
     </div>
 
     <!-- Demo 1: Orbit (closed-loop, spec v8 §11.2.1) — hidden -->
@@ -2263,8 +2283,12 @@ function setupROSInterface() {
     ros, name: '/oak/ball/v0/cv2_pixel',
     messageType: 'geometry_msgs/msg/PointStamped' });
   topic.ball_v0_cv2.subscribe(m => onBallV0PerBackend('cv2', m));
+  // The "NN circle" toggle now reflects the V1 YOLO detector (which
+  // superseded the V0.5c color-filter NN). Subscribe to yolo_pixel
+  // and route through the existing onBallV0PerBackend('nn', ...) so
+  // all the legacy SVG-update code still works.
   topic.ball_v0_nn = new ROSLIB.Topic({
-    ros, name: '/oak/ball/v0/nn_pixel',
+    ros, name: '/oak/ball/v0/yolo_pixel',
     messageType: 'geometry_msgs/msg/PointStamped' });
   topic.ball_v0_nn.subscribe(m => onBallV0PerBackend('nn', m));
 
@@ -4211,6 +4235,27 @@ function initVisionGUI() {
                   () => publishV0Backend('cv2'));
   if (v0NnBtn)  v0NnBtn.addEventListener('click',
                   () => publishV0Backend('nn'));
+
+  // --- Demos-panel ball source dropdown (cv2 / v1_yolo) ---
+  // Mirrors publishV0Backend but exposes both in one dropdown. Sync
+  // back to live state via onOakConfig.
+  const demoBallSource = $('demo-ball-source');
+  const demoBallSrcStatus = $('demo-ball-source-status');
+  if (demoBallSource) {
+    demoBallSource.addEventListener('change', () => {
+      const v = demoBallSource.value;
+      publishV0Backend(v);
+      if (demoBallSrcStatus) {
+        demoBallSrcStatus.innerText = `→ ${v}`;
+        demoBallSrcStatus.className = 'text-xs mono text-amber-400';
+        setTimeout(() => {
+          if (demoBallSrcStatus && demoBallSrcStatus.innerText === `→ ${v}`) {
+            demoBallSrcStatus.innerText = '';
+          }
+        }, 3000);
+      }
+    });
+  }
 
   // --- Focus controls (autofocus on/off + manual slider) ---
   const focusAuto    = $('focus-auto-btn');
@@ -6280,6 +6325,15 @@ function onOakConfig(cfg) {
     const v = document.getElementById('jpeg-fps-val');
     if (s && parseInt(s.value, 10) !== cfg.jpeg_fps) s.value = cfg.jpeg_fps;
     if (v) v.innerText = cfg.jpeg_fps;
+  }
+  // Sync the Demos-panel ball-source dropdown with live state. Map
+  // legacy 'nn' to 'v1_yolo' since the V0.5c color NN is deprecated;
+  // the dropdown only exposes cv2 and v1_yolo.
+  const dropdown = document.getElementById('demo-ball-source');
+  if (dropdown) {
+    let mapped = (cfg.v0_backend || 'cv2').toLowerCase();
+    if (mapped === 'v0_nn' || mapped === 'nn') mapped = 'v1_yolo';
+    if (dropdown.value !== mapped) dropdown.value = mapped;
   }
   // Focus state — highlight the active mode and sync the slider.
   const focusMode = (cfg.focus_mode || 'manual').toLowerCase();
