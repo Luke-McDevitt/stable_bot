@@ -1684,6 +1684,131 @@ class AutoTuneNode(Node):
                        ball[1] - marker_xy_imu[1])
         return d <= STEP_ID_BALL_ON_MARKER_TOL_MM
 
+    def _snapshot_occluded_marker(self) -> Optional[int]:
+        """Single-frame check: which marker is the ball occluding,
+        if any? Returns the id when exactly one marker is missing
+        from /platform_pose/marker_ids AND /ball_state agrees with
+        that marker's IMU-frame centre to within tolerance.
+        Returns None when 0 or >1 markers are missing, or when the
+        cross-sensor check fails.
+        """
+        all_ids = {mid for mid, _, _ in self._step_id_marker_layout}
+        visible = set(self._marker_ids) & all_ids
+        missing = all_ids - visible
+        if len(missing) != 1:
+            return None
+        m = next(iter(missing))
+        ball = self._latest_ball_xy()
+        marker_xy_imu = self._marker_xy_imu(m)
+        if ball is None or marker_xy_imu is None:
+            return None
+        d = math.hypot(ball[0] - marker_xy_imu[0],
+                       ball[1] - marker_xy_imu[1])
+        if d > STEP_ID_BALL_ON_MARKER_TOL_MM:
+            return None
+        return m
+
+    def _confirm_marker_window(self, dwell_s: float = 0.25
+                               ) -> Optional[int]:
+        """Verify cross-sensor agreement over a short window after
+        the operator pressed Confirm. Filters out single-frame noise
+        (blurred marker detection, KF transient) so the click only
+        accepts when the gate has been stable for the dwell.
+        Returns marker id if the same marker is detected throughout
+        the dwell, else None."""
+        end = time.monotonic() + dwell_s
+        chosen: Optional[int] = None
+        while time.monotonic() < end and not self._abort:
+            m = self._snapshot_occluded_marker()
+            if m is None:
+                return None
+            if chosen is None:
+                chosen = m
+            elif chosen != m:
+                return None
+            time.sleep(0.04)
+        return chosen
+
+    def _wait_for_ball_on_any_marker(self,
+                                     timeout_s: float
+                                     = STEP_ID_OPERATOR_PROMPT_S
+                                     ) -> Optional[int]:
+        """Operator-confirmed inter-trial gate. Waits for the
+        operator to place the ball on ANY marker and click the
+        Confirm button. Returns the detected marker id, or None on
+        timeout/abort.
+
+        Why "any marker" instead of a specific one: per operator
+        request 2026-05-01 — "I can place it on whatever marker to
+        start the process off so it is easier on me." Some markers
+        are physically closer to the operator's desk than others;
+        forcing a specific one was just inconvenience without any
+        benefit (the trial offset cycle gives the diagnostic variety,
+        not the absolute starting position).
+
+        Cross-sensor gate (occlusion + ball position) still applies,
+        plus a 250 ms post-confirm dwell so transient detection
+        flicker can't false-trigger acceptance."""
+        self._step_id_operator_confirmed = False
+        self._status['state'] = 'step_id_waiting_for_ball'
+        self._status.pop('waiting_for_marker', None)
+        self._status['prompt'] = (
+            'Place ball on any marker, then click "✓ Ball is on '
+            'marker" to continue.')
+        self._publish_status()
+        t_start = time.monotonic()
+        last_status_t = 0.0
+        candidate: Optional[int] = None
+        candidate_since: Optional[float] = None
+        while not self._abort:
+            now = time.monotonic()
+            if now - t_start > timeout_s:
+                self._status['prompt'] = (
+                    'Timeout: operator never confirmed.')
+                self._publish_status()
+                return None
+            # Debounce candidate detection.
+            m = self._snapshot_occluded_marker()
+            if m is not None:
+                if candidate != m:
+                    candidate = m
+                    candidate_since = now
+            else:
+                candidate = None
+                candidate_since = None
+            # Live diagnostic — same as _detect_starting_marker but
+            # for "any marker."
+            if now - last_status_t > 1.0:
+                last_status_t = now
+                if (candidate is not None
+                        and candidate_since is not None
+                        and (now - candidate_since
+                             >= STEP_ID_OCCLUSION_DWELL_S)):
+                    diag = (f'Detected ball on marker {candidate}. '
+                            f'Click "✓ Ball is on marker" to start '
+                            f'the trial.')
+                elif candidate is not None:
+                    diag = (f'Ball appears on marker {candidate} — '
+                            f'hold steady, then click Confirm.')
+                else:
+                    diag = ('Place ball on any marker, then click '
+                            'Confirm.')
+                self._status['prompt'] = diag
+                self._publish_status()
+            # Operator pressed Confirm: verify gate is stable over a
+            # short dwell, then accept.
+            if self._step_id_operator_confirmed:
+                self._step_id_operator_confirmed = False
+                confirmed = self._confirm_marker_window(0.25)
+                if confirmed is not None:
+                    return confirmed
+                self._status['prompt'] = (
+                    'Confirm pressed but ball not detected on a '
+                    'marker. Re-place and click Confirm again.')
+                self._publish_status()
+            time.sleep(0.05)
+        return None
+
     def _safe_open_loop_direction(self, marker_id: int,
                                   magnitude_deg: Optional[float] = None
                                   ) -> tuple[float, float]:
@@ -1883,46 +2008,51 @@ class AutoTuneNode(Node):
             self._write_step_id_summary(summary_path, session)
 
             # --- Phase 4: closed-loop verification -----------------------
+            #
+            # Operator-driven start: each trial, the operator places
+            # the ball on whatever marker is convenient (some are
+            # closer to their desk than others) and clicks Confirm.
+            # The trial's target is computed by adding a fixed offset
+            # to whatever marker the ball was detected on. The offset
+            # cycle [+1, +2, +1, +2] still gives the diagnostic
+            # variety (two adjacent ~92 mm steps + two two-apart
+            # ~170 mm steps) regardless of which marker the operator
+            # chose for each trial.
             self._status['state'] = 'step_id_verification'
             self._publish_status()
             verification_trials = []
-            current_marker = start_marker
-            for i, (off_start, off_target) in enumerate(
-                    STEP_ID_MARKER_OFFSETS):
-                # Adjust offsets so the first start matches the operator-
-                # detected start marker (the table's first off_start is 0,
-                # so this is a no-op for trial 0 and a delta for the rest).
-                expected_start = (start_marker + off_start) % 8
-                target = (start_marker + off_target) % 8
-                self.get_logger().info(
-                    f'step_id phase 4 trial {i+1}/4: '
-                    f'marker {expected_start} → marker {target}')
+            VERIFICATION_OFFSETS = [1, 2, 1, 2]
+            for i, off_target in enumerate(VERIFICATION_OFFSETS):
                 self._status.update({
                     'state': f'step_id_verification_trial_{i+1}',
                     'verification_trial_idx': i + 1,
-                    'verification_trial_count': len(STEP_ID_MARKER_OFFSETS),
-                    'expected_start_marker': int(expected_start),
-                    'target_marker': int(target),
+                    'verification_trial_count':
+                        len(VERIFICATION_OFFSETS),
+                    'verification_offset': int(off_target),
                     'prompt': (
-                        f'Trial {i+1}/4: place ball on marker '
-                        f'{expected_start}; goto marker {target}.'),
+                        f'Trial {i+1}/{len(VERIFICATION_OFFSETS)}: '
+                        f'place ball on any marker; goto will be '
+                        f'{off_target} marker(s) clockwise.'),
                 })
                 self._publish_status()
-                # Hard pause: always wait for operator confirm before
-                # starting each trial. No organic-arrival shortcut —
-                # see _wait_for_ball_on_marker docstring for why.
-                if not self._wait_for_ball_on_marker(expected_start):
+                detected_start = self._wait_for_ball_on_any_marker()
+                if detected_start is None:
                     self.get_logger().warn(
-                        f'  operator never confirmed ball on marker '
-                        f'{expected_start} — aborting verification phase')
+                        f'  trial {i+1}: operator never confirmed '
+                        f'— aborting verification phase')
                     break
+                target = (detected_start + off_target) % 8
+                self.get_logger().info(
+                    f'step_id phase 4 trial {i+1}/'
+                    f'{len(VERIFICATION_OFFSETS)}: '
+                    f'marker {detected_start} → marker {target} '
+                    f'(offset +{off_target})')
                 self._sleep_with_abort(STEP_ID_INTER_TRIAL_DWELL_S)
                 if self._abort:
                     break
                 trial_data = self._run_closed_loop_marker_trial(
-                    expected_start, target, i + 1, log_path)
+                    detected_start, target, i + 1, log_path)
                 verification_trials.append(trial_data)
-                current_marker = target
             session['phases']['verification'] = verification_trials
 
             self._status.update({
