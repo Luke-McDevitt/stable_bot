@@ -156,7 +156,7 @@ SAFETY_BAD_THRESH      = 0.10
 # noise floor 0.02). Locking after 1 rejection gives ~95%+
 # statistical confidence per the noise-vs-effect-size argument.
 # Set to a higher number on hardware that hasn't been pre-tested.
-SIGN_FLIP_LOCK_AFTER_REJECTS = 1
+SIGN_FLIP_LOCK_AFTER_REJECTS = 2
 
 # Fitness weights (sum should equal 1.0)
 W_ERR    = 0.25
