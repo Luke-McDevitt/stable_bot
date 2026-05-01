@@ -168,6 +168,18 @@ def build_onnx(out_path: str, w_b, w_g, w_r, bias,
            np.array([[[[density_floor]]]], dtype=np.float32))
     _const('eps',   np.array([[[[1e-6]]]],        dtype=np.float32))
 
+    # 5×5 box-blur kernel for the spatial-coherence stage. Stored as
+    # a Conv weight (1 in / 1 out / 5×5, all entries 1/25) instead of
+    # using AveragePool: AveragePool with explicit padding silently
+    # produces no output on Myriad X / OpenVINO 2022.1 (the host's
+    # q_v0_nn.tryGet() returns None forever even though the ONNX
+    # validates with onnxruntime locally — confirmed 2026-04-30).
+    # Conv with the same kernel + pads is mathematically identical
+    # and Conv is the most battle-tested op on the Myriad X NN
+    # accelerator (everything else in this graph already uses it).
+    _const('blur_kernel',
+           np.full((1, 1, 5, 5), 1.0 / 25.0, dtype=np.float32))
+
     # Position grids pre-normalised to [0, 1]. Same trick as the
     # torch version — store as Constants so the Range op (which
     # OpenVINO 2022.1 is finicky about) never appears in the graph.
@@ -186,12 +198,13 @@ def build_onnx(out_path: str, w_b, w_g, w_r, bias,
         helper.make_node('Sub',  ['score', 'floor'],
                          ['score_minus_floor']),
         helper.make_node('Relu', ['score_minus_floor'], ['m_raw']),
-        # Spatial-coherence stage: 5×5 average pool on the raw mask
+        # Spatial-coherence stage: 5×5 box blur on the raw mask
         # converts per-pixel orange-ness into local cluster density.
         # Symmetric padding keeps the output at the same spatial size,
-        # so xs_grid / ys_grid don't have to be resized. OpenVINO
-        # 2022.1 + opset 12 support AveragePool with explicit pads.
-        helper.make_node('AveragePool', ['m_raw'], ['m_density'],
+        # so xs_grid / ys_grid don't have to be resized. Implemented
+        # as a Conv (not AveragePool) — see blur_kernel comment above.
+        helper.make_node('Conv',
+                         ['m_raw', 'blur_kernel'], ['m_density'],
                          kernel_shape=[5, 5],
                          strides=[1, 1],
                          pads=[2, 2, 2, 2]),
