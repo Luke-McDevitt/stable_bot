@@ -109,8 +109,15 @@ TARGET_PICK_ATTEMPTS   = 16
 SETTLE_BAND_MM         = 10.0    # err < this for SETTLE_HOLD_S → settled
 SETTLE_HOLD_S          = 1.0
 TRIAL_TIMEOUT_S        = 25.0
-LEVEL_HOLD_BETWEEN_S   = 2.0
+LEVEL_HOLD_BETWEEN_S   = 2.0     # minimum dwell, regardless of calm test
 HOLD_TOL_MM            = 25.0    # f_hold counts samples within this band
+# Inter-trial calm-down: wait until ball velocity drops below this
+# threshold for CALM_DWELL_S before starting the next trial. Stops
+# trials starting while the ball is still orbiting from the previous
+# trial's commanded tilt.
+CALM_VEL_THRESHOLD_MM_S = 30.0
+CALM_DWELL_S            = 0.5
+CALM_MAX_WAIT_S         = 8.0    # cap wait if ball never fully calms
 RESET_Z_EVERY_N_TRIALS = 5       # call set_pose to nominal Z every N trials
                                   # to defeat accumulated drift
 NOMINAL_Z_MM           = 75.0    # higher than the 30-50 demo range —
@@ -549,14 +556,20 @@ class AutoTuneNode(Node):
                 samples=[], duration_s=0.0,
                 settled=False, settling_time_s=0.0,
                 aborted=True, abort_reason='gain save failed')
-        # 2. Settle in LEVEL_HOLD
-        self._publish_mode('LEVEL_HOLD')
-        self._sleep_with_abort(LEVEL_HOLD_BETWEEN_S)
+        # 2. LEVEL_HOLD until ball calms (low velocity for >0.5s).
+        # Stops the next trial from starting on top of an orbit
+        # left over from the previous one — operator observed
+        # back-to-back trials inheriting velocity and amplifying.
+        calmed = self._wait_for_calm()
         if self._abort:
             return TrialResult(target=(0, 0), ball_start=(0, 0),
                                samples=[], duration_s=0,
                                settled=False, settling_time_s=0,
                                aborted=True, abort_reason='abort during settle')
+        if not calmed:
+            self.get_logger().warn(
+                f'  ball never calmed within {CALM_MAX_WAIT_S:.0f}s '
+                f'— trial may be unfair, proceeding anyway')
         # 3. Current ball position
         ball_xy = self._latest_ball_xy()
         if ball_xy is None:
@@ -675,26 +688,33 @@ class AutoTuneNode(Node):
 
     def _pick_target(self, ball_xy: tuple[float, float]
                      ) -> Optional[tuple[float, float]]:
-        """Pick a target at TRIAL_DISTANCE_MM from the ball that is:
-         - inside the safe radius (≤ 0.7·R_platform)
-         - outside the center exclusion zone (≥ CENTER_EXCLUSION_MM
-           from origin) so the ball never gets parked on the
-           central mounting bolt
+        """Pick a target at EXACTLY TRIAL_DISTANCE_MM from the ball
+        that satisfies the safe-zone and center-exclusion constraints.
+
+        Deterministic angle sweep (5° increments, randomized start)
+        so the distance is always D — never shrunk. If the ball's
+        position is incompatible with the constraints (e.g., parked
+        next to the rim where every direction at D goes off-platform),
+        returns None and the operator-visible trial is skipped.
+
+        Earlier impl used random sampling with shrink-on-failure,
+        which let some trials get D=42 while others got D=60 — the
+        operator noticed varying difficulty across trials. Fixed by
+        making D inviolate.
         """
         D = TRIAL_DISTANCE_MM
         safe_R = SAFE_RADIUS_FRAC * PLATFORM_R_MM
-        for shrink_attempt in range(2):
-            for _ in range(TARGET_PICK_ATTEMPTS):
-                theta = random.uniform(0, 2 * math.pi)
-                tx = ball_xy[0] + D * math.cos(theta)
-                ty = ball_xy[1] + D * math.sin(theta)
-                r_target = math.hypot(tx, ty)
-                if r_target > safe_R:
-                    continue
-                if r_target < CENTER_EXCLUSION_MM:
-                    continue
-                return (tx, ty)
-            D *= 0.7  # ball is near rim — try a closer target
+        thetas = [i * math.pi / 36 for i in range(72)]  # 5° step
+        random.shuffle(thetas)
+        for theta in thetas:
+            tx = ball_xy[0] + D * math.cos(theta)
+            ty = ball_xy[1] + D * math.sin(theta)
+            r_target = math.hypot(tx, ty)
+            if r_target > safe_R:
+                continue
+            if r_target < CENTER_EXCLUSION_MM:
+                continue
+            return (tx, ty)
         return None
 
     # ----- Control-cmd helpers ----------------------------------------------
@@ -763,6 +783,47 @@ class AutoTuneNode(Node):
         end = time.time() + seconds
         while time.time() < end and not self._abort:
             time.sleep(0.05)
+
+    def _wait_for_calm(self, max_wait_s: float = CALM_MAX_WAIT_S,
+                       vel_threshold_mm_s: float = CALM_VEL_THRESHOLD_MM_S,
+                       calm_dwell_s: float = CALM_DWELL_S,
+                       min_wait_s: float = LEVEL_HOLD_BETWEEN_S) -> bool:
+        """Hold LEVEL_HOLD until the ball's measured velocity drops
+        below vel_threshold_mm_s for calm_dwell_s, or max_wait_s
+        elapses. Min hold time is min_wait_s regardless — gives the
+        platform itself a chance to settle even if /ball_state lies
+        about velocity (e.g., dropped frames). Returns True if the
+        ball actually calmed; False if we hit max_wait_s while still
+        moving (orbit, escape, etc.)."""
+        self._publish_mode('LEVEL_HOLD')
+        t_start = time.time()
+        last_xy = None
+        last_t = None
+        calm_start: Optional[float] = None
+        while not self._abort:
+            now = time.time()
+            elapsed = now - t_start
+            if elapsed >= max_wait_s:
+                return False
+            if self._ball_state is not None:
+                p = self._ball_state.pose.position
+                xy = (float(p.x), float(p.y))
+                if last_xy is not None and last_t is not None:
+                    dt = max(now - last_t, 1e-3)
+                    vel = math.hypot(xy[0] - last_xy[0],
+                                     xy[1] - last_xy[1]) / dt
+                    if vel < vel_threshold_mm_s:
+                        if calm_start is None:
+                            calm_start = now
+                        elif (now - calm_start >= calm_dwell_s
+                              and elapsed >= min_wait_s):
+                            return True
+                    else:
+                        calm_start = None
+                last_xy = xy
+                last_t = now
+            time.sleep(0.05)
+        return False
 
     # ----- Logging ----------------------------------------------------------
 
