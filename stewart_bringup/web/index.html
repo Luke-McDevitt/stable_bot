@@ -308,6 +308,12 @@
               <input id="nn-score-floor" type="range" min="0" max="1" step="0.01" value="0.3" class="w-full">
             </label>
             <label class="text-xs text-slate-400 col-span-2"
+                   title="Spatial-coherence threshold (V0.5). After Conv1×1+Relu produces a per-pixel orange mask, a 5×5 AveragePool computes local density; only pixels whose neighborhood density exceeds this value vote in the centroid. Higher = stricter (rejects scattered noise, keeps tight ball clusters). Baked into the blob — Rebuild &amp; reload to apply.">
+              DENSITY_FLOOR (5×5 spatial coherence)
+              <span id="nn-density-floor-val" class="mono text-slate-300 ml-1">0.05</span>
+              <input id="nn-density-floor" type="range" min="0" max="0.5" step="0.01" value="0.05" class="w-full">
+            </label>
+            <label class="text-xs text-slate-400 col-span-2"
                    title="Host-side floor on the published m_avg confidence. Live-tunable — publishes to /oak/cmd_nn_conf_min on each drag, no rebuild + reload needed. Real detections land ~3e-4 for a 6 px ball; raise to suppress phantoms when the platform is empty.">
               NN_CONF_MIN <span class="text-slate-500">(host-side, no rebuild)</span>
               <span id="nn-conf-min-val" class="mono text-slate-300 ml-1">0.00010</span>
@@ -4215,6 +4221,7 @@ function initVisionGUI() {
     ['nn-w-b', 'nn-w-b-val', 'w_b'],
     ['nn-bias', 'nn-bias-val', 'bias'],
     ['nn-score-floor', 'nn-score-floor-val', 'score_floor'],
+    ['nn-density-floor', 'nn-density-floor-val', 'density_floor'],
   ];
   for (const [sId, vId, _] of NN_W_IDS) {
     const s = $(sId), v = $(vId);
@@ -6116,6 +6123,8 @@ function _nnWeightsRead() {
     bias: parseFloat(document.getElementById('nn-bias')?.value || -0.5),
     score_floor: parseFloat(
       document.getElementById('nn-score-floor')?.value || 0.3),
+    density_floor: parseFloat(
+      document.getElementById('nn-density-floor')?.value || 0.05),
     nn_conf_min: parseFloat(
       document.getElementById('nn-conf-min')?.value || 0.0001),
   };

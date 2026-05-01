@@ -2,29 +2,41 @@
 """Build the on-device V0 ball-detection .blob (Phase 2B).
 
 Builds the ONNX graph **directly with `onnx.helper`** — no PyTorch.
-The model is small enough (1×1 conv + GlobalAveragePool + Concat)
-that hand-building the graph is shorter than wrapping it in a
-torch.nn.Module and exporting. Removes torch as a dependency, which
-means the build can run on the Pi itself when installed via
-`pip install --break-system-packages onnx blobconverter` or via
-a venv — no need for a separate dev machine.
+The model is small enough that hand-building the graph is shorter
+than wrapping it in a torch.nn.Module and exporting. Removes torch
+as a dependency, which means the build can run on the Pi itself
+when installed via `pip install --break-system-packages onnx
+blobconverter` or via a venv — no need for a separate dev machine.
+
+V0.5 (2026-04-30): added a spatial-coherence stage so the soft-
+argmax doesn't get pulled by scattered noise pixels. The original
+1×1-conv-only model worked as a per-pixel color filter, which was
+mathematically equivalent to HSV thresholding — and just as fragile
+to background noise. The new chain enforces "orange pixels must be
+clustered to vote" by smoothing m_raw with a 5×5 average pool and
+re-thresholding against `density_floor`. A 1-px noise speckle in a
+25-px window has m_density ≈ 0.018 (rejected); a tight 4×4 ball
+cluster has m_density ≈ 0.29 (passed).
 
 Pipeline (single-frame, static-shape):
 
     bgr_uint8 (1, 3, H, W) uint8
       ↓ Cast to float
-      ↓ Mul by 1/255       → x_norm
+      ↓ Mul by 1/255            → x_norm
       ↓ Conv 1×1 [w_b, w_g, w_r] + bias  → score
-      ↓ Sub by score_floor → score_minus_floor
-      ↓ Relu                → m  (positive ball-pixel score)
-      ↓ GlobalAveragePool   → m_avg          (1, 1, 1, 1)
-      ↓ Mul by xs_grid      → m_xs
-      ↓ GlobalAveragePool   → mx_avg
-      ↓ Mul by ys_grid      → m_ys
-      ↓ GlobalAveragePool   → my_avg
-      ↓ Add eps to m_avg    → denom
-      ↓ Div mx_avg / denom  → cx
-      ↓ Div my_avg / denom  → cy
+      ↓ Sub by score_floor      → score_minus_floor
+      ↓ Relu                    → m_raw  (per-pixel orange-ness)
+      ↓ AveragePool 5×5 (pad=2) → m_density  (NEW: local cluster mass)
+      ↓ Sub by density_floor    → m_density_minus_floor
+      ↓ Relu                    → m  (only spatially-clustered pixels)
+      ↓ GlobalAveragePool       → m_avg          (1, 1, 1, 1)
+      ↓ Mul by xs_grid          → m_xs
+      ↓ GlobalAveragePool       → mx_avg
+      ↓ Mul by ys_grid          → m_ys
+      ↓ GlobalAveragePool       → my_avg
+      ↓ Add eps to m_avg        → denom
+      ↓ Div mx_avg / denom      → cx
+      ↓ Div my_avg / denom      → cy
       ↓ Concat[cx, cy, m_avg, axis=1]  → cxcyconf  (1, 3, 1, 1)
 
 xs_grid / ys_grid are [0, 1]-normalised position grids; the H*W
@@ -73,17 +85,26 @@ W_G = +0.40
 W_R = +1.00
 BIAS = -0.50
 SCORE_FLOOR = 0.30
+# Spatial-coherence threshold (V0.5). After Conv1×1+Relu produces the
+# raw per-pixel orange mask m_raw, we AveragePool it with a 5×5
+# kernel to compute local density m_density, then keep only pixels
+# where m_density > DENSITY_FLOOR. Tuned so that:
+#   - 1 isolated noise px (m=0.46)            → m_density ≈ 0.018  (rejected)
+#   - 2-3 scattered px in 5×5 window          → m_density ≈ 0.05   (rejected)
+#   - 4×4 tight ball cluster (m≈0.46 each)    → m_density ≈ 0.29   (passed)
+# Override via stewart_vision/blobs/v0_weights.json (GUI slider).
+DENSITY_FLOOR = 0.05
 
 
 def _load_weights_json():
-    """Return (W_B, W_G, W_R, BIAS, SCORE_FLOOR) — JSON-overridden if
-    stewart_vision/blobs/v0_weights.json exists, else the module
-    defaults defined above."""
+    """Return (W_B, W_G, W_R, BIAS, SCORE_FLOOR, DENSITY_FLOOR) —
+    JSON-overridden if stewart_vision/blobs/v0_weights.json exists,
+    else the module defaults defined above."""
     import json as _json
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(os.path.dirname(here), 'blobs', 'v0_weights.json')
     if not os.path.isfile(path):
-        return W_B, W_G, W_R, BIAS, SCORE_FLOOR
+        return W_B, W_G, W_R, BIAS, SCORE_FLOOR, DENSITY_FLOOR
     try:
         with open(path) as f:
             d = _json.load(f) or {}
@@ -93,16 +114,18 @@ def _load_weights_json():
             float(d.get('w_r', W_R)),
             float(d.get('bias', BIAS)),
             float(d.get('score_floor', SCORE_FLOOR)),
+            float(d.get('density_floor', DENSITY_FLOOR)),
         )
     except Exception as e:
         print(f"[build_v0_blob] WARN: {path} unreadable ({e}); "
               f"using defaults", file=sys.stderr)
-        return W_B, W_G, W_R, BIAS, SCORE_FLOOR
+        return W_B, W_G, W_R, BIAS, SCORE_FLOOR, DENSITY_FLOOR
 
 
 # ---- Graph builder (onnx.helper, no torch) ---------------------------------
 
-def build_onnx(out_path: str, w_b, w_g, w_r, bias, score_floor) -> None:
+def build_onnx(out_path: str, w_b, w_g, w_r, bias,
+               score_floor, density_floor) -> None:
     """Hand-construct the V0 detector ONNX graph using onnx.helper.
 
     Why hand-built: the original torch-based exporter pulled in ~500
@@ -141,6 +164,8 @@ def build_onnx(out_path: str, w_b, w_g, w_r, bias, score_floor) -> None:
     _const('conv_b', np.array([bias], dtype=np.float32))
 
     _const('floor', np.array([[[[score_floor]]]], dtype=np.float32))
+    _const('density_floor_const',
+           np.array([[[[density_floor]]]], dtype=np.float32))
     _const('eps',   np.array([[[[1e-6]]]],        dtype=np.float32))
 
     # Position grids pre-normalised to [0, 1]. Same trick as the
@@ -160,7 +185,19 @@ def build_onnx(out_path: str, w_b, w_g, w_r, bias, score_floor) -> None:
                          kernel_shape=[1, 1]),
         helper.make_node('Sub',  ['score', 'floor'],
                          ['score_minus_floor']),
-        helper.make_node('Relu', ['score_minus_floor'], ['m']),
+        helper.make_node('Relu', ['score_minus_floor'], ['m_raw']),
+        # Spatial-coherence stage: 5×5 average pool on the raw mask
+        # converts per-pixel orange-ness into local cluster density.
+        # Symmetric padding keeps the output at the same spatial size,
+        # so xs_grid / ys_grid don't have to be resized. OpenVINO
+        # 2022.1 + opset 12 support AveragePool with explicit pads.
+        helper.make_node('AveragePool', ['m_raw'], ['m_density'],
+                         kernel_shape=[5, 5],
+                         strides=[1, 1],
+                         pads=[2, 2, 2, 2]),
+        helper.make_node('Sub', ['m_density', 'density_floor_const'],
+                         ['m_density_minus_floor']),
+        helper.make_node('Relu', ['m_density_minus_floor'], ['m']),
         helper.make_node('GlobalAveragePool', ['m'], ['m_avg']),
         helper.make_node('Mul', ['m', 'xs_grid'], ['m_xs']),
         helper.make_node('GlobalAveragePool', ['m_xs'], ['mx_avg']),
@@ -241,16 +278,17 @@ def main():
         help='Just emit the ONNX, skip blobconverter (for offline debug).')
     args = parser.parse_args()
 
-    w_b, w_g, w_r, bias, score_floor = _load_weights_json()
+    w_b, w_g, w_r, bias, score_floor, density_floor = _load_weights_json()
 
     print(f"[build_v0_blob] input shape = (1, 3, {NN_H}, {NN_W})  BGR uint8")
     print(f"[build_v0_blob] output      = (cx_norm, cy_norm, conf)  FP16[3]")
     print(f"[build_v0_blob] weights B/G/R = "
           f"{w_b:+.2f}/{w_g:+.2f}/{w_r:+.2f}  "
-          f"bias={bias:+.2f}  floor={score_floor:.2f}")
+          f"bias={bias:+.2f}  floor={score_floor:.2f}  "
+          f"density={density_floor:.3f}")
 
     onnx_path = args.out.replace('.blob', '.onnx')
-    build_onnx(onnx_path, w_b, w_g, w_r, bias, score_floor)
+    build_onnx(onnx_path, w_b, w_g, w_r, bias, score_floor, density_floor)
 
     if args.onnx_only:
         print("[build_v0_blob] --onnx-only set; not compiling blob.")

@@ -4,6 +4,8 @@
   "w_r": 1.0,
   "bias": -0.5,
   "score_floor": 0.12,
+  "density_floor": 0.05,
   "nn_conf_min": 5e-05,
-  "saved_at_utc": "2026-05-01T00:16:37Z"
+  "saved_at_utc": "2026-05-01T00:16:37Z",
+  "_note": "V0.5 detector: per-pixel color score (Conv1×1) → ReLU(score - score_floor) → AveragePool 5×5 → ReLU(density - density_floor) → soft-argmax. score_floor is the per-pixel orange threshold. density_floor is the spatial-coherence threshold — a pixel only votes if its 5×5 neighborhood is mostly orange too, which kills scattered noise. nn_conf_min is the host-side floor on published m_avg (NOT baked into the blob; applied in oak_driver_node). Edit via the GUI sliders or this file directly; rebuild with stewart_vision/scripts/build_v0_blob.py (conf-min skips the rebuild since it's host-side)."
 }

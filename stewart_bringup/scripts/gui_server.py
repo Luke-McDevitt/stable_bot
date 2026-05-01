@@ -1437,6 +1437,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     self._send_json({
                         'w_b': -1.50, 'w_g': 0.40, 'w_r': 1.00,
                         'bias': -0.50, 'score_floor': 0.30,
+                        'density_floor': 0.05,
                         'nn_conf_min': 0.0001,
                         'note': 'defaults (no JSON yet)',
                     })
@@ -1691,6 +1692,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     'w_r':  float(body.get('w_r', 1.00)),
                     'bias': float(body.get('bias', -0.50)),
                     'score_floor': float(body.get('score_floor', 0.30)),
+                    'density_floor': float(body.get('density_floor', 0.05)),
                     'nn_conf_min': float(body.get('nn_conf_min', 0.0001)),
                     'saved_at_utc': time.strftime(
                         '%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
@@ -1702,6 +1704,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 d['w_r']  = max(-3.0, min(3.0, d['w_r']))
                 d['bias'] = max(-2.0, min(2.0, d['bias']))
                 d['score_floor'] = max(0.0, min(1.0, d['score_floor']))
+                # density_floor: a 5×5 avg over m=0.46 maxes at ~0.46;
+                # values above 0.5 reject everything.
+                d['density_floor'] = max(0.0, min(0.5, d['density_floor']))
                 # nn_conf_min is host-side only — clamp matches the
                 # node's _on_nn_conf_min_cmd clamp [0, 0.05].
                 d['nn_conf_min'] = max(0.0, min(0.05, d['nn_conf_min']))
