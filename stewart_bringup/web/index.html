@@ -47,9 +47,9 @@
           <option value="ping_pong">ping-pong (hollow, α=0.60)</option>
         </select>
       </label>
-      <input id="ws-url" value="ws://stablebot.local:9090"
+      <input id="ws-url" value="ws://10.31.1.98:9090"
              class="mono text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 w-56"
-             title="ws://stablebot.local works on most hotspots; if mDNS fails, use ws://<pi-ip>:9090">
+             title="Pi's static IP on the home network. mDNS (stablebot.local) is unreliable from Windows after a Pi reboot — IP avoids that whole class of bug. Override here if you're on a different network.">
       <button id="connect-btn" class="text-sm bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded">Connect</button>
       <button id="estop-btn"
               class="text-sm font-bold uppercase bg-red-600 hover:bg-red-500 px-4 py-2 rounded shadow">
