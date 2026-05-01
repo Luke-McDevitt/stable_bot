@@ -243,6 +243,21 @@
           <span id="focus-pos-val" class="text-xs text-slate-400 mono w-8 text-right">145</span>
           <span id="focus-status" class="text-xs text-slate-400 mono"></span>
         </div>
+        <!-- MJPEG encoder throttle. The OAK's MJPEG encoder ate Myriad X
+             cycles at 60 fps and capped V1 NN at ~22 Hz; throttling to
+             10 fps frees the budget while keeping the live feed and
+             platform_pose alive. 0 = no throttle. Higher fps = smoother
+             feed at the cost of NN rate. Pipeline rebuild on change
+             (handled automatically by oak_driver's _on_jpeg_fps_cmd). -->
+        <div class="mt-2 flex items-center gap-2 text-xs">
+          <span class="text-slate-400 w-20">JPEG fps</span>
+          <input id="jpeg-fps-slider" type="range"
+                 min="0" max="60" step="1" value="10"
+                 class="flex-1 min-w-[120px]"
+                 title="MJPEG encoder throttle. 0 = no throttle (encoder runs at full 60 fps, V1 NN capped to ~22 Hz). 10 = encoder at 10 Hz (V1 NN at 60 Hz, smooth-enough live preview, plenty of pose updates). Pipeline rebuilds on change (~3 s).">
+          <span id="jpeg-fps-val" class="text-xs text-slate-400 mono w-8 text-right">10</span>
+          <span id="jpeg-fps-status" class="text-xs text-slate-400 mono"></span>
+        </div>
         <!-- HSV tuning sliders (CV2 V0 backend). Live updates via
              /oak/cmd_hsv; the V0 debug overlay below shows exactly
              which pixels currently pass. -->
@@ -2159,6 +2174,13 @@ function setupROSInterface() {
   // slider; the node clamps + applies on the next NN tick.
   topic.oak_nn_conf_min_cmd = new ROSLIB.Topic({
     ros, name: '/oak/cmd_nn_conf_min',
+    messageType: 'std_msgs/msg/Float32' });
+  // MJPEG encoder throttle (frames per second). Trade-off: higher
+  // value = smoother live feed for the GUI / more pose updates, but
+  // burns more Myriad X compute and caps V1 YOLO rate. Pipeline
+  // rebuild required to apply (the node handler does it auto).
+  topic.oak_jpeg_fps_cmd = new ROSLIB.Topic({
+    ros, name: '/oak/cmd_jpeg_fps',
     messageType: 'std_msgs/msg/Float32' });
   // V0 detector debug overlay (live RGB tinted by HSV mask). Subscribed
   // only when the "V0 debug overlay" checkbox under the live feed is
@@ -4214,6 +4236,36 @@ function initVisionGUI() {
     });
   }
 
+  // --- JPEG fps throttle ---
+  // Live preview of the slider value; only publish on 'change' (mouse
+  // release) because each change triggers a pipeline rebuild on the
+  // device (~3 s). Status text shows when reload is in progress.
+  const jpegFpsSlider = $('jpeg-fps-slider');
+  const jpegFpsVal    = $('jpeg-fps-val');
+  const jpegFpsStatus = $('jpeg-fps-status');
+  if (jpegFpsSlider) {
+    jpegFpsSlider.addEventListener('input', () => {
+      if (jpegFpsVal) jpegFpsVal.innerText = jpegFpsSlider.value;
+    });
+    jpegFpsSlider.addEventListener('change', () => {
+      const fps = parseInt(jpegFpsSlider.value, 10);
+      if (!topic.oak_jpeg_fps_cmd) return;
+      try {
+        topic.oak_jpeg_fps_cmd.publish(new ROSLIB.Message({ data: fps }));
+        if (jpegFpsStatus) {
+          jpegFpsStatus.innerText = `applying ${fps} fps (~3 s)…`;
+          jpegFpsStatus.className = 'text-xs mono text-amber-400';
+          setTimeout(() => {
+            if (jpegFpsStatus) {
+              jpegFpsStatus.innerText = '';
+              jpegFpsStatus.className = 'text-xs mono text-slate-400';
+            }
+          }, 5000);
+        }
+      } catch (e) {}
+    });
+  }
+
   // --- NN weight sliders + Save/Push ---
   const NN_W_IDS = [
     ['nn-w-r', 'nn-w-r-val', 'w_r'],
@@ -6221,6 +6273,13 @@ function onOakConfig(cfg) {
   if (status) {
     const blob = cfg.v0_blob ? `blob=${cfg.v0_blob}` : 'no blob loaded';
     status.innerText = `live: ${active} · ${blob} · exp=${cfg.exp_us}us iso=${cfg.iso}`;
+  }
+  // Sync JPEG-FPS slider with whatever the live driver is using.
+  if ('jpeg_fps' in cfg) {
+    const s = document.getElementById('jpeg-fps-slider');
+    const v = document.getElementById('jpeg-fps-val');
+    if (s && parseInt(s.value, 10) !== cfg.jpeg_fps) s.value = cfg.jpeg_fps;
+    if (v) v.innerText = cfg.jpeg_fps;
   }
   // Focus state — highlight the active mode and sync the slider.
   const focusMode = (cfg.focus_mode || 'manual').toLowerCase();

@@ -41,6 +41,11 @@ Environment=OAK_DISABLE_V0_NN=1
 Environment=OAK_ENABLE_MONO=0
 Environment=OAK_DISABLE_JPEG=0
 Environment=OAK_JPEG_FPS=10
+# Force V1 architecture (overrides auto-detect: prefer v6, fall back to v8).
+# Uncomment to A/B compare:
+#   v6 = YOLOv6n (Meituan, ~60 Hz solo benchmark — current default)
+#   v8 = YOLOv8n (Ultralytics, ~30 Hz solo benchmark, slightly higher mAP)
+# Environment=OAK_FORCE_V1_ARCH=v8
 # Mono FPS stays at 15 (default). 2026-05-01: tried OAK_MONO_FPS=60
 # to test the hypothesis that mono rate gates RGB; at 60 fps mono,
 # platform_pose_node's ArUco solve was dropping out (pose=0 in

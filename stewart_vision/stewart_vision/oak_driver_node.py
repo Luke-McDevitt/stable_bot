@@ -1523,6 +1523,12 @@ class OakDriverNode(Node):
             Float32, '/oak/cmd_v1_yolo_conf_min',
             self._on_v1_yolo_conf_min_cmd, 1,
             callback_group=self._excl_cbg)
+        # JPEG throttle setpoint — Float32 fps. Updates self._jpeg_fps
+        # and triggers a hot-reload so the new Script-node period is
+        # baked into the rebuilt pipeline.
+        self.create_subscription(
+            Float32, '/oak/cmd_jpeg_fps', self._on_jpeg_fps_cmd, 1,
+            callback_group=self._excl_cbg)
         # Debug overlay: live RGB tinted lime where HSV passes, with
         # the detected blob outlined red. Lets the operator see what
         # the detector is actually picking up while they tune the
@@ -1583,6 +1589,7 @@ class OakDriverNode(Node):
                 'v1_arch': str(self._v1_arch or 'none'),
                 'nn_conf_min': float(self._nn_conf_min),
                 'v1_yolo_conf_min': float(self._v1_yolo_conf_min),
+                'jpeg_fps': int(self._jpeg_fps),
                 # Live HSV bounds — operator sliders push to /oak/cmd_hsv
                 # and these values reflect the latest accepted values.
                 'hsv_lo': [int(v) for v in self._hsv_lo],
@@ -1914,6 +1921,32 @@ class OakDriverNode(Node):
         except Exception as e:
             self.get_logger().warn(
                 f"/oak/cmd_v1_yolo_conf_min parse failed: {e}")
+
+    def _on_jpeg_fps_cmd(self, msg: Float32):
+        """Update the MJPEG encoder throttle. Clamped [0, 60].
+        Triggers a pipeline reload so the new Script-node period is
+        actually baked in (the throttle lives on the OAK device,
+        can't change without rebuilding the pipeline).
+
+        0  → no throttle (encoder runs at full source 60 fps)
+        N  → encoder runs at N fps via Script-node frame dropping
+        """
+        try:
+            v = max(0, min(60, int(round(float(msg.data)))))
+            if v == self._jpeg_fps:
+                self.get_logger().info(
+                    f"/oak/cmd_jpeg_fps {v} — no change")
+                return
+            self._jpeg_fps = v
+            self.get_logger().info(
+                f"/oak/cmd_jpeg_fps → {v} fps; reloading pipeline…")
+            self._publish_config_snapshot()
+            # Reuse the existing reload path. _on_reload_nn_cmd
+            # rebuilds with the current self._jpeg_fps.
+            self._on_reload_nn_cmd(Empty())
+        except Exception as e:
+            self.get_logger().warn(
+                f"/oak/cmd_jpeg_fps parse failed: {e}")
 
     def _log_pipeline_health(self):
         """Periodic snapshot so we can tell which stage of the V0 /
