@@ -224,13 +224,31 @@ SIGN_FLIP_LOCK_AFTER_REJECTS = 2
 #      positions (deterministic start/target → directly comparable bags
 #      across sessions)
 
-# Open-loop tilt-step parameters. Conservative defaults: 1.0° tilt for
-# 0.5 s gives ~30 mm of ball travel, well within marker-to-rim margin.
-STEP_ID_OPEN_LOOP_TILT_DEG    = 1.0
-STEP_ID_OPEN_LOOP_DURATION_S  = 0.5
+# Open-loop tilt-step parameters. Default 3° tilt (operator can
+# override via /step_id/cmd_tilt_magnitude) for 1.0 s gives the ball
+# enough time to break stiction (typically 200-400 ms after
+# commanded tilt is reached) AND accumulate measurable acceleration
+# in the fit window. The earlier 0.5 s window was too short — when
+# stiction held the ball for 300 ms, the fit only saw 50 ms of real
+# motion and reported a falsely small G_eff.
+STEP_ID_OPEN_LOOP_TILT_DEG    = 3.0
+STEP_ID_OPEN_LOOP_DURATION_S  = 1.0
 STEP_ID_OPEN_LOOP_RAMP_S      = 0.15   # ramp-in/ramp-out so the
                                        # platform doesn't overshoot
                                        # the commanded tilt
+STEP_ID_OPEN_LOOP_MOTION_ONSET_MM = 3.0  # ball-displacement threshold
+                                         # to declare "the ball has
+                                         # started moving." The fit
+                                         # window starts here when
+                                         # this is later than the
+                                         # ramp-end (handles late
+                                         # stiction breakthrough).
+STEP_ID_OPEN_LOOP_VPEAK_LIMIT_MM_S = 350.0  # safety: if the ball
+                                            # hits this velocity
+                                            # before the tilt ends,
+                                            # cut the tilt short
+                                            # so it doesn't escape
+                                            # the platform
 STEP_ID_PRE_TILT_LEVEL_S      = 1.0    # hold flat for this long before
                                        # tilting, so the parabola fit
                                        # has a clean t=0 baseline
@@ -2254,6 +2272,9 @@ class AutoTuneNode(Node):
                 return out
         t0 = time.monotonic()
         cmd_active_until = t0 + STEP_ID_OPEN_LOOP_DURATION_S
+        last_xy = None
+        last_t = None
+        peak_v_observed = 0.0
         while not self._abort:
             now = time.monotonic()
             if now >= cmd_active_until:
@@ -2266,7 +2287,32 @@ class AutoTuneNode(Node):
                                 'imu_roll_deg': float(imu[0]),
                                 'imu_pitch_deg': float(imu[1]),
                                 'phase': 'tilt'})
+                # Live velocity estimate for the safety cutoff. If
+                # the ball is moving fast enough to escape the
+                # platform during the remaining tilt, end the tilt
+                # early — but only after t > 0.3 s so we still get
+                # SOME constant-tilt data even on a fast-stiction
+                # release.
+                if last_xy is not None and last_t is not None:
+                    dt = max(now - last_t, 1e-3)
+                    vx = (float(p.x) - last_xy[0]) / dt
+                    vy = (float(p.y) - last_xy[1]) / dt
+                    v = math.hypot(vx, vy)
+                    if v > peak_v_observed:
+                        peak_v_observed = v
+                    if (v > STEP_ID_OPEN_LOOP_VPEAK_LIMIT_MM_S
+                            and (now - t0) > 0.3):
+                        self.get_logger().info(
+                            f'  open-loop: cutting tilt short at '
+                            f'{(now-t0)*1000:.0f} ms — ball at '
+                            f'{v:.0f} mm/s exceeds safety cap '
+                            f'{STEP_ID_OPEN_LOOP_VPEAK_LIMIT_MM_S:.0f}')
+                        break
+                last_xy = (float(p.x), float(p.y))
+                last_t = now
             time.sleep(0.01)
+        out['peak_velocity_mm_s'] = float(peak_v_observed)
+        out['tilt_actual_duration_s'] = float(time.monotonic() - t0)
 
         # Return to flat and record decel phase.
         if self._set_pose_cli is not None:
@@ -2367,14 +2413,21 @@ class AutoTuneNode(Node):
 
     def _fit_open_loop(self, samples: list[dict], roll_deg: float,
                        pitch_deg: float) -> tuple[float, float, dict]:
-        """Fit ball trajectory during the constant-tilt window with a
-        parabola: position(t) = x0 + v0·t + ½·a·t². The acceleration
-        magnitude divided by sin(commanded_tilt) gives the cascaded
-        plant gain G_eff in mm/s² per radian; convert to per-degree
-        for human-readable output.
+        """Fit ball trajectory during the post-motion-onset window with
+        a parabola: position(t) = x0 + v0·t + ½·a·t². The acceleration
+        is divided by the IMU-ACTUAL tilt during the same window
+        (not the commanded tilt — the level-PI inner loop typically
+        only achieves 70-90% of commanded, so dividing by commanded
+        underestimates G_eff by 1/achievement-ratio).
 
         Dead-time td is estimated as the time from tilt command (t=0)
         to when |ball position| diverges from baseline by > 5 mm.
+        On foam-on-vinyl this is the static-friction breakthrough
+        time, typically 100-400 ms depending on tilt magnitude.
+
+        Fit window: starts at max(motion-onset-time, ramp-end) so
+        when stiction holds the ball for 300+ ms, the fit only sees
+        actually-accelerating samples instead of stationary ones.
 
         Returns (g_eff_mm_s2_per_deg, td_s, fit_meta_dict)."""
         if len(samples) < 10:
@@ -2388,16 +2441,18 @@ class AutoTuneNode(Node):
         # Expected ball acceleration vector direction:
         ax_dir = math.copysign(1.0, pitch_deg) if pitch_deg != 0 else 0.0
         ay_dir = -math.copysign(1.0, roll_deg) if roll_deg != 0 else 0.0
-        # If both axes commanded simultaneously (we don't, but the math
-        # still works), normalise to a unit vector:
         nrm = math.hypot(ax_dir, ay_dir) or 1.0
         ax_dir /= nrm
         ay_dir /= nrm
-        # Project ball position onto the expected motion direction so
-        # we fit a 1-D scalar trajectory.
-        ts = np.array([s['t'] for s in samples if s['phase'] == 'tilt'])
-        xs = np.array([s['x'] for s in samples if s['phase'] == 'tilt'])
-        ys = np.array([s['y'] for s in samples if s['phase'] == 'tilt'])
+        # Project ball position + IMU rpy onto motion direction.
+        tilt_samples = [s for s in samples if s.get('phase') == 'tilt']
+        ts = np.array([s['t'] for s in tilt_samples])
+        xs = np.array([s['x'] for s in tilt_samples])
+        ys = np.array([s['y'] for s in tilt_samples])
+        imu_p = np.array([s.get('imu_pitch_deg', 0.0)
+                          for s in tilt_samples])
+        imu_r = np.array([s.get('imu_roll_deg', 0.0)
+                          for s in tilt_samples])
         if len(ts) < 5:
             return (0.0, 0.0, {'error': 'too few tilt-phase samples'})
         # Baseline is the mean position before STEP_ID_OPEN_LOOP_RAMP_S
@@ -2410,16 +2465,39 @@ class AutoTuneNode(Node):
             y0 = float(np.mean(ys[baseline_mask]))
         # Project displacement onto motion direction.
         d = (xs - x0) * ax_dir + (ys - y0) * ay_dir
-        # Dead-time: first sample where |d| > 5 mm.
+        # Dead-time: first sample where |d| > 5 mm. This is also the
+        # earliest plausible motion-onset time.
         td = 0.0
-        for ti, di in zip(ts, d):
+        td_idx = None
+        for i, (ti, di) in enumerate(zip(ts, d)):
             if abs(di) > 5.0:
                 td = float(ti)
+                td_idx = i
                 break
-        # Fit window: ramp_s end → end of tilt phase.
-        fit_mask = ts >= STEP_ID_OPEN_LOOP_RAMP_S
+        # Motion onset for the fit window: first |d| > MOTION_ONSET_MM.
+        motion_onset_t: Optional[float] = None
+        for ti, di in zip(ts, d):
+            if abs(di) > STEP_ID_OPEN_LOOP_MOTION_ONSET_MM:
+                motion_onset_t = float(ti)
+                break
+        # Fit window: max(ramp_end, motion_onset) → end of tilt.
+        # When stiction holds the ball, motion onset is the dominant
+        # constraint; when motion is prompt, ramp-end wins.
+        fit_start = max(STEP_ID_OPEN_LOOP_RAMP_S,
+                        motion_onset_t
+                        if motion_onset_t is not None else 0.0)
+        fit_mask = ts >= fit_start
         if fit_mask.sum() < 5:
-            return (0.0, td, {'error': 'too few fit-window samples'})
+            # Fall back to the full post-ramp window if motion onset
+            # didn't leave enough samples — gives the parabola
+            # *something* to fit even if it ends up tiny, which is
+            # diagnostic info for the failure path.
+            fit_mask = ts >= STEP_ID_OPEN_LOOP_RAMP_S
+            fit_start = STEP_ID_OPEN_LOOP_RAMP_S
+            if fit_mask.sum() < 5:
+                return (0.0, td,
+                        {'error': 'too few fit-window samples',
+                         'motion_onset_s': motion_onset_t})
         t_fit = ts[fit_mask]
         d_fit = d[fit_mask]
         # least-squares fit: d = c0 + c1·t + c2·t²
@@ -2428,19 +2506,39 @@ class AutoTuneNode(Node):
         except Exception as e:
             return (0.0, td, {'error': f'polyfit failed: {e!r}'})
         a_fit = float(coefs[0]) * 2.0   # because d = ½·a·t² → a = 2·c2
-        # Commanded tilt magnitude (deg).
-        theta_deg = math.hypot(roll_deg, pitch_deg)
-        if theta_deg <= 1e-6:
+        # IMU-actual tilt magnitude during the fit window. Use the
+        # dominant axis (the one we commanded). Mean abs over the fit
+        # window — this is what the ball physically experienced as
+        # gravity-along-surface, regardless of what we commanded.
+        if abs(pitch_deg) >= abs(roll_deg):
+            imu_proj = np.abs(imu_p)
+        else:
+            imu_proj = np.abs(imu_r)
+        imu_in_fit = imu_proj[fit_mask]
+        actual_theta_deg = (float(np.mean(imu_in_fit))
+                            if len(imu_in_fit) else 0.0)
+        commanded_theta_deg = math.hypot(roll_deg, pitch_deg)
+        if commanded_theta_deg <= 1e-6:
             return (0.0, td, {'error': 'zero commanded tilt'})
-        # G_eff in mm/s²/deg. The fit acceleration is along the
-        # expected-motion direction; sign should be positive (ball
-        # moved the way we expected). Negative a_fit → wrong sign,
-        # which would indicate inverted IK; we report the magnitude
-        # but flag it.
-        g_eff = abs(a_fit) / theta_deg
+        # Use IMU actual when it's plausible (≥ 30% of commanded —
+        # below that, the platform almost certainly didn't tilt, and
+        # dividing by tiny actual_theta would balloon G_eff). Fall
+        # back to commanded with a note in the meta.
+        if actual_theta_deg >= 0.3 * commanded_theta_deg:
+            theta_for_geff = actual_theta_deg
+            theta_source = 'imu_actual'
+        else:
+            theta_for_geff = commanded_theta_deg
+            theta_source = 'commanded_fallback'
+        g_eff = abs(a_fit) / theta_for_geff
         meta = {
             'a_fit_mm_s2': float(a_fit),
-            'theta_deg': float(theta_deg),
+            'theta_deg': float(commanded_theta_deg),
+            'theta_for_geff_deg': float(theta_for_geff),
+            'theta_source': theta_source,
+            'imu_actual_theta_deg_in_fit': float(actual_theta_deg),
+            'motion_onset_s': (float(motion_onset_t)
+                                if motion_onset_t is not None else None),
             'fit_window_s': [float(t_fit[0]), float(t_fit[-1])],
             'n_fit_samples': int(fit_mask.sum()),
             'baseline_xy': [x0, y0],
