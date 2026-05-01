@@ -680,8 +680,8 @@
         <label class="col-span-2">
           Z-height (mm) — pure heave on the top plate (no tilt change)
           <div class="flex items-center gap-2">
-            <input id="d2-z" type="range" min="0" max="80" step="1" value="0" class="flex-1">
-            <span id="d2-z-val" class="mono w-10 text-right">0</span>
+            <input id="d2-z" type="range" min="0" max="80" step="1" value="75" class="flex-1">
+            <span id="d2-z-val" class="mono w-10 text-right">75</span>
           </div>
         </label>
         <label class="flex items-center gap-2"><input id="d2-pred-path" type="checkbox"> show predicted path</label>
@@ -880,6 +880,13 @@
                 class="bg-slate-600 hover:bg-slate-500 rounded py-1 text-xs">Revert from yaml</button>
         <button id="bt-zero-integ"
                 class="bg-amber-600 hover:bg-amber-500 rounded py-1 text-xs">Zero integrator</button>
+      </div>
+      <div class="grid grid-cols-1 gap-2 mt-2">
+        <button id="bt-gains-push"
+                class="bg-purple-600 hover:bg-purple-500 rounded py-1 text-xs"
+                title="git add ball_track_gains.yaml + git commit + git pull --rebase + git push. Captures the current tuned gains in git history so the next session can revert if needed.">
+          Push gains to GitHub
+        </button>
       </div>
       <div id="bt-gains-status" class="text-xs mt-2 mono min-h-4 text-slate-400"></div>
     </details>
@@ -5018,6 +5025,26 @@ function initVisionGUI() {
   if (btZero) btZero.addEventListener('click', () => {
     publishCmd({cmd: 'ball_track_zero_integrator'});
     setBtGainsStatus('integrator zero requested', 'text-slate-400');
+  });
+  // Push the live ball_track_gains.yaml to GitHub. Captures the
+  // currently-tuned gains in git history so we can revert if a
+  // subsequent tuning round goes worse. Auto-generates a commit
+  // message embedding the headline gains for git-log searchability.
+  const btPush = $('bt-gains-push');
+  if (btPush) btPush.addEventListener('click', () => {
+    setBtGainsStatus('pushing ball_track_gains.yaml to origin…',
+                     'text-slate-400');
+    fetch('/gains/push', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: '{}',
+    }).then(r => r.json()).then(j => {
+      const cls = j.ok ? 'text-emerald-400' : 'text-rose-400';
+      setBtGainsStatus(j.message || (j.ok ? 'pushed' : 'failed'),
+                       cls);
+    }).catch(e => {
+      setBtGainsStatus('push failed: ' + e, 'text-rose-400');
+    });
   });
 
   // --- Demo-run bag recorder ---

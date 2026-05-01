@@ -825,6 +825,78 @@ def _vision_status():
         }
 
 
+def _push_ball_track_gains_to_git():
+    """git add stewart_bringup/config/ball_track_gains.yaml +
+    commit + pull --rebase + push. Auto-generates a commit
+    message embedding the headline gains so git log is
+    grep-able for "tuning at Kp=0.030 Kd=0.040".
+
+    Used by the Gains & Control Parameters panel's Push button —
+    captures the live tuned gains in version control so a
+    subsequent tuning round can revert via `git checkout` if it
+    goes worse.
+    """
+    repo_dir = os.path.dirname(_iva_bags_root())  # ~/stable_bot_repo
+    gains_rel = 'stewart_bringup/config/ball_track_gains.yaml'
+    gains_path = os.path.join(repo_dir, gains_rel)
+    if not os.path.isfile(gains_path):
+        return False, f'no file at {gains_path}'
+    if not os.path.isdir(os.path.join(repo_dir, '.git')):
+        return False, f'not a git repo: {repo_dir}'
+    # Read the headline gains for the commit message.
+    try:
+        import yaml as _yaml
+        with open(gains_path) as f:
+            g = _yaml.safe_load(f) or {}
+        kp = g.get('kp', '?')
+        kd = g.get('kd', '?')
+        ki = g.get('ki', '?')
+        mt = g.get('max_tilt_deg', '?')
+        algo = g.get('algorithm', 'pid')
+        msg = (f'Tuning: ball_track {algo} '
+               f'Kp={kp} Kd={kd} Ki={ki} max_tilt={mt}°')
+    except Exception:
+        msg = 'Tuning: ball_track_gains.yaml update'
+    out_lines = []
+
+    def _run(cmd):
+        try:
+            r = subprocess.run(cmd, cwd=repo_dir,
+                               capture_output=True, text=True,
+                               timeout=60)
+            line = ' '.join(cmd)
+            out_lines.append(f'$ {line}')
+            if r.stdout.strip():
+                out_lines.append(r.stdout.strip())
+            if r.stderr.strip():
+                out_lines.append(r.stderr.strip())
+            return r.returncode == 0
+        except Exception as e:
+            out_lines.append(f'FAILED: {" ".join(cmd)}: {e}')
+            return False
+
+    if not _run(['git', 'add', gains_rel]):
+        return False, '\n'.join(out_lines)
+    diff = subprocess.run(['git', 'diff', '--cached', '--quiet'],
+                          cwd=repo_dir)
+    nothing_to_commit = (diff.returncode == 0)
+    if nothing_to_commit:
+        out_lines.append('(yaml unchanged from HEAD — nothing to commit)')
+    else:
+        if not _run(['git', 'commit', '-m', msg]):
+            return False, '\n'.join(out_lines)
+    # Pull --rebase before push to handle concurrent pushes
+    # (same race-handling as the bag push helpers).
+    if not _run(['git', 'pull', '--rebase']):
+        return False, '\n'.join(out_lines)
+    if not _run(['git', 'push']):
+        return False, '\n'.join(out_lines)
+    out_lines.append(
+        '✓ pushed' if nothing_to_commit
+        else f'✓ pushed: {msg}')
+    return True, '\n'.join(out_lines)
+
+
 def _push_vision_bag_to_git(name):
     """Commit + push the DIGEST artifacts only — digest.png and
     digest.summary.json. The raw .mcap (typically tens of MB once
@@ -2602,6 +2674,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
                 return
             ok, msg = _push_vision_bag_to_git(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 500)
+            return
+        if self.path == '/gains/push':
+            ok, msg = _push_ball_track_gains_to_git()
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 500)
             return

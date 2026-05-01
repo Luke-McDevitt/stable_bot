@@ -427,9 +427,17 @@ def _next_gain_recommendation(err_mag: np.ndarray,
     issues → suggest the dominant fix first; the next demo run picks
     up the next one.
     """
-    if not gains or err_mag.size == 0 or demo_mode != 'BALL_TRACK_GOTO':
+    # Note: we used to gate on demo_mode == 'BALL_TRACK_GOTO', but
+    # the auto-bag recorder has a known race where the goto command
+    # lands on /control_cmd before rosbag2 finishes subscribing —
+    # so demo_mode often comes back as None even though it WAS a
+    # goto. Tracking error vs /ball_ref tells us all we need
+    # regardless of which BALL_TRACK_* mode generated it; relax the
+    # gate to "have gains + have err".
+    if not gains or err_mag.size == 0:
         return {'suggestion': 'no recommendation '
-                              '(non-goto demo or insufficient data)',
+                              '(no gains snapshot or no /ball_state '
+                              'data in bag)',
                 'suggested_gains': {}, 'rationale': []}
     kp = float(gains.get('kp', 0.015))
     kd = float(gains.get('kd', 0.030))

@@ -4580,6 +4580,28 @@ class StewartControlNode(Node):
             sleep_s = max(0.0, period - elapsed)
             if sleep_s > 0:
                 self.ball_track_stop.wait(sleep_s)
+        # ----- Loop exit: restore clean platform pose -----
+        # The last live tick left the platform at
+        #   xyz = (0, 0, z_hold + z_comp)
+        #   rpy = (tilt_roll, tilt_pitch, 0)
+        # where z_comp = px·sin(pitch) − py·sin(roll) was the
+        # ball-position-aware Z compensation. With the ball at
+        # rim radius (~200 mm) and a tilt of even 3°, z_comp is
+        # ~10 mm. After the loop exits the level loop tracks that
+        # displaced pose forever — which is the "platform dips
+        # 10 mm in z after every demo 2" the operator observed
+        # on 2026-05-01.
+        # Fix: send a clean pose at loop exit. Z back to z_hold,
+        # rpy to (0, 0, 0), so whatever picks up after BALL_TRACK
+        # (level loop, manual jog, next demo) starts from a known
+        # clean state.
+        try:
+            self._do_set_pose(0.0, 0.0, z_hold,
+                              0.0, 0.0, 0.0,
+                              allow_large=True)
+        except Exception as e:
+            self.get_logger().warn(
+                f'ball_track exit: clean-pose set failed: {e}')
 
     def _level_run(self):
         # Level-loop body. Gains are read from self.level_gains at the
