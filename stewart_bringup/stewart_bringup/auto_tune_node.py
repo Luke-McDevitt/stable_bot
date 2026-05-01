@@ -110,7 +110,23 @@ SETTLE_BAND_MM         = 10.0    # err < this for SETTLE_HOLD_S → settled
 SETTLE_HOLD_S          = 1.0
 TRIAL_TIMEOUT_S        = 25.0
 LEVEL_HOLD_BETWEEN_S   = 2.0     # minimum dwell, regardless of calm test
-HOLD_TOL_MM            = 25.0    # f_hold counts samples within this band
+HOLD_TOL_MM            = 15.0    # diagnostic-only threshold for the
+                                  # on_target_fraction stat in components.
+                                  # f_hold itself is now continuous (see
+                                  # CLOSENESS_SCALE_MM) — the threshold
+                                  # was dropped because it gave a sample
+                                  # 14mm from target full credit and a
+                                  # sample 16mm from target zero credit,
+                                  # which is the wrong shape.
+CLOSENESS_SCALE_MM     = 20.0    # f_hold = mean(exp(-err / scale)).
+                                  # err=0  → reward 1.00
+                                  # err=10 → reward 0.61
+                                  # err=20 → reward 0.37
+                                  # err=40 → reward 0.14
+                                  # err=60 → reward 0.05
+                                  # Smooth: closer is always better,
+                                  # and time-on-target is rewarded by
+                                  # averaging across all samples.
 # Inter-trial calm-down: wait until ball velocity drops below this
 # threshold for CALM_DWELL_S before starting the next trial. Stops
 # trials starting while the ball is still orbiting from the previous
@@ -190,12 +206,19 @@ REEVAL_WEIGHT_NEW       = 0.6    # new sample gets 60% weight, old 40%
 # Set to a higher number on hardware that hasn't been pre-tested.
 SIGN_FLIP_LOCK_AFTER_REJECTS = 2
 
-# Fitness weights (sum should equal 1.0)
-W_ERR    = 0.25
-W_P95    = 0.15
-W_SETTLE = 0.15
-W_HOLD   = 0.25
-W_CALM   = 0.20
+# Fitness weights (sum should equal 1.0).
+# Operator priority (2026-04-30): "as close to target for as long as
+# possible." f_hold (continuous closeness × time, see CLOSENESS_SCALE_MM)
+# is the dominant signal. f_err and f_p95 are kept for outlier-bound
+# pressure (a trial that average-closes well but has 1s of orbit-out
+# should still be penalized). f_settle credits "got there fast." f_calm
+# is a small tiebreaker — closeness already implies non-orbiting, so
+# velocity is mostly redundant.
+W_ERR    = 0.20
+W_P95    = 0.10
+W_SETTLE = 0.10
+W_HOLD   = 0.50
+W_CALM   = 0.10
 
 
 # ----- Helpers ---------------------------------------------------------------
@@ -776,6 +799,13 @@ class AutoTuneNode(Node):
         rms_err = float(np.sqrt(np.mean(err * err)))
         p95_err = float(np.percentile(err, 95))
         on_target_frac = float(np.mean(err < HOLD_TOL_MM))
+        # Continuous time-weighted closeness reward. Per-sample reward
+        # is exp(-err/scale); averaging across samples means a trial
+        # that hovered at 5mm for 10s scores higher than one that
+        # darted in to 2mm for 200ms then orbited at 50mm. This is
+        # what the operator means by "close for as long as possible."
+        closeness = np.exp(-err / CLOSENESS_SCALE_MM)
+        mean_closeness = float(np.mean(closeness))
         # Speed via finite difference (no velocity in PoseStamped).
         if len(xs) > 2:
             dt = np.diff(ts)
@@ -796,7 +826,7 @@ class AutoTuneNode(Node):
         f_p95    = 1.0 / (1.0 + p95_err / 100.0)
         f_settle = (max(0.0, 1.0 - r.settling_time_s / 15.0)
                     if r.settled else 0.0)
-        f_hold   = on_target_frac
+        f_hold   = mean_closeness
         f_calm   = 1.0 / (1.0 + mean_speed / 100.0)
 
         fitness = (W_ERR * f_err + W_P95 * f_p95 + W_SETTLE * f_settle
@@ -813,6 +843,7 @@ class AutoTuneNode(Node):
             'f_hold': f_hold, 'f_calm': f_calm,
             'rms_err_mm': rms_err, 'p95_err_mm': p95_err,
             'on_target_fraction': on_target_frac,
+            'mean_closeness': mean_closeness,
             'mean_speed_mm_per_s': mean_speed,
             'stuck_on_center_fraction': stuck_frac,
         }

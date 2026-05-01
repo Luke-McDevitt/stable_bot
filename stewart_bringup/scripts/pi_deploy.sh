@@ -35,6 +35,21 @@ echo "==> [1/8] check local changes"
 # in sync with the operator's tuning surface as new GUI-writable
 # artifacts get added.
 SAFE_RE='\.(yaml|yml)$|^tuning_data/|^stewart_vision/blobs/'
+# Hard deny-list: paths that must NEVER be auto-committed even if
+# they match SAFE_RE. Auto-tune session bag/*.mcap files are tens-to-
+# hundreds of MB; one snuck through on 2026-05-01 (073749Z, 113.66 MB)
+# and blocked every push for the next 3 commits because the file
+# exceeded GitHub's 100 MB limit. .gitignore alone is not enough — a
+# tracked file (e.g., committed before its gitignore rule landed)
+# sticks around until explicitly untracked, and `git add <dir>`
+# happily re-stages it.
+SAFE_DENY_RE='/bag/|\.mcap$|metadata\.yaml$'
+# Untrack any bag/ contents that may already be in the index from
+# pre-gitignore commits. Files stay on disk; just removed from the
+# index so the next `git add` won't re-include them.
+git ls-files 'tuning_data/auto_tune_*/bag/*' 2>/dev/null \
+  | xargs -r git rm --cached --quiet 2>/dev/null || true
+
 LOCAL_CHANGES=$(git status --porcelain || true)
 if [ -n "$LOCAL_CHANGES" ]; then
     # Files in the porcelain output that don't match the allowlist.
@@ -66,6 +81,19 @@ if [ -n "$LOCAL_CHANGES" ]; then
     done < <(echo "$LOCAL_CHANGES" \
               | awk '{print $2}' \
               | grep -E "$SAFE_RE")
+    # Belt-and-suspenders: even though .gitignore + the deny-list
+    # above should keep bag/ out, double-check the staged set and
+    # un-stage anything that snuck through. If we let a >100 MB
+    # mcap into the commit it blocks every future push until
+    # someone runs git filter-branch on the Pi.
+    BAD_STAGED=$(git diff --cached --name-only | grep -E "$SAFE_DENY_RE" || true)
+    if [ -n "$BAD_STAGED" ]; then
+        echo "  ! deny-list match — un-staging large-file paths:"
+        echo "$BAD_STAGED" | sed 's/^/    /'
+        while IFS= read -r p; do
+            [ -n "$p" ] && git reset HEAD -- "$p" >/dev/null 2>&1 || true
+        done < <(echo "$BAD_STAGED")
+    fi
     if ! git diff --cached --quiet; then
         git commit -m "Local: operator-tuned snapshot (pi_deploy.sh)" >/dev/null
         echo "  ✓ committed local snapshot"
