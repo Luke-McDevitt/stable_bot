@@ -1463,6 +1463,51 @@
   <!-- RIGHT COLUMN: homing + errors -->
   <section class="lg:col-span-1 space-y-4">
 
+    <!-- Auto-tune panel: hill-climbs the BALL_TRACK gains over a
+         sequence of random goto trials. Operator pre-reqs: armed,
+         ball detector running, foam ring around platform. See
+         stewart_bringup/docs/auto_tuning_plan.md for the full spec. -->
+    <details id="autotune-panel"
+             class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <summary class="cursor-pointer select-none">
+        <span class="text-sm uppercase text-slate-400">Auto-tune</span>
+        <span id="autotune-state-pill"
+              class="text-xs mono ml-2 px-2 py-0.5 rounded bg-slate-700">idle</span>
+      </summary>
+      <p class="text-xs text-slate-500 mt-2 mb-3">
+        Runs random goto trials and hill-climbs gains by fitness.
+        Pre-flight: <span class="text-slate-300">armed</span>,
+        <span class="text-slate-300">ball detector at &gt;5 Hz</span>,
+        <span class="text-slate-300">foam ring on rim</span>.
+        ~25 min for 50 trials.
+      </p>
+      <div class="flex items-center gap-2 mb-2">
+        <button id="autotune-start-btn"
+                class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs">
+          ▶ Start
+        </button>
+        <button id="autotune-stop-btn"
+                class="bg-rose-600 hover:bg-rose-500 rounded px-3 py-1 text-xs">
+          ■ Stop
+        </button>
+        <span id="autotune-status-msg"
+              class="text-xs text-slate-400 mono"></span>
+      </div>
+      <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-400 mb-2">
+        <div>trial: <span id="autotune-trial" class="mono text-slate-200">—</span></div>
+        <div>best fitness: <span id="autotune-best-fit" class="mono text-emerald-400">—</span></div>
+        <div>last fitness: <span id="autotune-last-fit" class="mono text-slate-200">—</span></div>
+        <div>elapsed: <span id="autotune-elapsed" class="mono text-slate-200">—</span></div>
+      </div>
+      <div class="text-xs text-slate-500 mb-1">last step:</div>
+      <div id="autotune-last-step"
+           class="text-xs mono bg-slate-900 rounded px-2 py-1 text-slate-300 mb-2">—</div>
+      <div class="text-xs text-slate-500 mb-1">current best gains:</div>
+      <pre id="autotune-best-gains"
+           class="text-xs mono bg-slate-900 rounded px-2 py-1 text-slate-300 overflow-auto"
+           style="max-height:120px">—</pre>
+    </details>
+
     <details id="sysid-panel"
              class="bg-slate-800 rounded-lg p-4 border border-slate-700">
       <summary class="cursor-pointer select-none">
@@ -2079,6 +2124,10 @@ function setupROSInterface() {
     serviceType: 'jugglebot_interfaces/srv/ArmLeg' });
   srv.e_stop = new ROSLIB.Service({
     ros, name: '/e_stop', serviceType: 'std_srvs/srv/Trigger' });
+  srv.autotune_start = new ROSLIB.Service({
+    ros, name: '/auto_tune/start', serviceType: 'std_srvs/srv/Trigger' });
+  srv.autotune_stop = new ROSLIB.Service({
+    ros, name: '/auto_tune/stop', serviceType: 'std_srvs/srv/Trigger' });
   srv.go_to_rest = new ROSLIB.Service({
     ros, name: '/go_to_rest', serviceType: 'std_srvs/srv/Trigger' });
   srv.jog_leg = new ROSLIB.Service({
@@ -2242,6 +2291,11 @@ function setupROSInterface() {
   topic.cal_status = new ROSLIB.Topic({
     ros, name: '/calibrate/status', messageType: 'std_msgs/msg/String' });
   topic.cal_status.subscribe(m => { try { onCalStatus(JSON.parse(m.data)); } catch (e) {} });
+  topic.autotune_status = new ROSLIB.Topic({
+    ros, name: '/auto_tune/status', messageType: 'std_msgs/msg/String' });
+  topic.autotune_status.subscribe(m => {
+    try { onAutotuneStatus(JSON.parse(m.data)); } catch (e) {}
+  });
 
   // Ball state (KF posterior, platform-frame mm)
   topic.ball_state = new ROSLIB.Topic({
@@ -4383,6 +4437,24 @@ function initVisionGUI() {
   if (nnRebuild) nnRebuild.addEventListener('click', nnWeightsRebuild);
   if (nnPush)    nnPush.addEventListener('click',    nnWeightsPush);
 
+  // --- Auto-tune panel ---
+  const autotuneStartBtn = $('autotune-start-btn');
+  const autotuneStopBtn  = $('autotune-stop-btn');
+  if (autotuneStartBtn) autotuneStartBtn.addEventListener('click', () => {
+    if (!srv.autotune_start) return;
+    _autotuneSetMsg('starting…', null);
+    srv.autotune_start.callService(new ROSLIB.ServiceRequest({}),
+      (r) => _autotuneSetMsg(r.message || '', !!r.success),
+      (e) => _autotuneSetMsg('start failed: ' + e, false));
+  });
+  if (autotuneStopBtn) autotuneStopBtn.addEventListener('click', () => {
+    if (!srv.autotune_stop) return;
+    _autotuneSetMsg('stopping…', null);
+    srv.autotune_stop.callService(new ROSLIB.ServiceRequest({}),
+      (r) => _autotuneSetMsg(r.message || '', !!r.success),
+      (e) => _autotuneSetMsg('stop failed: ' + e, false));
+  });
+
   // --- HSV slider tuning + V0 debug overlay ---
   const HSV_IDS = [
     ['hsv-h-lo','hsv-h-lo-val'], ['hsv-h-hi','hsv-h-hi-val'],
@@ -6179,6 +6251,68 @@ function onBallRef(p) {
   m.setAttribute('cx', rx);
   m.setAttribute('cy', ry);
   m.setAttribute('visibility', 'visible');
+}
+
+function _autotuneSetMsg(text, ok) {
+  const el = document.getElementById('autotune-status-msg');
+  if (!el) return;
+  el.innerText = text || '';
+  el.className = 'text-xs mono ' +
+    (ok === true ? 'text-emerald-400' :
+     ok === false ? 'text-red-400' : 'text-slate-400');
+  setTimeout(() => {
+    if (el.innerText === text) el.innerText = '';
+  }, 5000);
+}
+
+function onAutotuneStatus(s) {
+  if (!s) return;
+  // State pill (idle / running / done / crashed).
+  const pill = document.getElementById('autotune-state-pill');
+  if (pill) {
+    pill.innerText = s.state || 'idle';
+    const colors = {
+      idle:    'bg-slate-700 text-slate-300',
+      running: 'bg-emerald-600 text-white',
+      done:    'bg-blue-600 text-white',
+      crashed: 'bg-rose-600 text-white',
+    };
+    pill.className = 'text-xs mono ml-2 px-2 py-0.5 rounded ' +
+      (colors[s.state] || colors.idle);
+  }
+  const set = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.innerText = val;
+  };
+  const trial = (s.trial !== undefined && s.max_trials !== undefined)
+    ? `${s.trial} / ${s.max_trials}` : '—';
+  set('autotune-trial', trial);
+  set('autotune-best-fit',
+      s.best_fitness != null ? s.best_fitness.toFixed(3) : '—');
+  set('autotune-last-fit',
+      s.last_trial_fitness != null ? s.last_trial_fitness.toFixed(3) : '—');
+  // Elapsed since started_at.
+  if (s.started_at) {
+    const t0 = Date.parse(s.started_at);
+    const sec = Math.max(0, Math.round((Date.now() - t0) / 1000));
+    const m = Math.floor(sec / 60);
+    set('autotune-elapsed', `${m}m ${sec % 60}s`);
+  } else {
+    set('autotune-elapsed', '—');
+  }
+  set('autotune-last-step', s.last_step || '—');
+  // Pretty-print best gains.
+  const gainsEl = document.getElementById('autotune-best-gains');
+  if (gainsEl) {
+    if (s.best_gains && Object.keys(s.best_gains).length) {
+      const lines = Object.entries(s.best_gains)
+        .filter(([k, v]) => typeof v === 'number')
+        .map(([k, v]) => `${k.padEnd(18)}: ${v.toFixed(4)}`);
+      gainsEl.innerText = lines.join('\n');
+    } else {
+      gainsEl.innerText = '—';
+    }
+  }
 }
 
 function onMethodCmp(d) {

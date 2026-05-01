@@ -49,6 +49,18 @@ def generate_launch_description():
         emulate_tty=True,
     ))
 
+    # Auto-tune node — exposes /auto_tune/start and /auto_tune/stop
+    # service triggers + /auto_tune/status JSON snapshot. Idle until
+    # the operator calls start. Lives in the same launch so the GUI
+    # can call it through the existing rosbridge.
+    ld.add_action(Node(
+        package='stewart_bringup',
+        executable='auto_tune_node',
+        name='auto_tune',
+        output='screen',
+        emulate_tty=True,
+    ))
+
     # Vision stack — OAK driver, ArUco platform pose, Stage-C
     # calibration node, plus the ball localizer / KF / ref_generator
     # / bag_recorder scaffolds. Brought online 2026-04-29 for the
