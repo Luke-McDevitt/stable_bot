@@ -294,6 +294,16 @@ STEP_ID_FALLBACK_OMEGA_N      = 3.0    # rad/s, used when Td_observed
                                        # didn't move enough)
 STEP_ID_OMEGA_N_CAP           = 5.0    # rad/s, hard ceiling regardless
                                        # of dead-time
+# Vision + control + level-PI cascade dead-time. Fixed at 120 ms based
+# on observation of the actual loop (vision capture + USB + KF +
+# control tick + IK + leg response). Used in the bandwidth-limit
+# calculation ωn_target = min(0.5/Td, OMEGA_N_CAP). Earlier code
+# used the motion-onset time as Td, which conflated stiction
+# breakthrough (~500 ms on this hardware) with control delay (~120
+# ms) — recommendation came out absurdly slow because 0.5/0.658 =
+# 0.76 rad/s. Using the right Td keeps the bandwidth target
+# reasonable.
+STEP_ID_LATENCY_TD_S          = 0.12
 
 # Initial-acceleration window in the closed-loop step response. We fit
 # G_eff from the first this-many ms after the goto command, before the
@@ -2355,15 +2365,50 @@ class AutoTuneNode(Node):
             time.sleep(0.01)
         out['samples'] = samples
 
-        # Fit parabola to the constant-tilt window. Skip the first
-        # STEP_ID_OPEN_LOOP_RAMP_S so the level-PI loop has time to
-        # actually reach the commanded tilt; skip the last 0.05 s so
-        # we're well inside the constant-tilt window.
-        g_eff, td, fit_meta = self._fit_open_loop(
+        # Two G_eff fits, picked between based on which is more
+        # plausible for the actual data:
+        #   1. Parabolic position-fit during the post-motion-onset
+        #      window. Best when motion is smooth from early in the
+        #      trial.
+        #   2. Velocity-based: peak_v / ∫|θ_imu| dτ over [0, peak_v_t].
+        #      Robust to stiction holding the ball through most of
+        #      the parabolic fit window — peak velocity captures the
+        #      integrated effect of all tilt regardless of when motion
+        #      onset happened. This is what the prior session
+        #      (step_id_20260501T191841Z) needed: stiction broke at
+        #      0.66 s, safety cutoff fired 2 ms later, parabolic fit
+        #      had 0 ms of motion data and reported G_eff=35 (vs the
+        #      ~250-300 implied by peak_v=462 mm/s).
+        g_eff_p, td_parabolic, fit_meta_p = self._fit_open_loop(
             samples, roll_deg, pitch_deg)
+        g_eff_v, fit_meta_v = self._fit_velocity_based_g_eff(
+            samples, roll_deg, pitch_deg)
+        # Pick the more plausible value. Velocity-based wins when
+        # parabolic comes back implausibly small (< 50 mm/s²/°) AND
+        # velocity-based is in the plausible range. Otherwise default
+        # to parabolic (its dead-time estimate is more useful).
+        prefer_velocity = (g_eff_p < 50.0 and 50.0 <= g_eff_v <= 500.0)
+        if prefer_velocity:
+            g_eff = g_eff_v
+            fit_meta = {
+                **fit_meta_p, **fit_meta_v,
+                'fit_method': 'velocity_based',
+                'parabolic_g_eff_mm_s2_per_deg': float(g_eff_p),
+            }
+        else:
+            g_eff = g_eff_p
+            fit_meta = {
+                **fit_meta_p, **fit_meta_v,
+                'fit_method': 'parabolic',
+                'velocity_g_eff_mm_s2_per_deg': float(g_eff_v),
+            }
+        td = td_parabolic
         out['g_eff_mm_s2_per_deg'] = float(g_eff)
+        out['g_eff_parabolic_mm_s2_per_deg'] = float(g_eff_p)
+        out['g_eff_velocity_mm_s2_per_deg'] = float(g_eff_v)
         out['td_observed_s'] = float(td)
         out['fit'] = fit_meta
+        out['fit_method'] = fit_meta['fit_method']
 
         # IMU achievement diagnosis. During the fit window, what tilt
         # did the platform actually reach (per the IMU) vs what we
@@ -2560,6 +2605,90 @@ class AutoTuneNode(Node):
         }
         return (g_eff, td, meta)
 
+    def _fit_velocity_based_g_eff(self, samples: list[dict],
+                                  roll_deg: float, pitch_deg: float
+                                  ) -> tuple[float, dict]:
+        """G_eff via peak velocity / integrated IMU tilt up to peak.
+
+        Physics: ball acceleration a(t) = G_eff · sin(θ_imu(t))
+        (small angle: a ≈ G_eff · θ_imu in deg). Integrating over
+        time: v(t) = ∫(0 to t) G_eff · θ_imu(τ) dτ. Peak velocity
+        occurs roughly at end-of-tilt (before friction starts
+        decelerating). So G_eff ≈ v_peak / ∫(0 to t_peak) |θ_imu| dτ.
+
+        Robust to stiction: even if the ball is stationary for the
+        first 500 ms, the integrated tilt during that period is
+        still in the integral (driving force was applied), and the
+        ball's eventual peak velocity reflects the cumulative impulse.
+        Position-based fits fail in this regime because the position
+        record looks flat-then-jump rather than the smooth parabola
+        the fit assumes.
+
+        Returns (g_eff_mm_s2_per_deg, meta_dict). Returns 0.0 if the
+        ball didn't move enough to characterize, or if integrated
+        IMU tilt was too small."""
+        if len(samples) < 10:
+            return (0.0, {'velocity_fit_error': 'too few samples'})
+        ax_dir = math.copysign(1.0, pitch_deg) if pitch_deg != 0 else 0.0
+        ay_dir = -math.copysign(1.0, roll_deg) if roll_deg != 0 else 0.0
+        nrm = math.hypot(ax_dir, ay_dir) or 1.0
+        ax_dir /= nrm
+        ay_dir /= nrm
+        ts = np.array([s['t'] for s in samples])
+        xs = np.array([s['x'] for s in samples])
+        ys = np.array([s['y'] for s in samples])
+        imu_p = np.array([s.get('imu_pitch_deg', 0.0) for s in samples])
+        imu_r = np.array([s.get('imu_roll_deg', 0.0) for s in samples])
+        # Velocity along the expected motion direction. Numerical
+        # gradient: central differences in the interior, one-sided
+        # at boundaries.
+        vx = np.gradient(xs, ts)
+        vy = np.gradient(ys, ts)
+        v_along = vx * ax_dir + vy * ay_dir
+        # Peak velocity in the expected direction. We want the
+        # signed positive peak (ball moving the way we commanded).
+        peak_v_signed = float(np.max(v_along))
+        if peak_v_signed < 30.0:
+            return (0.0, {
+                'velocity_fit_error': (
+                    f'peak v in expected direction only '
+                    f'{peak_v_signed:.0f} mm/s — ball didn\'t move '
+                    f'enough or moved the wrong way'),
+                'peak_v_signed_mm_s': peak_v_signed,
+            })
+        peak_idx = int(np.argmax(v_along))
+        peak_t = float(ts[peak_idx])
+        # Integrate IMU tilt magnitude from t=0 to peak_t. Use the
+        # dominant axis (the one we commanded).
+        if abs(pitch_deg) >= abs(roll_deg):
+            imu_dominant = np.abs(imu_p)
+        else:
+            imu_dominant = np.abs(imu_r)
+        mask = ts <= peak_t
+        if mask.sum() < 5:
+            return (0.0, {
+                'velocity_fit_error': 'too few pre-peak samples',
+                'peak_v_signed_mm_s': peak_v_signed,
+                'peak_t_s': peak_t,
+            })
+        integrated_tilt_deg_s = float(np.trapz(
+            imu_dominant[mask], ts[mask]))
+        if integrated_tilt_deg_s < 0.05:
+            return (0.0, {
+                'velocity_fit_error':
+                    f'integrated tilt {integrated_tilt_deg_s:.3f} '
+                    f'deg·s too small',
+                'peak_v_signed_mm_s': peak_v_signed,
+                'integrated_tilt_deg_s': integrated_tilt_deg_s,
+            })
+        g_eff_v = peak_v_signed / integrated_tilt_deg_s
+        return (g_eff_v, {
+            'velocity_fit_method': 'peak_v / integ(|θ_imu|)',
+            'peak_v_signed_mm_s': float(peak_v_signed),
+            'peak_v_t_s': float(peak_t),
+            'integrated_tilt_deg_s': float(integrated_tilt_deg_s),
+        })
+
     # ----- Closed-loop marker-pair trial -----------------------------------
 
     def _run_closed_loop_marker_trial(self, start_marker: int,
@@ -2753,13 +2882,14 @@ class AutoTuneNode(Node):
                          'falls back to current gains'),
                 'valid': False,
             }
-        # Adaptive ωn: min(0.5/Td, OMEGA_N_CAP). 0.5/Td is the rule of
-        # thumb that bandwidth shouldn't exceed half the inverse dead-
-        # time (else Bode-style phase margin collapses).
-        if td_observed_s > 0.05:
-            omega_n = min(0.5 / td_observed_s, STEP_ID_OMEGA_N_CAP)
-        else:
-            omega_n = STEP_ID_OMEGA_N_CAP
+        # ωn target = min(0.5/Td, OMEGA_N_CAP). Td is the
+        # vision+control+IK cascade dead-time, NOT the motion-onset
+        # time. Earlier code used motion-onset (which is dominated
+        # by stiction breakthrough, ~500 ms on this hardware) and
+        # produced ωn = 0.76 rad/s — settling time ~5 s, basically
+        # useless. Using STEP_ID_LATENCY_TD_S (120 ms) gives
+        # ωn = 4.17 rad/s, capped at OMEGA_N_CAP=5.
+        omega_n = min(0.5 / STEP_ID_LATENCY_TD_S, STEP_ID_OMEGA_N_CAP)
         zeta = STEP_ID_TARGET_ZETA
         kp = (omega_n ** 2) / g_eff_mm_s2_per_deg
         kd = 2.0 * zeta * omega_n / g_eff_mm_s2_per_deg
@@ -2775,10 +2905,13 @@ class AutoTuneNode(Node):
             'zeta': float(zeta),
             'g_eff_used': float(g_eff_mm_s2_per_deg),
             'td_observed_s': float(td_observed_s),
+            'td_used_for_omega_n_s': float(STEP_ID_LATENCY_TD_S),
             'note': (
                 f'computed from G_eff={g_eff_mm_s2_per_deg:.1f} mm/s²/°, '
-                f'Td={td_observed_s:.3f}s, ωn={omega_n:.2f} rad/s, '
-                f'ζ={zeta:.2f}'),
+                f'Td_latency={STEP_ID_LATENCY_TD_S:.3f}s, '
+                f'ωn={omega_n:.2f} rad/s, ζ={zeta:.2f}'
+                f' (motion-onset Td={td_observed_s:.3f}s '
+                f'reported separately; not used for ωn)'),
             'valid': True,
         }
 

@@ -4017,17 +4017,24 @@ class StewartControlNode(Node):
                 f"mode {mode}: bad JSON params {params_text!r}; ignoring")
             return
         if mode == 'LEVEL_HOLD':
-            # Stop ball-tracking. If a demo was actually running,
-            # briefly engage the level loop so the platform settles
-            # flat after the operator stops or the ball falls. The
-            # level loop auto-disables after 3 s — see
-            # _schedule_level_for_seconds().
+            # Stop ball-tracking. If a demo was actually running AND
+            # the operator had level loop on before the demo started,
+            # briefly re-engage the level loop so the platform settles
+            # flat after the demo ends. The level loop auto-disables
+            # after 3 s — see _schedule_level_for_seconds().
+            #
+            # If level was OFF before BALL_TRACK started, leave it
+            # off — respect the operator's pre-existing choice
+            # (e.g., they may want to manually inspect the platform
+            # pose). _start_ball_track_loop saves this state.
             was_running = self.ball_track_enabled
             if was_running:
                 self._stop_ball_track_loop()
                 self.get_logger().info(
                     "ball_track stopped (mode:LEVEL_HOLD)")
-                self._schedule_level_for_seconds(3.0)
+                if getattr(self,
+                           '_level_was_on_before_ball_track', False):
+                    self._schedule_level_for_seconds(3.0)
             return
         if mode in ('BALL_TRACK_GOTO', 'BALL_TRACK_TRAJECTORY',
                     'BALL_TRACK_PATH'):
@@ -4059,33 +4066,37 @@ class StewartControlNode(Node):
     def _start_ball_track_loop(self):
         """Start the ball-tracking PID thread.
 
-        IMU is the ground truth for platform tilt. The BALL_TRACK PID
-        writes a desired tilt setpoint into self.current_rpy; the
-        level PI loop reads that setpoint (via its existing
-        target_r = level_ref + current_rpy[0] formula) and uses IMU
-        feedback to actually achieve it. Without the level loop in
-        the inner position, BALL_TRACK is open-loop on tilt — it
-        commands +2° pitch, the platform achieves something near
-        +2° but with bias from plant asymmetry / IK approx / gravity
-        sag, and the ball drifts into one corner where commanded =
-        actual minus that bias. So we keep the level loop running.
+        Architecture (revised 2026-05-01 per operator request after
+        STEP_ID session step_id_20260501T191841Z):
 
-        Auto-enables the level loop if it isn't already running. If
-        the operator never enabled level (e.g., never captured a
-        level reference), we log and run BALL_TRACK open-loop —
-        better than refusing to start, but tracking will be biased.
+        BALL_TRACK now commands tilts directly via _do_set_pose,
+        bypassing the level-PI inner loop. Previously the design was
+        cascade — outer ball loop wrote current_rpy, level loop
+        tracked it via IMU. The level loop's inner-loop response on
+        this hardware turns out to be ~500 ms for a 3° step (caps
+        the achievable outer-loop bandwidth at ωn ≤ 1 rad/s; the
+        previous STEP_ID session's recommended ωn=0.76 was
+        consistent with this constraint, but produced gains that
+        couldn't track the closed-loop demos).
+
+        Disabling level here means commanded tilt = IK output
+        directly. Plant biases (asymmetric leg backlash, gravity
+        sag, IK approximations) do show up as ball-position bias,
+        but the outer loop's I term integrates them out. The
+        bandwidth gain (no inner-loop transient) outweighs the
+        bias risk for closed-loop demos.
+
+        Saves the level-on/off state at start so the LEVEL_HOLD
+        handler can restore it on stop — operator's pre-existing
+        choice to have level on / off is respected.
         """
-        if not self.level_enabled:
-            ok, msg = self._do_enable_level(True)
-            if not ok:
-                self.get_logger().warn(
-                    f"BALL_TRACK: level loop unavailable "
-                    f"({msg}) — running open-loop on tilt; "
-                    f"static bias likely")
-        else:
+        # Save level state for restoration on stop.
+        self._level_was_on_before_ball_track = bool(self.level_enabled)
+        if self.level_enabled:
             self.get_logger().info(
-                "BALL_TRACK: level loop already running, "
-                "using as inner tilt loop")
+                "BALL_TRACK: stopping level loop — outer loop will "
+                "command tilts directly via IK (faster response).")
+            self._stop_level_loop()
         self._stop_ball_track_loop()
         self.ball_track_corr = [0.0, 0.0]
         self.ball_track_stop.clear()
