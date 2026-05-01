@@ -38,3 +38,10 @@ tuning_data/*_demo_run/*.mcap
 tuning_data/*_demo_run/metadata.yaml
 tuning_data/*_demo_untagged/*.mcap
 tuning_data/*_demo_untagged/metadata.yaml
+
+# YOLO V1 training intermediates: extracted frames (JPEG dumps from
+# vision-debug bags) get uploaded to Roboflow for labeling. The
+# labeled output is committed under training_data/v1_yolov6/, which
+# IS what trained models are reproducible from. Raw JPEGs are
+# transient and don't belong in git.
+training_data/v1/
