@@ -64,7 +64,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_services_default
 
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int32MultiArray, String
 from std_srvs.srv import Trigger
 
 # SetPose lives in jugglebot_interfaces; we use it to reset platform Z
@@ -206,6 +206,129 @@ REEVAL_WEIGHT_NEW       = 0.6    # new sample gets 60% weight, old 40%
 # Set to a higher number on hardware that hasn't been pre-tested.
 SIGN_FLIP_LOCK_AFTER_REJECTS = 2
 
+# ----- STEP_ID mode configuration -------------------------------------------
+#
+# STEP_ID is an alternative tuning mode that replaces random-target Twiddle
+# with a deterministic protocol designed to compute controller gains
+# analytically rather than search for them. See:
+#   stewart_bringup/docs/auto_tuning_plan.md  (original Twiddle plan)
+# Rationale for this alternative path: the random-target picker generated
+# trial-to-trial fitness noise (~50 mm RMS) larger than the gain effect
+# Twiddle was trying to detect, so the search couldn't separate signal from
+# luck (typical session: 27 trials, 0 acceptances). STEP_ID instead:
+#   1. characterizes the cascaded plant with one open-loop tilt step
+#      (ball trajectory ≈ ½·G_eff·sin(θ)·t²; fit the parabola → G_eff)
+#   2. computes Kp = ωn²/G_eff, Kd = 2·ζ·ωn/G_eff analytically
+#   3. verifies with 4 closed-loop goto trials between known marker
+#      positions (deterministic start/target → directly comparable bags
+#      across sessions)
+
+# Open-loop tilt-step parameters. Conservative defaults: 1.0° tilt for
+# 0.5 s gives ~30 mm of ball travel, well within marker-to-rim margin.
+STEP_ID_OPEN_LOOP_TILT_DEG    = 1.0
+STEP_ID_OPEN_LOOP_DURATION_S  = 0.5
+STEP_ID_OPEN_LOOP_RAMP_S      = 0.15   # ramp-in/ramp-out so the
+                                       # platform doesn't overshoot
+                                       # the commanded tilt
+STEP_ID_PRE_TILT_LEVEL_S      = 1.0    # hold flat for this long before
+                                       # tilting, so the parabola fit
+                                       # has a clean t=0 baseline
+STEP_ID_POST_TILT_LEVEL_S     = 1.0    # hold flat after tilting so the
+                                       # ball decelerates within the bag
+
+# Closed-loop verification parameters
+STEP_ID_GOTO_TIMEOUT_S        = 25.0   # per-trial goto timeout
+STEP_ID_TARGET_OCCLUSION_S    = 1.0    # target marker continuously
+                                       # occluded for this long → settled
+STEP_ID_INTER_TRIAL_DWELL_S   = 3.0    # dwell after operator confirms
+                                       # ball on next-start marker
+STEP_ID_OPERATOR_PROMPT_S     = 300.0  # max wait for operator to place
+                                       # ball on the expected marker
+                                       # (5 min). Session ends gracefully
+                                       # if exceeded.
+
+# Cross-sensor gating: the ball is "on marker M" iff
+#   (a) marker M is missing from /platform_pose/marker_ids for ≥ this
+#       long continuously, AND
+#   (b) the ball state position is within this many mm of marker M's
+#       center (independent confirmation from the KF).
+STEP_ID_OCCLUSION_DWELL_S     = 0.5
+STEP_ID_BALL_ON_MARKER_TOL_MM = 30.0
+
+# Analytic gain calculation
+STEP_ID_TARGET_ZETA           = 0.7    # damping ratio (mild overshoot)
+STEP_ID_FALLBACK_OMEGA_N      = 3.0    # rad/s, used when Td_observed
+                                       # can't be measured (e.g., ball
+                                       # didn't move enough)
+STEP_ID_OMEGA_N_CAP           = 5.0    # rad/s, hard ceiling regardless
+                                       # of dead-time
+
+# Initial-acceleration window in the closed-loop step response. We fit
+# G_eff from the first this-many ms after the goto command, before the
+# Kd term takes over (controller's reaction lags the position response
+# by Kd's pole, so the leading edge is ≈ open-loop ẍ = G·θ_cmd).
+STEP_ID_INIT_ACCEL_WINDOW_S   = 0.20
+
+# Marker-pair sequence offsets (relative to the operator-chosen start
+# marker N). All ≤ +2 so straight-line ball paths stay ≥ 85 mm from
+# the platform centre — never over the bolt.
+STEP_ID_MARKER_OFFSETS = [
+    (+0, +1),   # adjacent, ~92 mm — clean step-response (no saturation)
+    (+1, +3),   # two-apart, ~170 mm — bandwidth check (mild saturation)
+    (+3, +4),   # adjacent, ~92 mm — repeat clean read on different axis
+    (+4, +6),   # two-apart, ~170 mm — repeat bandwidth check
+]
+
+STEP_ID_BAG_TOPICS = [
+    '/ball_state',
+    '/ball_ref',
+    '/ball_xy_mono',
+    '/platform_pose',
+    '/platform_pose/marker_ids',
+    '/platform_pose/markers_visible',
+    '/platform_rpy',
+    '/platform/imu/data',
+    '/control_cmd',
+    '/control_result',
+    '/auto_tune/status',
+    '/auto_tune/trial',
+    '/oak/ball/v0/yolo_pixel',
+    '/oak/ball/v0/cv2_pixel',
+    '/leg_encoders',     # kept: stuck-leg detection during open-loop tilt
+    '/leg_currents',     # kept: same
+    '/status',
+]
+
+
+def _load_marker_layout() -> list[tuple[int, float, float]]:
+    """Read marker_layout.yaml from the stewart_vision package share dir.
+    Returns list of (id, x_mm, y_mm) sorted by id. Falls back to the
+    source-tree copy if the share dir is missing (dev mode)."""
+    candidates = []
+    try:
+        from ament_index_python.packages import (
+            get_package_share_directory)
+        candidates.append(os.path.join(
+            get_package_share_directory('stewart_vision'),
+            'config', 'marker_layout.yaml'))
+    except Exception:
+        pass
+    candidates.append(os.path.expanduser(
+        '~/stable_bot_repo/stewart_vision/config/marker_layout.yaml'))
+    for path in candidates:
+        if os.path.isfile(path):
+            with open(path) as f:
+                d = yaml.safe_load(f)
+            out = []
+            for m in d.get('markers', []):
+                out.append((int(m['id']),
+                            float(m['x_mm']),
+                            float(m['y_mm'])))
+            out.sort(key=lambda r: r[0])
+            return out
+    return []
+
+
 # Fitness weights (sum should equal 1.0).
 # Operator priority (2026-04-30): "as close to target for as long as
 # possible." f_hold (continuous closeness × time, see CLOSENESS_SCALE_MM)
@@ -301,6 +424,18 @@ class AutoTuneNode(Node):
             PoseStamped, '/ball_state', self._on_ball_state, 10)
         self.create_subscription(
             String, '/control_result', self._on_control_result, 50)
+        # STEP_ID needs the per-frame list of detected marker IDs to
+        # decide which marker the ball is occluding. Latest-only state.
+        self._marker_ids: list[int] = []
+        self._marker_ids_t: float = 0.0
+        self.create_subscription(
+            Int32MultiArray, '/platform_pose/marker_ids',
+            self._on_marker_ids, 10)
+        # STEP_ID session state. None when not running.
+        self._step_id_running = False
+        self._step_id_thread = None
+        self._step_id_operator_confirmed = False
+        self._step_id_marker_layout = _load_marker_layout()
         self.pub_cmd = self.create_publisher(String, '/control_cmd', 10)
         # Latched-style status: rosbridge clients pick up the latest
         # snapshot on connect (we'll re-publish it every status update).
@@ -311,6 +446,21 @@ class AutoTuneNode(Node):
             Trigger, '/auto_tune/start', self._srv_start)
         self.create_service(
             Trigger, '/auto_tune/stop', self._srv_stop)
+        # STEP_ID — analytic-gains alternative to Twiddle. Shares the
+        # /auto_tune/stop service (same kill behaviour). Status events
+        # land on /auto_tune/status (state field includes 'step_id_*'
+        # values) so the GUI gets one unified view of "what's the
+        # tuner doing right now."
+        self.create_service(
+            Trigger, '/step_id/start', self._srv_step_id_start)
+        # Operator handshake for the hard-pause inter-trial gate
+        # (see STEP_ID_OPERATOR_PROMPT_S in the constants block).
+        # When the session is waiting for the ball to be placed on
+        # marker N, the GUI shows "place ball on marker N" + a Confirm
+        # button; that button calls this service.
+        self.create_service(
+            Trigger, '/step_id/operator_confirm',
+            self._srv_step_id_operator_confirm)
         # Walks tuning_data/auto_tune_*/summary.json, picks the
         # session with the highest best_fitness, applies its gains.
         # Useful after a rough session: "go back to whatever worked
@@ -400,7 +550,7 @@ class AutoTuneNode(Node):
             self._publish_status()
 
     def _srv_stop(self, req, res):
-        if not self._running:
+        if not self._running and not self._step_id_running:
             res.success = False
             res.message = 'auto_tune not running'
             return res
@@ -1083,6 +1233,805 @@ class AutoTuneNode(Node):
             self.get_logger().info('auto_tune bag closed')
         except Exception as e:
             self.get_logger().warn(f'bag stop: {e!r}')
+
+    # ----- STEP_ID mode ----------------------------------------------------
+    #
+    # Analytic-gains tuning, alternative to Twiddle. See the constants
+    # block at the top of this file for design rationale. Flow:
+    #
+    #   1. operator places ball on any marker, presses Start
+    #   2. STEP_ID detects which marker is being occluded → start_marker
+    #   3. open-loop tilt-step trial: command 1° tilt for 0.5 s,
+    #      record ball trajectory, fit parabola → G_eff (cascaded plant
+    #      gain in mm/s² per degree of commanded tilt)
+    #   4. compute Kp = ωn²/G_eff, Kd = 2ζωn/G_eff with ωn adaptively
+    #      chosen based on observed dead-time, ζ = 0.7
+    #   5. closed-loop verification: 4 marker-pair goto trials in a
+    #      walk-around-the-ring sequence (offsets +1, +2, +1, +2), with
+    #      hard inter-trial pauses prompting the operator to place the
+    #      ball on the expected start marker if it didn't end up there
+    #
+    # All trials recorded into one mcap. digest_step_id_bag.py post-
+    # processes for plots and refines G_eff from the closed-loop initial-
+    # acceleration windows. Recommended gains never auto-applied; operator
+    # promotes via GUI button (separate from this node).
+
+    def _on_marker_ids(self, msg: Int32MultiArray) -> None:
+        self._marker_ids = list(msg.data)
+        self._marker_ids_t = time.monotonic()
+
+    def _srv_step_id_start(self, req, res):
+        if self._running or self._step_id_running:
+            res.success = False
+            res.message = 'auto_tune already running'
+            return res
+        if not self._step_id_marker_layout:
+            res.success = False
+            res.message = 'marker_layout.yaml not loaded — STEP_ID needs it'
+            return res
+        self._abort = False
+        self._step_id_operator_confirmed = False
+        import threading
+        self._step_id_thread = threading.Thread(
+            target=self._run_step_id_session, daemon=True)
+        self._step_id_thread.start()
+        res.success = True
+        res.message = 'step_id started'
+        return res
+
+    def _srv_step_id_operator_confirm(self, req, res):
+        """Operator clicked the Confirm button after placing the ball
+        on the prompted marker. The session loop polls this flag."""
+        self._step_id_operator_confirmed = True
+        res.success = True
+        res.message = 'operator confirmation noted'
+        return res
+
+    def _marker_xy(self, marker_id: int) -> Optional[tuple[float, float]]:
+        for mid, x, y in self._step_id_marker_layout:
+            if mid == marker_id:
+                return (x, y)
+        return None
+
+    def _detect_starting_marker(self, timeout_s: float = 60.0
+                                ) -> Optional[int]:
+        """Wait until exactly one marker ID is consistently missing
+        from /platform_pose/marker_ids for STEP_ID_OCCLUSION_DWELL_S
+        AND the ball state position is within
+        STEP_ID_BALL_ON_MARKER_TOL_MM of that marker's centre.
+        Returns the marker ID, or None on timeout / abort.
+
+        Cross-sensor confirmation: the missing-ID test alone could be
+        fooled by a transient occlusion (operator's hand, glare); the
+        ball-position test alone could be fooled by KF drift while
+        actually off-platform. Requiring both protects against either."""
+        all_ids = {mid for mid, _, _ in self._step_id_marker_layout}
+        t_start = time.monotonic()
+        candidate: Optional[int] = None
+        candidate_since: Optional[float] = None
+        while not self._abort:
+            if time.monotonic() - t_start > timeout_s:
+                return None
+            now = time.monotonic()
+            visible = set(self._marker_ids) & all_ids
+            missing = all_ids - visible
+            # Need exactly one missing ID — if 0, the ball isn't
+            # blocking anything (or operator hasn't placed it yet);
+            # if >1, the camera is partially blocked or the ball is
+            # straddling two markers (unusual).
+            if len(missing) == 1:
+                m = next(iter(missing))
+                # Ball-position cross-check.
+                ball = self._latest_ball_xy()
+                marker_xy = self._marker_xy(m)
+                if ball is not None and marker_xy is not None:
+                    dist = math.hypot(ball[0] - marker_xy[0],
+                                      ball[1] - marker_xy[1])
+                    if dist <= STEP_ID_BALL_ON_MARKER_TOL_MM:
+                        if candidate != m:
+                            candidate = m
+                            candidate_since = now
+                        elif (now - (candidate_since or now)
+                              >= STEP_ID_OCCLUSION_DWELL_S):
+                            return m
+                    else:
+                        candidate = None
+                        candidate_since = None
+                else:
+                    candidate = None
+                    candidate_since = None
+            else:
+                candidate = None
+                candidate_since = None
+            time.sleep(0.05)
+        return None
+
+    def _wait_for_ball_on_marker(self, expected_marker: int,
+                                 timeout_s: float
+                                 = STEP_ID_OPERATOR_PROMPT_S) -> bool:
+        """Hard pause: wait until the ball is on the expected marker,
+        either because it organically ended up there or because the
+        operator manually placed it and clicked Confirm. Either signal
+        ends the wait. Returns True on success, False on timeout/abort.
+        """
+        marker_xy = self._marker_xy(expected_marker)
+        if marker_xy is None:
+            return False
+        all_ids = {mid for mid, _, _ in self._step_id_marker_layout}
+        t_start = time.monotonic()
+        self._step_id_operator_confirmed = False
+        # Tell the GUI / log we're waiting.
+        self._status['state'] = 'step_id_waiting_for_ball'
+        self._status['waiting_for_marker'] = int(expected_marker)
+        self._status['prompt'] = (
+            f'Place ball on marker {expected_marker}, then click Confirm '
+            f'(or wait for it to settle there organically).')
+        self._publish_status()
+        candidate_since: Optional[float] = None
+        while not self._abort:
+            if time.monotonic() - t_start > timeout_s:
+                self._status['prompt'] = (
+                    f'Timeout: ball never reached marker {expected_marker}.')
+                self._publish_status()
+                return False
+            # Path A: operator clicked Confirm.
+            if self._step_id_operator_confirmed:
+                # Verify the cross-sensor gate before accepting:
+                # operator could click Confirm while the ball is still
+                # rolling, which would poison the trial.
+                if self._is_ball_on_marker(expected_marker):
+                    return True
+                # Else keep waiting; operator pressed early.
+                self._step_id_operator_confirmed = False
+                self._status['prompt'] = (
+                    f'Confirm pressed but ball not yet on marker '
+                    f'{expected_marker} — re-place and try again.')
+                self._publish_status()
+            # Path B: organic arrival. Same cross-sensor gate as
+            # _detect_starting_marker but for a specific expected ID.
+            if self._is_ball_on_marker(expected_marker):
+                now = time.monotonic()
+                if candidate_since is None:
+                    candidate_since = now
+                elif (now - candidate_since
+                      >= STEP_ID_OCCLUSION_DWELL_S):
+                    return True
+            else:
+                candidate_since = None
+            time.sleep(0.05)
+        return False
+
+    def _is_ball_on_marker(self, marker_id: int) -> bool:
+        """Snapshot test: is the ball on the given marker right now?
+        Both the occlusion AND ball-position checks must pass. Used by
+        _wait_for_ball_on_marker and the closed-loop settle gate."""
+        all_ids = {mid for mid, _, _ in self._step_id_marker_layout}
+        visible = set(self._marker_ids) & all_ids
+        if marker_id not in (all_ids - visible):
+            return False
+        ball = self._latest_ball_xy()
+        marker_xy = self._marker_xy(marker_id)
+        if ball is None or marker_xy is None:
+            return False
+        d = math.hypot(ball[0] - marker_xy[0], ball[1] - marker_xy[1])
+        return d <= STEP_ID_BALL_ON_MARKER_TOL_MM
+
+    def _safe_open_loop_direction(self, marker_id: int
+                                  ) -> tuple[float, float]:
+        """Choose a (roll_deg, pitch_deg) command that drives the ball
+        from the start marker toward the platform centre.
+
+        Sign math (from controls_journey.md):
+          +pitch  → +X edge moves DOWN → ball slides toward +X
+          +roll   → +Y edge moves UP   → ball slides toward −Y
+
+        So to move the ball toward (0, 0) from (x0, y0): need negative
+        velocity in both x and y. Pick the dominant component:
+          if |x0| > |y0|: command -sign(x0)·pitch (x-direction)
+          else:           command +sign(y0)·roll (y-direction;
+                                                  +roll → −y motion)
+        """
+        xy = self._marker_xy(marker_id)
+        if xy is None:
+            return (0.0, 0.0)
+        x, y = xy
+        mag = STEP_ID_OPEN_LOOP_TILT_DEG
+        if abs(x) >= abs(y):
+            # Use pitch. +pitch drives ball toward +X; we want toward 0,
+            # so pitch sign = -sign(x).
+            pitch = -math.copysign(mag, x) if x != 0 else mag
+            return (0.0, pitch)
+        else:
+            # Use roll. +roll drives ball toward -Y; we want toward 0,
+            # so roll sign = +sign(y).
+            roll = math.copysign(mag, y) if y != 0 else mag
+            return (roll, 0.0)
+
+    def _run_step_id_session(self) -> None:
+        """STEP_ID main thread. Phases:
+          1. detect starting marker
+          2. open-loop tilt-step → G_eff
+          3. compute recommended gains (printed, NOT auto-applied)
+          4. closed-loop 4-trial marker-pair sequence with current gains
+          5. write summary; operator can promote recommended gains via
+             GUI after reviewing the digest
+        """
+        self._step_id_running = True
+        bag_proc = None
+        log_dir = ''
+        try:
+            log_dir = os.path.expanduser(
+                f'~/stable_bot_repo/tuning_data/step_id_{_now_utc_compact()}')
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, 'log.jsonl')
+            summary_path = os.path.join(log_dir, 'summary.json')
+            bag_dir = os.path.join(log_dir, 'bag')
+            self.get_logger().info(f'step_id log → {log_dir}')
+            bag_proc = self._start_step_id_bag(bag_dir)
+
+            current_gains = _load_gains_yaml()
+            session = {
+                'started_at': time.strftime(
+                    '%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                'log_dir': log_dir,
+                'current_gains': {
+                    k: float(v) for k, v in current_gains.items()
+                    if isinstance(v, (int, float))},
+                'phases': {},
+            }
+            self._status.update({
+                'state': 'step_id_starting',
+                'log_dir': log_dir,
+                'started_at': session['started_at'],
+                'prompt': 'Place ball on any marker.',
+            })
+            self._publish_status()
+
+            # --- Phase 1: detect starting marker -------------------------
+            self.get_logger().info(
+                'step_id phase 1: detecting starting marker '
+                '(place ball on any marker)')
+            self._status['state'] = 'step_id_detecting_marker'
+            self._publish_status()
+            start_marker = self._detect_starting_marker(timeout_s=300.0)
+            if start_marker is None:
+                self._fail_step_id(
+                    log_dir, summary_path, session,
+                    'no starting marker detected within 5 min')
+                return
+            self.get_logger().info(
+                f'step_id: ball detected on marker {start_marker}')
+            session['start_marker'] = int(start_marker)
+
+            # --- Phase 2: open-loop characterization ---------------------
+            self._status.update({
+                'state': 'step_id_open_loop',
+                'prompt': (f'Characterizing plant — tilting platform '
+                           f'1° from marker {start_marker}.'),
+            })
+            self._publish_status()
+            roll_cmd, pitch_cmd = self._safe_open_loop_direction(
+                start_marker)
+            self.get_logger().info(
+                f'step_id phase 2: open-loop tilt step '
+                f'(roll={roll_cmd:+.1f}°, pitch={pitch_cmd:+.1f}°) '
+                f'from marker {start_marker}')
+            ol_trial = self._run_open_loop_trial(
+                start_marker, roll_cmd, pitch_cmd, log_path)
+            session['phases']['open_loop'] = ol_trial
+
+            if ol_trial.get('aborted'):
+                self._fail_step_id(
+                    log_dir, summary_path, session,
+                    f'open-loop trial failed: {ol_trial.get("abort_reason")}')
+                return
+
+            # --- Phase 3: compute recommended gains ----------------------
+            g_eff = ol_trial.get('g_eff_mm_s2_per_deg', 0.0)
+            recommended = self._compute_recommended_gains(
+                g_eff_mm_s2_per_deg=g_eff,
+                td_observed_s=ol_trial.get('td_observed_s', 0.15),
+                current_gains=current_gains)
+            session['phases']['recommendation'] = recommended
+            self.get_logger().info(
+                f'step_id phase 3: recommended gains '
+                f'(based on G_eff={g_eff:.1f} mm/s²/°): '
+                f'kp={recommended["kp"]:.4f} '
+                f'kd={recommended["kd"]:.4f}')
+            self._status.update({
+                'state': 'step_id_recommendation_ready',
+                'g_eff_mm_s2_per_deg': float(g_eff),
+                'recommended_gains': recommended,
+                'prompt': (
+                    f'Recommended: kp={recommended["kp"]:.4f}, '
+                    f'kd={recommended["kd"]:.4f} '
+                    f'(current: kp={current_gains.get("kp"):.4f}, '
+                    f'kd={current_gains.get("kd"):.4f}). '
+                    f'Verification trials starting with CURRENT gains.'),
+            })
+            self._publish_status()
+            # Save partial summary now in case verification aborts.
+            self._write_step_id_summary(summary_path, session)
+
+            # --- Phase 4: closed-loop verification -----------------------
+            self._status['state'] = 'step_id_verification'
+            self._publish_status()
+            verification_trials = []
+            current_marker = start_marker
+            for i, (off_start, off_target) in enumerate(
+                    STEP_ID_MARKER_OFFSETS):
+                # Adjust offsets so the first start matches the operator-
+                # detected start marker (the table's first off_start is 0,
+                # so this is a no-op for trial 0 and a delta for the rest).
+                expected_start = (start_marker + off_start) % 8
+                target = (start_marker + off_target) % 8
+                self.get_logger().info(
+                    f'step_id phase 4 trial {i+1}/4: '
+                    f'marker {expected_start} → marker {target}')
+                self._status.update({
+                    'state': f'step_id_verification_trial_{i+1}',
+                    'verification_trial_idx': i + 1,
+                    'verification_trial_count': len(STEP_ID_MARKER_OFFSETS),
+                    'expected_start_marker': int(expected_start),
+                    'target_marker': int(target),
+                    'prompt': (
+                        f'Trial {i+1}/4: place ball on marker '
+                        f'{expected_start}; goto marker {target}.'),
+                })
+                self._publish_status()
+                # Hard pause for ball on the expected start marker. Skip
+                # the wait if it's already there (organic arrival from
+                # the previous trial).
+                if not self._is_ball_on_marker(expected_start):
+                    if not self._wait_for_ball_on_marker(expected_start):
+                        self.get_logger().warn(
+                            f'  ball never on marker {expected_start} — '
+                            f'aborting verification phase')
+                        break
+                self._sleep_with_abort(STEP_ID_INTER_TRIAL_DWELL_S)
+                if self._abort:
+                    break
+                trial_data = self._run_closed_loop_marker_trial(
+                    expected_start, target, i + 1, log_path)
+                verification_trials.append(trial_data)
+                current_marker = target
+            session['phases']['verification'] = verification_trials
+
+            self._status.update({
+                'state': 'step_id_done',
+                'prompt': (
+                    f'Done. Recommended kp={recommended["kp"]:.4f}, '
+                    f'kd={recommended["kd"]:.4f}. '
+                    f'Press Promote to apply.'),
+            })
+            self._publish_status()
+            self._write_step_id_summary(summary_path, session)
+            self.get_logger().info(
+                f'step_id session complete. summary → {summary_path}')
+        except Exception as e:
+            self.get_logger().error(f'step_id crashed: {e!r}')
+            self._status['state'] = 'step_id_crashed'
+            self._status['prompt'] = f'crashed: {e!r}'
+            self._publish_status()
+        finally:
+            try:
+                self._publish_mode('LEVEL_HOLD')
+                self._reset_pose_to_nominal(blocking=False)
+            except Exception:
+                pass
+            if bag_proc is not None:
+                self._stop_bag(bag_proc)
+            self._step_id_running = False
+
+    def _fail_step_id(self, log_dir, summary_path, session, reason):
+        self.get_logger().error(f'step_id failed: {reason}')
+        session['failure'] = reason
+        self._write_step_id_summary(summary_path, session)
+        self._status['state'] = 'step_id_failed'
+        self._status['prompt'] = reason
+        self._publish_status()
+
+    def _write_step_id_summary(self, path, session):
+        with open(path, 'w') as f:
+            json.dump(session, f, indent=2)
+
+    def _start_step_id_bag(self, out_dir):
+        """Same shape as _start_bag but with the STEP_ID-specific topic
+        list (fewer twiddle-only fields, plus marker_ids).
+        """
+        try:
+            os.makedirs(os.path.dirname(out_dir), exist_ok=True)
+            cmd = (
+                'source /opt/ros/kilted/setup.bash && '
+                'source /home/sorak/ros2_ws/install/local_setup.bash && '
+                f'exec ros2 bag record -s mcap -o {out_dir} '
+                + ' '.join(STEP_ID_BAG_TOPICS)
+            )
+            proc = subprocess.Popen(
+                ['/bin/bash', '-c', cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid)
+            self.get_logger().info(f'step_id bag → {out_dir}')
+            time.sleep(0.3)
+            return proc
+        except Exception as e:
+            self.get_logger().warn(
+                f'failed to spawn step_id bag recorder: {e!r}')
+            return None
+
+    # ----- Open-loop tilt-step trial ---------------------------------------
+
+    def _run_open_loop_trial(self, start_marker: int,
+                             roll_deg: float, pitch_deg: float,
+                             log_path: str) -> dict:
+        """Open-loop characterization: drop to LEVEL_HOLD, command the
+        platform to tilt to (roll_deg, pitch_deg) for STEP_ID_OPEN_LOOP_
+        DURATION_S, then return to flat. Record ball trajectory.
+        Fits the constant-tilt window with a parabola → G_eff.
+
+        Returns dict suitable for embedding in the session JSON. Carries
+        time series 't', 'x', 'y' so the digest can re-fit if needed.
+        """
+        out: dict = {
+            'start_marker': int(start_marker),
+            'roll_deg': float(roll_deg),
+            'pitch_deg': float(pitch_deg),
+            'duration_s': float(STEP_ID_OPEN_LOOP_DURATION_S),
+            'aborted': False,
+        }
+        if self._set_pose_cli is None:
+            out['aborted'] = True
+            out['abort_reason'] = (
+                'jugglebot_interfaces.SetPose unavailable — open-loop '
+                'tilt cannot be commanded')
+            return out
+        # Make sure BALL_TRACK is off — we don't want closed-loop control
+        # fighting the open-loop tilt.
+        self._publish_mode('LEVEL_HOLD')
+        self._sleep_with_abort(0.3)
+        self._reset_pose_to_nominal(blocking=True)
+        self._sleep_with_abort(STEP_ID_PRE_TILT_LEVEL_S)
+        if self._abort:
+            out['aborted'] = True
+            out['abort_reason'] = 'aborted before tilt'
+            return out
+
+        ball0 = self._latest_ball_xy()
+        if ball0 is None:
+            out['aborted'] = True
+            out['abort_reason'] = 'no ball state at trial start'
+            return out
+        out['ball_start_xy'] = list(ball0)
+
+        samples: list[dict] = []
+        # Send tilt command. The control node's level-PI loop tracks
+        # current_rpy → IMU; we just tell it what to track. Non-blocking
+        # so we can sample during the trajectory.
+        if self._set_pose_cli is not None:
+            req = SetPose.Request()
+            req.x = 0.0
+            req.y = 0.0
+            req.z = float(NOMINAL_Z_MM)
+            req.roll = float(roll_deg)
+            req.pitch = float(pitch_deg)
+            req.yaw = 0.0
+            req.blocking = False
+            try:
+                self._set_pose_cli.call_async(req)
+            except Exception as e:
+                out['aborted'] = True
+                out['abort_reason'] = f'set_pose call failed: {e!r}'
+                return out
+        t0 = time.monotonic()
+        cmd_active_until = t0 + STEP_ID_OPEN_LOOP_DURATION_S
+        while not self._abort:
+            now = time.monotonic()
+            if now >= cmd_active_until:
+                break
+            if self._ball_state is not None:
+                p = self._ball_state.pose.position
+                samples.append({'t': now - t0,
+                                'x': float(p.x), 'y': float(p.y),
+                                'phase': 'tilt'})
+            time.sleep(0.01)
+
+        # Return to flat and record decel phase.
+        if self._set_pose_cli is not None:
+            req = SetPose.Request()
+            req.x = 0.0
+            req.y = 0.0
+            req.z = float(NOMINAL_Z_MM)
+            req.roll = 0.0
+            req.pitch = 0.0
+            req.yaw = 0.0
+            req.blocking = False
+            try:
+                self._set_pose_cli.call_async(req)
+            except Exception:
+                pass
+        decel_until = time.monotonic() + STEP_ID_POST_TILT_LEVEL_S
+        while not self._abort and time.monotonic() < decel_until:
+            now = time.monotonic()
+            if self._ball_state is not None:
+                p = self._ball_state.pose.position
+                samples.append({'t': now - t0,
+                                'x': float(p.x), 'y': float(p.y),
+                                'phase': 'flat'})
+            time.sleep(0.01)
+        out['samples'] = samples
+
+        # Fit parabola to the constant-tilt window. Skip the first
+        # STEP_ID_OPEN_LOOP_RAMP_S so the level-PI loop has time to
+        # actually reach the commanded tilt; skip the last 0.05 s so
+        # we're well inside the constant-tilt window.
+        g_eff, td, fit_meta = self._fit_open_loop(
+            samples, roll_deg, pitch_deg)
+        out['g_eff_mm_s2_per_deg'] = float(g_eff)
+        out['td_observed_s'] = float(td)
+        out['fit'] = fit_meta
+
+        # Log the trial event so the GUI's history panel sees it.
+        msg = String()
+        msg.data = json.dumps({
+            'phase': 'open_loop',
+            'start_marker': int(start_marker),
+            'roll_deg': float(roll_deg),
+            'pitch_deg': float(pitch_deg),
+            'g_eff_mm_s2_per_deg': float(g_eff),
+            'td_observed_s': float(td),
+            'n_samples': len(samples),
+        })
+        self.pub_trial.publish(msg)
+        with open(log_path, 'a') as f:
+            f.write(json.dumps({
+                'trial': 0, 'algo': 'step_id_open_loop',
+                'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                **{k: v for k, v in out.items() if k != 'samples'},
+                'n_samples': len(samples),
+            }) + '\n')
+        return out
+
+    def _fit_open_loop(self, samples: list[dict], roll_deg: float,
+                       pitch_deg: float) -> tuple[float, float, dict]:
+        """Fit ball trajectory during the constant-tilt window with a
+        parabola: position(t) = x0 + v0·t + ½·a·t². The acceleration
+        magnitude divided by sin(commanded_tilt) gives the cascaded
+        plant gain G_eff in mm/s² per radian; convert to per-degree
+        for human-readable output.
+
+        Dead-time td is estimated as the time from tilt command (t=0)
+        to when |ball position| diverges from baseline by > 5 mm.
+
+        Returns (g_eff_mm_s2_per_deg, td_s, fit_meta_dict)."""
+        if len(samples) < 10:
+            return (0.0, 0.0, {'error': 'too few samples'})
+        # Direction of expected motion in (x, y). Per
+        # _safe_open_loop_direction:
+        #   +pitch  → ball moves +x  (controls_journey: Ry(p)·(1,0,0)
+        #             puts +X edge below 0 for p>0)
+        #   +roll   → ball moves -y  (Rx(r)·(0,1,0) puts +Y edge above 0
+        #             for r>0)
+        # Expected ball acceleration vector direction:
+        ax_dir = math.copysign(1.0, pitch_deg) if pitch_deg != 0 else 0.0
+        ay_dir = -math.copysign(1.0, roll_deg) if roll_deg != 0 else 0.0
+        # If both axes commanded simultaneously (we don't, but the math
+        # still works), normalise to a unit vector:
+        nrm = math.hypot(ax_dir, ay_dir) or 1.0
+        ax_dir /= nrm
+        ay_dir /= nrm
+        # Project ball position onto the expected motion direction so
+        # we fit a 1-D scalar trajectory.
+        ts = np.array([s['t'] for s in samples if s['phase'] == 'tilt'])
+        xs = np.array([s['x'] for s in samples if s['phase'] == 'tilt'])
+        ys = np.array([s['y'] for s in samples if s['phase'] == 'tilt'])
+        if len(ts) < 5:
+            return (0.0, 0.0, {'error': 'too few tilt-phase samples'})
+        # Baseline is the mean position before STEP_ID_OPEN_LOOP_RAMP_S
+        baseline_mask = ts < STEP_ID_OPEN_LOOP_RAMP_S
+        if baseline_mask.sum() < 2:
+            x0 = float(xs[0])
+            y0 = float(ys[0])
+        else:
+            x0 = float(np.mean(xs[baseline_mask]))
+            y0 = float(np.mean(ys[baseline_mask]))
+        # Project displacement onto motion direction.
+        d = (xs - x0) * ax_dir + (ys - y0) * ay_dir
+        # Dead-time: first sample where |d| > 5 mm.
+        td = 0.0
+        for ti, di in zip(ts, d):
+            if abs(di) > 5.0:
+                td = float(ti)
+                break
+        # Fit window: ramp_s end → end of tilt phase.
+        fit_mask = ts >= STEP_ID_OPEN_LOOP_RAMP_S
+        if fit_mask.sum() < 5:
+            return (0.0, td, {'error': 'too few fit-window samples'})
+        t_fit = ts[fit_mask]
+        d_fit = d[fit_mask]
+        # least-squares fit: d = c0 + c1·t + c2·t²
+        try:
+            coefs = np.polyfit(t_fit, d_fit, 2)
+        except Exception as e:
+            return (0.0, td, {'error': f'polyfit failed: {e!r}'})
+        a_fit = float(coefs[0]) * 2.0   # because d = ½·a·t² → a = 2·c2
+        # Commanded tilt magnitude (deg).
+        theta_deg = math.hypot(roll_deg, pitch_deg)
+        if theta_deg <= 1e-6:
+            return (0.0, td, {'error': 'zero commanded tilt'})
+        # G_eff in mm/s²/deg. The fit acceleration is along the
+        # expected-motion direction; sign should be positive (ball
+        # moved the way we expected). Negative a_fit → wrong sign,
+        # which would indicate inverted IK; we report the magnitude
+        # but flag it.
+        g_eff = abs(a_fit) / theta_deg
+        meta = {
+            'a_fit_mm_s2': float(a_fit),
+            'theta_deg': float(theta_deg),
+            'fit_window_s': [float(t_fit[0]), float(t_fit[-1])],
+            'n_fit_samples': int(fit_mask.sum()),
+            'baseline_xy': [x0, y0],
+            'expected_motion_unit': [ax_dir, ay_dir],
+            'sign_check_passed': bool(a_fit > 0),
+        }
+        return (g_eff, td, meta)
+
+    # ----- Closed-loop marker-pair trial -----------------------------------
+
+    def _run_closed_loop_marker_trial(self, start_marker: int,
+                                      target_marker: int,
+                                      trial_idx: int,
+                                      log_path: str) -> dict:
+        """Closed-loop goto trial: publish BALL_TRACK_GOTO with target
+        marker's centre as the goal. Settle when target marker is
+        continuously occluded for STEP_ID_TARGET_OCCLUSION_S AND ball
+        state agrees.
+
+        Returns dict for the session JSON. Time series 't', 'x', 'y',
+        plus 'commanded_at_t' (time the goto was published — t=0
+        baseline for the digest's initial-acceleration G_eff fit).
+        """
+        out: dict = {
+            'trial_idx': int(trial_idx),
+            'start_marker': int(start_marker),
+            'target_marker': int(target_marker),
+            'aborted': False,
+        }
+        target_xy = self._marker_xy(target_marker)
+        if target_xy is None:
+            out['aborted'] = True
+            out['abort_reason'] = f'unknown target marker {target_marker}'
+            return out
+        ball0 = self._latest_ball_xy()
+        if ball0 is None:
+            out['aborted'] = True
+            out['abort_reason'] = 'no ball state at trial start'
+            return out
+        out['ball_start_xy'] = list(ball0)
+        out['target_xy'] = list(target_xy)
+        # Fire the goto. Note: ref_generator handles the platform→IMU
+        # rotation, so we send the marker centre in platform frame and
+        # the existing pipeline takes care of the rest.
+        self._publish_mode('BALL_TRACK_GOTO',
+                           extra={'x_mm': target_xy[0],
+                                  'y_mm': target_xy[1]})
+        out['commanded_at'] = time.strftime(
+            '%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        t0 = time.monotonic()
+        samples: list[dict] = []
+        settled = False
+        settled_t: Optional[float] = None
+        target_occluded_since: Optional[float] = None
+        while not self._abort:
+            now = time.monotonic()
+            elapsed = now - t0
+            if elapsed > STEP_ID_GOTO_TIMEOUT_S:
+                break
+            if self._ball_state is not None:
+                p = self._ball_state.pose.position
+                samples.append({'t': elapsed,
+                                'x': float(p.x), 'y': float(p.y)})
+            # Cross-sensor settle gate: target marker occluded AND
+            # ball-position within tolerance.
+            if self._is_ball_on_marker(target_marker):
+                if target_occluded_since is None:
+                    target_occluded_since = now
+                elif (now - target_occluded_since
+                      >= STEP_ID_TARGET_OCCLUSION_S):
+                    settled = True
+                    settled_t = elapsed
+                    break
+            else:
+                target_occluded_since = None
+            time.sleep(0.02)
+        # Drop back to LEVEL_HOLD between trials so the platform doesn't
+        # keep tilting while the ball is being placed.
+        self._publish_mode('LEVEL_HOLD')
+        out['settled'] = bool(settled)
+        out['settled_at_s'] = (float(settled_t)
+                               if settled_t is not None else None)
+        out['duration_s'] = float(time.monotonic() - t0)
+        out['n_samples'] = len(samples)
+        out['samples'] = samples
+
+        # Log to the trial topic for the GUI history.
+        msg = String()
+        msg.data = json.dumps({
+            'phase': 'closed_loop_verification',
+            'trial_idx': trial_idx,
+            'start_marker': start_marker,
+            'target_marker': target_marker,
+            'settled': settled,
+            'settled_at_s': out['settled_at_s'],
+            'duration_s': out['duration_s'],
+        })
+        self.pub_trial.publish(msg)
+        with open(log_path, 'a') as f:
+            f.write(json.dumps({
+                'trial': trial_idx, 'algo': 'step_id_closed_loop',
+                'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                **{k: v for k, v in out.items() if k != 'samples'},
+            }) + '\n')
+        return out
+
+    # ----- Analytic gain calculation ---------------------------------------
+
+    def _compute_recommended_gains(self, g_eff_mm_s2_per_deg: float,
+                                   td_observed_s: float,
+                                   current_gains: dict) -> dict:
+        """Given the cascaded plant gain G_eff (mm/s² per degree of
+        commanded tilt) and the observed dead-time, compute Kp and Kd
+        that hit a target damping ratio ζ and an adaptive natural
+        frequency ωn = min(0.5/Td, 5 rad/s).
+
+        Closed-loop char eq with PD and plant ẍ = G·θ:
+            s² + G·Kd·s + G·Kp = 0
+        →  ωn² = G·Kp     → Kp = ωn² / G
+           2ζωn = G·Kd    → Kd = 2ζωn / G
+
+        Where G is in mm/s² per degree and Kp is in deg/mm, Kd in deg·s/mm.
+        """
+        if g_eff_mm_s2_per_deg <= 1.0:
+            # G_eff is unphysically small — fit failed or ball didn't
+            # move. Fall back to leaving gains alone with a warning.
+            return {
+                'kp': float(current_gains.get('kp', 0.015)),
+                'kd': float(current_gains.get('kd', 0.03)),
+                'ki': float(current_gains.get('ki', 0.001)),
+                'omega_n_rad_s': float(STEP_ID_FALLBACK_OMEGA_N),
+                'zeta': float(STEP_ID_TARGET_ZETA),
+                'g_eff_used': float(g_eff_mm_s2_per_deg),
+                'note': ('G_eff implausibly small; recommendation '
+                         'falls back to current gains'),
+                'valid': False,
+            }
+        # Adaptive ωn: min(0.5/Td, OMEGA_N_CAP). 0.5/Td is the rule of
+        # thumb that bandwidth shouldn't exceed half the inverse dead-
+        # time (else Bode-style phase margin collapses).
+        if td_observed_s > 0.05:
+            omega_n = min(0.5 / td_observed_s, STEP_ID_OMEGA_N_CAP)
+        else:
+            omega_n = STEP_ID_OMEGA_N_CAP
+        zeta = STEP_ID_TARGET_ZETA
+        kp = (omega_n ** 2) / g_eff_mm_s2_per_deg
+        kd = 2.0 * zeta * omega_n / g_eff_mm_s2_per_deg
+        # Keep the existing Ki — analytic PD doesn't compute it (Ki is
+        # for friction/stiction, not bandwidth shaping). Operator can
+        # tune it separately if needed.
+        ki = float(current_gains.get('ki', 0.001))
+        return {
+            'kp': float(kp),
+            'kd': float(kd),
+            'ki': ki,
+            'omega_n_rad_s': float(omega_n),
+            'zeta': float(zeta),
+            'g_eff_used': float(g_eff_mm_s2_per_deg),
+            'td_observed_s': float(td_observed_s),
+            'note': (
+                f'computed from G_eff={g_eff_mm_s2_per_deg:.1f} mm/s²/°, '
+                f'Td={td_observed_s:.3f}s, ωn={omega_n:.2f} rad/s, '
+                f'ζ={zeta:.2f}'),
+            'valid': True,
+        }
 
     # ----- Restore-best service --------------------------------------------
 
