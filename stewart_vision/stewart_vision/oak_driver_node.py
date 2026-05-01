@@ -72,6 +72,67 @@ MONO_W, MONO_H = 1280, 800
 # docs/oak_phase2b_on_device_v0.md.
 V0_W, V0_H = 640, 360
 
+# --- V1 (YOLOv8n) detector --------------------------------------------------
+#
+# 320×320 letterboxed input. Trained on 210 frames in Roboflow with 3
+# classes (aruco / ball / hand); we filter to ball at inference. Blob
+# is at stewart_vision/blobs/v1_yolov8n_320.blob.
+V1_W, V1_H = 320, 320
+V1_BLOB_NAME = 'v1_yolov8n_320.blob'
+V1_NUM_CLASSES = 3
+V1_BALL_CLASS_IDX = 1   # data.yaml: ['aruco', 'ball', 'hand']
+V1_NUM_ANCHORS = 2100   # 320/8² + 320/16² + 320/32² = 1600+400+100
+# Letterbox transform (RGB 540p → 320×320 with gray padding).
+# scale = min(NN_W/RGB_W, NN_H/RGB_H); for 320×320 ← 960×540 = 1/3.
+# After scale, the 540p image is 320×180 → padded with 70 px of gray
+# top and bottom to reach 320×320. Inverse maps NN-space cx/cy back
+# to RGB pixel coords for parity with the cv2 / V0 paths.
+V1_LETTERBOX_SCALE = min(V1_W / float(RGB_W), V1_H / float(RGB_H))
+V1_PAD_X = (V1_W - RGB_W * V1_LETTERBOX_SCALE) / 2.0
+V1_PAD_Y = (V1_H - RGB_H * V1_LETTERBOX_SCALE) / 2.0
+
+
+def yolo_v1_decode(out_flat, conf_threshold: float):
+    """Parse a YOLOv8n output buffer and return the highest-confidence
+    ball detection in 540p RGB pixel coords, or None.
+
+    Args:
+      out_flat: flat list/array of FP16 floats, length V1_NUM_CLASSES+4
+                channels × V1_NUM_ANCHORS = 7 × 2100 = 14 700 values.
+                Channel-major layout: index = ch * V1_NUM_ANCHORS + anchor.
+      conf_threshold: minimum ball-class score to publish (0–1).
+
+    Returns:
+      (cx_540, cy_540, w_540, h_540, conf) tuple, or None if no anchor's
+      ball score clears conf_threshold (or the detection lands inside
+      the gray padding region — those are spurious since the camera
+      can't see there).
+    """
+    import numpy as np  # local import, NN tick is hot path
+    arr = np.asarray(out_flat, dtype=np.float32)
+    if arr.size != (4 + V1_NUM_CLASSES) * V1_NUM_ANCHORS:
+        return None
+    arr = arr.reshape(4 + V1_NUM_CLASSES, V1_NUM_ANCHORS)
+    ball_scores = arr[4 + V1_BALL_CLASS_IDX, :]
+    best = int(np.argmax(ball_scores))
+    conf = float(ball_scores[best])
+    if conf < conf_threshold:
+        return None
+    cx_320 = float(arr[0, best])
+    cy_320 = float(arr[1, best])
+    w_320  = float(arr[2, best])
+    h_320  = float(arr[3, best])
+    # Inverse letterbox: subtract pad, divide by scale.
+    cx_540 = (cx_320 - V1_PAD_X) / V1_LETTERBOX_SCALE
+    cy_540 = (cy_320 - V1_PAD_Y) / V1_LETTERBOX_SCALE
+    w_540  = w_320 / V1_LETTERBOX_SCALE
+    h_540  = h_320 / V1_LETTERBOX_SCALE
+    # Reject detections that landed in the gray padding (camera can't
+    # see there). NN-space y range for real frame is [PAD_Y, NN_H-PAD_Y].
+    if cy_320 < V1_PAD_Y or cy_320 > (V1_H - V1_PAD_Y):
+        return None
+    return (cx_540, cy_540, w_540, h_540, conf)
+
 
 # --- V0 color-threshold detector ---------------------------------------------
 
@@ -517,7 +578,8 @@ def _load_rgb_intrinsics(yaml_path: str) -> Tuple[Optional[np.ndarray],
 
 def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
                     enable_depth: bool = False,
-                    v0_blob_path: Optional[str] = None):
+                    v0_blob_path: Optional[str] = None,
+                    v1_blob_path: Optional[str] = None):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
     Two configurations, selected by `enable_depth`:
@@ -725,6 +787,27 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
         v0_manip.out.link(v0_nn.input)
         add_out('v0_nn', v0_nn.out)
 
+    # V1 — YOLOv8n at 320×320 letterboxed. Runs in parallel with V0 NN
+    # if both blobs are present; backends are selected at the host
+    # (see _on_v0_backend_cmd) via in-memory flag, no pipeline rebuild.
+    # ImageManip uses setResizeThumbnail to letterbox-pad to 320×320
+    # with gray bars (114, 114, 114), matching Ultralytics training.
+    if v1_blob_path:
+        v1_manip = pipeline.create(dai.node.ImageManip)
+        v1_manip.initialConfig.setResizeThumbnail(V1_W, V1_H,
+                                                  114, 114, 114)
+        v1_manip.initialConfig.setFrameType(
+            dai.RawImgFrame.Type.BGR888p)
+        v1_manip.setMaxOutputFrameSize(V1_W * V1_H * 3)
+        cam_rgb.video.link(v1_manip.inputImage)
+        v1_nn = pipeline.create(dai.node.NeuralNetwork)
+        v1_nn.setBlobPath(v1_blob_path)
+        v1_nn.setNumInferenceThreads(2)
+        v1_nn.input.setBlocking(False)
+        v1_nn.input.setQueueSize(1)
+        v1_manip.out.link(v1_nn.input)
+        add_out('v1_yolo', v1_nn.out)
+
     if not enable_depth:
         return pipeline
 
@@ -825,6 +908,8 @@ class OakDriverNode(Node):
             PointStamped, '/oak/ball/v0/cv2_pixel', 10)
         self.pub_v0_nn = self.create_publisher(
             PointStamped, '/oak/ball/v0/nn_pixel', 10)
+        self.pub_v0_yolo = self.create_publisher(
+            PointStamped, '/oak/ball/v0/yolo_pixel', 10)
         # OAK-capture-to-Pi latency, computed Pi-side from the device
         # timestamp metadata so it doesn't depend on cross-host clock
         # sync. Published every RGB frame.
@@ -891,45 +976,54 @@ class OakDriverNode(Node):
         # only publish from one at a time, so toggling has zero
         # rebuild cost.
         self.v0_backend = os.environ.get('OAK_V0_BACKEND', 'cv2').lower()
-        if self.v0_backend not in ('cv2', 'nn'):
+        # Backwards-compat alias: 'nn' was the old name for the V0.5c
+        # color-filter NN before V1 YOLO landed.
+        if self.v0_backend == 'nn':
+            self.v0_backend = 'v0_nn'
+        if self.v0_backend not in ('cv2', 'v0_nn', 'v1_yolo'):
             self.get_logger().warn(
                 f"OAK_V0_BACKEND={self.v0_backend!r} unknown, "
                 f"falling back to cv2.")
             self.v0_backend = 'cv2'
-        self._v0_blob_path = None
-        # Always look for the blob so the NN pipeline is available at
-        # runtime if the operator flips the toggle. Set non-None even
-        # when starting in cv2 mode if the file exists.
-        if True:
-            # Search the package's installed share dir + the source
-            # repo so we work both in colcon-symlink-installed mode
-            # and in the dev-machine direct-import case.
-            candidates = []
+        # Search both NN blobs (V0.5c color filter, V1 YOLOv8n). Each
+        # is added to the pipeline iff its blob exists. The active
+        # backend is a host-side flag — both NN nodes run in parallel
+        # and publish to their per-backend topics.
+        def _search_blob(name: str) -> Optional[str]:
+            cands = []
             try:
                 from ament_index_python.packages import (
                     get_package_share_directory)
-                candidates.append(os.path.join(
+                cands.append(os.path.join(
                     get_package_share_directory('stewart_vision'),
-                    'blobs', f'v0_{V0_W}x{V0_H}.blob'))
+                    'blobs', name))
             except Exception:
                 pass
-            candidates.append(os.path.expanduser(
-                f'~/stable_bot_repo/stewart_vision/blobs/v0_{V0_W}x{V0_H}.blob'))
-            for p in candidates:
+            cands.append(os.path.expanduser(
+                f'~/stable_bot_repo/stewart_vision/blobs/{name}'))
+            for p in cands:
                 if os.path.isfile(p):
-                    self._v0_blob_path = p
-                    break
-            if self._v0_blob_path is None:
-                if self.v0_backend == 'nn':
-                    self.get_logger().warn(
-                        f"OAK_V0_BACKEND=nn requested but no blob found "
-                        f"at any of: {candidates}. Falling back to cv2 "
-                        f"backend. Build with "
-                        f"stewart_vision/scripts/build_v0_blob.py.")
-                    self.v0_backend = 'cv2'
-            else:
-                self.get_logger().info(
-                    f"V0 NN blob available: {self._v0_blob_path}")
+                    return p
+            return None
+
+        self._v0_blob_path = _search_blob(f'v0_{V0_W}x{V0_H}.blob')
+        self._v1_blob_path = _search_blob(V1_BLOB_NAME)
+        if self._v0_blob_path:
+            self.get_logger().info(
+                f"V0 NN blob available: {self._v0_blob_path}")
+        if self._v1_blob_path:
+            self.get_logger().info(
+                f"V1 YOLO blob available: {self._v1_blob_path}")
+        if self.v0_backend == 'v0_nn' and self._v0_blob_path is None:
+            self.get_logger().warn(
+                "OAK_V0_BACKEND=v0_nn but no V0 blob found; "
+                "falling back to cv2.")
+            self.v0_backend = 'cv2'
+        if self.v0_backend == 'v1_yolo' and self._v1_blob_path is None:
+            self.get_logger().warn(
+                "OAK_V0_BACKEND=v1_yolo but no V1 blob found; "
+                "falling back to cv2.")
+            self.v0_backend = 'cv2'
         self.get_logger().info(
             f"V0 backend (initial): {self.v0_backend}  "
             f"(switch at runtime via /oak/cmd_v0_backend)")
@@ -990,7 +1084,8 @@ class OakDriverNode(Node):
             f"Building OAK pipeline (rgb={rgb_fps} Hz, mono={mono_fps} Hz)…")
         pipeline = _build_pipeline(rgb_fps=rgb_fps, mono_fps=mono_fps,
                                    enable_depth=self.enable_depth,
-                                   v0_blob_path=self._v0_blob_path)
+                                   v0_blob_path=self._v0_blob_path,
+                                   v1_blob_path=self._v1_blob_path)
 
         # USB speed cap. The Pi 5 caps total USB current at 600 mA
         # by default (raise to 1.2 A with `usb_max_current_enable=1`
@@ -1060,6 +1155,9 @@ class OakDriverNode(Node):
         self.q_v0_nn = (
             self.device.getOutputQueue('v0_nn', 1, False)
             if self._v0_blob_path is not None else None)
+        self.q_v1_yolo = (
+            self.device.getOutputQueue('v1_yolo', 1, False)
+            if self._v1_blob_path is not None else None)
         # Runtime camera-control input queue — drives autofocus on/off
         # and manual focus position from the GUI without rebuilding
         # the pipeline.
@@ -1093,6 +1191,14 @@ class OakDriverNode(Node):
                 os.environ.get('OAK_NN_CONF_MIN', '0.0001'))
         except Exception:
             self._nn_conf_min = 0.0001
+        # V1 YOLO conf threshold (sigmoid class probability, 0–1).
+        # 0.3 is a conservative starting point that suppresses random
+        # noise activations while keeping recall on a real ball ≥ ~0.97.
+        try:
+            self._v1_yolo_conf_min = float(
+                os.environ.get('OAK_V1_YOLO_CONF_MIN', '0.3'))
+        except Exception:
+            self._v1_yolo_conf_min = 0.3
         # Spatial output / SLC config queues — only present when depth
         # is enabled. _tick guards on these being non-None.
         if self.enable_depth:
@@ -1225,6 +1331,10 @@ class OakDriverNode(Node):
         # into the blob and needs Rebuild & reload).
         self.create_subscription(
             Float32, '/oak/cmd_nn_conf_min', self._on_nn_conf_min_cmd, 1)
+        # V1 YOLO confidence threshold (sigmoid prob, 0–1). Live-tuned.
+        self.create_subscription(
+            Float32, '/oak/cmd_v1_yolo_conf_min',
+            self._on_v1_yolo_conf_min_cmd, 1)
         # Debug overlay: live RGB tinted lime where HSV passes, with
         # the detected blob outlined red. Lets the operator see what
         # the detector is actually picking up while they tune the
@@ -1271,7 +1381,10 @@ class OakDriverNode(Node):
                 'v0_backend': str(self.v0_backend),
                 'v0_blob': (os.path.basename(self._v0_blob_path)
                             if self._v0_blob_path else None),
+                'v1_blob': (os.path.basename(self._v1_blob_path)
+                            if self._v1_blob_path else None),
                 'nn_conf_min': float(self._nn_conf_min),
+                'v1_yolo_conf_min': float(self._v1_yolo_conf_min),
                 # Live HSV bounds — operator sliders push to /oak/cmd_hsv
                 # and these values reflect the latest accepted values.
                 'hsv_lo': [int(v) for v in self._hsv_lo],
@@ -1302,17 +1415,26 @@ class OakDriverNode(Node):
         self.get_logger().info(
             f"/oak/cmd_v0_backend received: {msg.data!r}")
         wanted = (msg.data or '').strip().lower()
-        if wanted not in ('cv2', 'nn'):
+        # 'nn' is the legacy alias for the V0.5c color-filter NN.
+        if wanted == 'nn':
+            wanted = 'v0_nn'
+        if wanted not in ('cv2', 'v0_nn', 'v1_yolo'):
             self.get_logger().warn(
                 f"  rejected: unknown payload {wanted!r} "
-                f"(expected 'cv2' or 'nn')")
+                f"(expected 'cv2' / 'v0_nn' / 'v1_yolo')")
             return
-        if wanted == 'nn' and self.q_v0_nn is None:
+        if wanted == 'v0_nn' and self.q_v0_nn is None:
             self.get_logger().warn(
-                "  rejected: NN backend requested but no NN queue "
+                "  rejected: v0_nn backend requested but no V0 queue "
                 "available — blob may have been missing at startup. "
                 "Build with stewart_vision/scripts/build_v0_blob.py, "
                 "deploy, and restart. Staying on cv2.")
+            return
+        if wanted == 'v1_yolo' and self.q_v1_yolo is None:
+            self.get_logger().warn(
+                "  rejected: v1_yolo backend requested but no V1 queue "
+                "available — blob v1_yolov8n_320.blob missing at startup. "
+                "Staying on cv2.")
             return
         if wanted == self.v0_backend:
             self.get_logger().info(
@@ -1432,42 +1554,41 @@ class OakDriverNode(Node):
             self.q_rgb_raw = None
             self.q_left = None
             self.q_v0_nn = None
+            self.q_v1_yolo = None
             self.q_cam_ctrl = None
             self.q_spatial = None
             self.q_slc_cfg = None
             self.q_depth = None
 
-            # Re-resolve blob path (the GUI just rebuilt it).
-            new_blob = None
-            candidates = []
-            try:
-                from ament_index_python.packages import (
-                    get_package_share_directory)
-                candidates.append(os.path.join(
-                    get_package_share_directory('stewart_vision'),
-                    'blobs', f'v0_{V0_W}x{V0_H}.blob'))
-            except Exception:
-                pass
-            candidates.append(os.path.expanduser(
-                f'~/stable_bot_repo/stewart_vision/blobs/'
-                f'v0_{V0_W}x{V0_H}.blob'))
-            for p in candidates:
-                if os.path.isfile(p):
-                    new_blob = p
-                    break
-            if new_blob is None:
-                self.get_logger().warn(
-                    f"  no blob found at any of: {candidates}; "
-                    f"rebuilding pipeline without NN node")
-            else:
-                self.get_logger().info(f"  picked blob: {new_blob}")
-            self._v0_blob_path = new_blob
+            # Re-resolve blob paths (the GUI may have just rebuilt either).
+            def _search_blob(name: str) -> Optional[str]:
+                cands = []
+                try:
+                    from ament_index_python.packages import (
+                        get_package_share_directory)
+                    cands.append(os.path.join(
+                        get_package_share_directory('stewart_vision'),
+                        'blobs', name))
+                except Exception:
+                    pass
+                cands.append(os.path.expanduser(
+                    f'~/stable_bot_repo/stewart_vision/blobs/{name}'))
+                for p in cands:
+                    if os.path.isfile(p):
+                        return p
+                return None
+            self._v0_blob_path = _search_blob(f'v0_{V0_W}x{V0_H}.blob')
+            self._v1_blob_path = _search_blob(V1_BLOB_NAME)
+            self.get_logger().info(
+                f"  blobs: V0={self._v0_blob_path or 'MISSING'}, "
+                f"V1={self._v1_blob_path or 'MISSING'}")
 
             pipeline = _build_pipeline(
                 rgb_fps=self._rgb_fps_used,
                 mono_fps=self._mono_fps_used,
                 enable_depth=self.enable_depth,
-                v0_blob_path=self._v0_blob_path)
+                v0_blob_path=self._v0_blob_path,
+                v1_blob_path=self._v1_blob_path)
             usb_speed_env = os.environ.get('OAK_USB_SPEED', 'high').lower()
             usb_speed_map = {
                 'high': dai.UsbSpeed.HIGH,
@@ -1487,6 +1608,9 @@ class OakDriverNode(Node):
             self.q_v0_nn = (
                 self.device.getOutputQueue('v0_nn', 1, False)
                 if self._v0_blob_path is not None else None)
+            self.q_v1_yolo = (
+                self.device.getOutputQueue('v1_yolo', 1, False)
+                if self._v1_blob_path is not None else None)
             self.q_cam_ctrl = self.device.getInputQueue('cam_rgb_control')
             if self.enable_depth:
                 self.q_spatial = self.device.getOutputQueue('spatial', 1, False)
@@ -1517,11 +1641,18 @@ class OakDriverNode(Node):
             except Exception as e:
                 self.get_logger().warn(f"  focus restore failed: {e}")
 
-            # If we were running NN but the blob disappeared between
-            # builds, fall back to cv2 so the operator still sees output.
-            if self.v0_backend == 'nn' and self._v0_blob_path is None:
+            # If we were running v0_nn / v1_yolo but the corresponding
+            # blob disappeared between builds, fall back to cv2 so the
+            # operator still sees output.
+            if (self.v0_backend == 'v0_nn'
+                    and self._v0_blob_path is None):
                 self.get_logger().warn(
-                    "  NN blob missing after reload; falling back to cv2")
+                    "  V0 blob missing after reload; falling back to cv2")
+                self.v0_backend = 'cv2'
+            elif (self.v0_backend == 'v1_yolo'
+                    and self._v1_blob_path is None):
+                self.get_logger().warn(
+                    "  V1 YOLO blob missing after reload; falling back to cv2")
                 self.v0_backend = 'cv2'
 
             # Re-arm the post-reload debug printer so we get fresh
@@ -1549,6 +1680,19 @@ class OakDriverNode(Node):
         except Exception as e:
             self.get_logger().warn(
                 f"/oak/cmd_nn_conf_min parse failed: {e}")
+
+    def _on_v1_yolo_conf_min_cmd(self, msg: Float32):
+        """Live update of the V1 YOLO confidence threshold (sigmoid
+        class score, 0–1). Clamped to [0, 1]. Default 0.3."""
+        try:
+            v = max(0.0, min(1.0, float(msg.data)))
+            self._v1_yolo_conf_min = v
+            self.get_logger().info(
+                f"/oak/cmd_v1_yolo_conf_min → {v:.3f}")
+            self._publish_config_snapshot()
+        except Exception as e:
+            self.get_logger().warn(
+                f"/oak/cmd_v1_yolo_conf_min parse failed: {e}")
 
     def _log_pipeline_health(self):
         """Periodic snapshot so we can tell which stage of the V0 /
@@ -1913,15 +2057,59 @@ class OakDriverNode(Node):
                     # backend.
                     self.pub_v0_nn.publish(p)
                     self._n_v0_nn_pub += 1
-                    # Mirror to /oak/ball/v0/rgb_pixel only when NN is
+                    # Mirror to /oak/ball/v0/rgb_pixel only when V0 NN is
                     # the active backend (so the controller chain
                     # consumes only one source).
-                    if self.v0_backend == 'nn':
+                    if self.v0_backend == 'v0_nn':
                         self.pub_v0.publish(p)
                         self._n_v0 += 1
                         d = Float32MultiArray()
                         d.data = [float(cx), float(cy), float(p.point.z),
                                   float(conf)]
+                        self.pub_v0_diag.publish(d)
+
+        # V1 YOLO backend — drain output queue, parse, publish to
+        # /oak/ball/v0/yolo_pixel and (when active backend) mirror to
+        # /oak/ball/v0/rgb_pixel for the controller. Output tensor is
+        # (1, 7, 2100): cx, cy, w, h + 3 class scores per anchor.
+        if self.q_v1_yolo is not None:
+            yolo_msg = self.q_v1_yolo.tryGet()
+            if yolo_msg is not None:
+                self._n_v0_attempts += 1
+                try:
+                    raw = yolo_msg.getFirstLayerFp16()
+                    det = yolo_v1_decode(raw, self._v1_yolo_conf_min)
+                except Exception as e:
+                    det = None
+                    self.get_logger().warn(
+                        f"[yolo-debug] decode failed: {e!r}")
+                # Capture-time stamp from the NNData (inherits the
+                # input frame's timestamp).
+                try:
+                    capture_dai = yolo_msg.getTimestamp().total_seconds()
+                    now_dai = dai.Clock.now().total_seconds()
+                    age_s = max(0.0, now_dai - capture_dai)
+                    yolo_stamp = (self.get_clock().now()
+                                  - Duration(seconds=age_s)).to_msg()
+                except Exception:
+                    yolo_stamp = self.get_clock().now().to_msg()
+                if det is not None:
+                    cx, cy, w, h, conf = det
+                    p = PointStamped()
+                    p.header.stamp = yolo_stamp
+                    p.header.frame_id = 'oak_rgb'
+                    p.point.x = cx
+                    p.point.y = cy
+                    # Radius proxy: half the geometric mean of w and h
+                    # (matches the cv2 path's "ball radius in 540p px").
+                    p.point.z = float(((w * h) ** 0.5) * 0.5)
+                    self.pub_v0_yolo.publish(p)
+                    if self.v0_backend == 'v1_yolo':
+                        self.pub_v0.publish(p)
+                        self._n_v0 += 1
+                        d = Float32MultiArray()
+                        d.data = [float(cx), float(cy),
+                                  float(p.point.z), float(conf)]
                         self.pub_v0_diag.publish(d)
 
         # RGB raw → cv2 V0 detector → /oak/ball/v0/rgb_pixel.
