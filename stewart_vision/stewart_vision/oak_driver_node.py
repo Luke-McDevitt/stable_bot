@@ -1154,6 +1154,15 @@ class OakDriverNode(Node):
         self._n_depth_frame = 0
         self._n_v0 = 0          # V0 detector publish (success only)
         self._n_v0_attempts = 0 # V0 detector ATTEMPTS (every RGB raw frame)
+        # Separate NN-only counters so the health log can disentangle
+        # cv2 vs NN throughput (the originals lump both paths together).
+        self._n_v0_nn_attempts = 0  # NN frames pulled off q_v0_nn (non-None)
+        self._n_v0_nn_pub = 0       # NN detections actually published
+        # Debug-print countdown: log raw cx/cy/conf for the first N
+        # NN messages after each pipeline (re)load, so we can see
+        # whether the device is producing values at all and what they
+        # look like.
+        self._nn_debug_remaining = 10
         self._n_rgb_jpeg = 0    # frames pulled off the JPEG queue
         self._n_depth_blob = 0
         # Last-log timestamp so health prints true Hz, not cumulative.
@@ -1515,6 +1524,9 @@ class OakDriverNode(Node):
                     "  NN blob missing after reload; falling back to cv2")
                 self.v0_backend = 'cv2'
 
+            # Re-arm the post-reload debug printer so we get fresh
+            # samples of cx_n/cy_n/conf for the new blob.
+            self._nn_debug_remaining = 10
             self._publish_config_snapshot()
             self.get_logger().info(
                 "  ✓ NN reload complete — new blob is live")
@@ -1559,6 +1571,8 @@ class OakDriverNode(Node):
         self._health_last_t = now
         v0_arr_hz = self._n_v0_attempts / dt
         v0_pub_hz = self._n_v0 / dt
+        nn_arr_hz = self._n_v0_nn_attempts / dt
+        nn_pub_hz = self._n_v0_nn_pub / dt
         jpeg_hz   = self._n_rgb_jpeg / dt
         depth_hz  = self._n_depth_frame / dt
         depth_pub_hz = self._n_depth_blob / dt
@@ -1566,6 +1580,8 @@ class OakDriverNode(Node):
         # Reset counters for the next interval.
         self._n_v0_attempts = 0
         self._n_v0 = 0
+        self._n_v0_nn_attempts = 0
+        self._n_v0_nn_pub = 0
         self._n_rgb_jpeg = 0
         self._n_depth_frame = 0
         self._n_depth_blob = 0
@@ -1584,6 +1600,8 @@ class OakDriverNode(Node):
         self.get_logger().info(
             f"[health] v0_arr={v0_arr_hz:.1f}Hz "
             f"v0_pub={v0_pub_hz:.1f}Hz "
+            f"nn_arr={nn_arr_hz:.1f}Hz "
+            f"nn_pub={nn_pub_hz:.1f}Hz "
             f"jpeg={jpeg_hz:.1f}Hz "
             f"depth={depth_hz:.1f}Hz "
             f"depth_pub={depth_pub_hz:.1f}Hz "
@@ -1802,6 +1820,7 @@ class OakDriverNode(Node):
             nn_msg = self.q_v0_nn.tryGet()
             if nn_msg is not None:
                 self._n_v0_attempts += 1
+                self._n_v0_nn_attempts += 1
                 try:
                     # Model output shape is (1, 3, 1, 1) — three FP16
                     # values flattened. Index [0]=cx, [1]=cy, [2]=conf.
@@ -1809,8 +1828,20 @@ class OakDriverNode(Node):
                     cx_n = float(out[0])
                     cy_n = float(out[1])
                     conf = float(out[2])
-                except Exception:
+                except Exception as e:
                     cx_n, cy_n, conf = float('nan'), float('nan'), 0.0
+                    self.get_logger().warn(
+                        f"[nn-debug] getFirstLayerFp16 failed: {e!r}")
+                # First N samples after each (re)load: dump raw values
+                # so we can see whether the device is producing
+                # anything sensible (and what's getting filtered, if so).
+                if self._nn_debug_remaining > 0:
+                    self._nn_debug_remaining -= 1
+                    self.get_logger().info(
+                        f"[nn-debug] raw cx_n={cx_n:.4f} cy_n={cy_n:.4f} "
+                        f"conf={conf:.6f}  "
+                        f"corner_rej={cx_n < 0.02 and cy_n < 0.02}  "
+                        f"conf_min={self._nn_conf_min:.6f}")
                 # NN normalised coords (V0_W × V0_H frame) → 540p coords
                 # for parity with the cv2 path. ball_localizer_node's
                 # K_rgb is calibrated at 540p, so downstream sees the
@@ -1865,6 +1896,7 @@ class OakDriverNode(Node):
                     # GUI can show NN's detection regardless of active
                     # backend.
                     self.pub_v0_nn.publish(p)
+                    self._n_v0_nn_pub += 1
                     # Mirror to /oak/ball/v0/rgb_pixel only when NN is
                     # the active backend (so the controller chain
                     # consumes only one source).
