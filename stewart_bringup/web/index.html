@@ -498,9 +498,9 @@
       </label>
       <label class="text-xs text-slate-400 flex items-center gap-2 mt-2">
         Current:
-        <input id="leg-current-slider" type="range" min="2" max="15" step="0.5" value="6"
+        <input id="leg-current-slider" type="range" min="2" max="15" step="0.5" value="10"
                class="flex-1">
-        <span id="leg-current-readout" class="mono text-sm w-20 text-right">6.0 A</span>
+        <span id="leg-current-readout" class="mono text-sm w-20 text-right">10.0 A</span>
       </label>
       <p class="text-xs text-slate-500 mt-1">
         Current applies to every armed leg. Raise if a leg (e.g. L1/L4)
@@ -2653,7 +2653,7 @@ function setupROSInterface() {
     messageType: 'std_msgs/msg/Float64MultiArray' });
   topic.currents.subscribe(m => {
     lastRxMs.currents = Date.now();
-    const cap = parseFloat($('leg-current-slider').value) || 6.0;
+    const cap = parseFloat($('leg-current-slider').value) || 10.0;
     for (let i = 0; i < 6; i++) {
       const v = m.data[i];
       const el = $(`cur-${i}`);

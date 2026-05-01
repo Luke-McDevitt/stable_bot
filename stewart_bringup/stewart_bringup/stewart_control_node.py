@@ -1047,9 +1047,13 @@ class StewartControlNode(Node):
         # pos or vel mode).
         self.leg_armed = [False] * 6
         # Track current-limit as-last-applied so the recording can correlate
-        # motor behavior with the current cap. Default 6 A matches the
-        # arm-time default in _arm_leg_internal.
-        self.leg_current_a = 6.0
+        # motor behavior with the current cap. Default 10 A — matches the
+        # GUI slider default and the flash-persisted current_soft_max set
+        # via set_odrive_feedforward_via_can.py --current-soft-max 10.0.
+        # _sync_leg_current_from_flash will overwrite this on bus open
+        # with whatever flash actually has; this default just covers the
+        # case where the flash read fails.
+        self.leg_current_a = 10.0
 
         # Current pose state (held by feeder). Defaults to zero, but we
         # immediately try to restore the last-commanded pose so that the
