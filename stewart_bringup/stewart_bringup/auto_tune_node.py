@@ -243,12 +243,31 @@ STEP_ID_OPEN_LOOP_MOTION_ONSET_MM = 3.0  # ball-displacement threshold
                                          # this is later than the
                                          # ramp-end (handles late
                                          # stiction breakthrough).
-STEP_ID_OPEN_LOOP_VPEAK_LIMIT_MM_S = 350.0  # safety: if the ball
-                                            # hits this velocity
-                                            # before the tilt ends,
-                                            # cut the tilt short
-                                            # so it doesn't escape
-                                            # the platform
+STEP_ID_OPEN_LOOP_VPEAK_LIMIT_MM_S = 1500.0  # safety: if the ball
+                                              # hits this SUSTAINED
+                                              # velocity during tilt,
+                                              # end early so it
+                                              # doesn't escape. Raised
+                                              # from 350 → 1500 after
+                                              # 211307Z showed single-
+                                              # frame vision-noise
+                                              # spikes (1234 mm/s on
+                                              # rep 2) firing the
+                                              # cutoff inconsistently
+                                              # across replicates,
+                                              # producing 51% CV
+                                              # G_eff. Foam ring
+                                              # handles real escape
+                                              # cases.
+STEP_ID_OPEN_LOOP_VPEAK_CONSENSUS_N = 3      # require this many of
+                                              # the last 5 velocity
+                                              # samples to exceed the
+                                              # limit before cutting.
+                                              # Filters single-frame
+                                              # vision glitches that
+                                              # were tripping the
+                                              # safety cutoff
+                                              # inconsistently.
 STEP_ID_PRE_TILT_LEVEL_S      = 1.0    # hold flat for this long before
                                        # tilting, so the parabola fit
                                        # has a clean t=0 baseline
@@ -2165,18 +2184,58 @@ class AutoTuneNode(Node):
             # inconsistent. Whatever the cause, an analytic gain
             # derived from such a noisy estimate is dangerous.
             if g_eff_cv > STEP_ID_OL_CV_THRESHOLD:
+                # Diagnose what's likely driving the inconsistency
+                # by inspecting per-replicate state. A wide spread
+                # in tilt_actual_duration across replicates is the
+                # smoking-gun for "safety cutoff fired
+                # inconsistently"; a wide spread in IMU achievement
+                # suggests level-loop variability; a wide spread
+                # in motion_onset suggests stiction breakaway is
+                # genuinely random.
+                durs = [t.get('tilt_actual_duration_s', 0.0)
+                        for t in ol_replicates]
+                imus = [t.get('imu_achievement_ratio', 0.0)
+                        for t in ol_replicates]
+                onsets = [(t.get('fit', {}) or {}).get(
+                    'motion_onset_s') or 0.0
+                          for t in ol_replicates]
+                dur_spread = (max(durs) - min(durs)) / max(durs, default=1)
+                imu_spread = max(imus) - min(imus)
+                onset_spread = max(onsets) - min(onsets)
+                hints = []
+                if dur_spread > 0.25:
+                    hints.append(
+                        f'tilt durations varied widely across '
+                        f'replicates (min={min(durs):.2f}s, '
+                        f'max={max(durs):.2f}s) — safety cutoff '
+                        f'likely fired inconsistently due to '
+                        f'vision-noise velocity spikes')
+                if imu_spread > 0.30:
+                    hints.append(
+                        f'IMU achievement varied widely '
+                        f'({min(imus)*100:.0f}%-{max(imus)*100:.0f}% '
+                        f'of commanded) — level-PI inner loop '
+                        f'tracked inconsistently')
+                if onset_spread > 0.20:
+                    hints.append(
+                        f'motion onset varied widely '
+                        f'(min={min(onsets):.2f}s, '
+                        f'max={max(onsets):.2f}s) — stiction '
+                        f'breakaway is genuinely random; tighten '
+                        f'platform / clean ball-deck contact')
+                hints_str = (' Specific hint: '
+                             + '; '.join(hints) + '.'
+                             if hints else '')
                 msg = (
                     f'plant gain too inconsistent across '
                     f'{len(g_effs)} replicates: G_eff = '
                     f'{g_eff_mean:.0f} ± {g_eff_std:.0f} '
-                    f'(cv={g_eff_cv*100:.0f}%). Likely causes: '
-                    f'stiction breakaway varying trial-to-trial '
-                    f'(tighten platform, more lighting, retry); '
-                    f'vision intermittently noisy (check OAK '
-                    f'health log lines); IMU level state varying '
-                    f'(consistently disable/enable level before '
-                    f'each session). Refusing to recommend gains '
-                    f'from a noisy estimate.')
+                    f'(cv={g_eff_cv*100:.0f}%, '
+                    f'individual values: '
+                    f'{[round(g, 1) for g in g_effs]}).'
+                    f'{hints_str} '
+                    f'Refusing to recommend gains from a noisy '
+                    f'estimate.')
                 self._fail_step_id(log_dir, summary_path, session, msg)
                 return
             # Sanity gate (per-trial mean): physical floor is roughly
@@ -2518,6 +2577,16 @@ class AutoTuneNode(Node):
         last_xy = None
         last_t = None
         peak_v_observed = 0.0
+        # Ring buffer of the last 5 instantaneous velocity samples
+        # for the multi-frame consensus safety cutoff. See comment
+        # below at the cutoff check for the rationale; in short,
+        # single-frame velocity spikes from vision noise (observed
+        # 1234 mm/s on rep 2 of 211307Z) used to fire the cutoff
+        # inconsistently across replicates, producing 51% CV
+        # G_eff. The consensus filter requires 3 of last 5 to be
+        # over the limit before cutting — single glitches no
+        # longer trip it.
+        recent_v: list[float] = []
         while not self._abort:
             now = time.monotonic()
             if now >= cmd_active_until:
@@ -2543,13 +2612,26 @@ class AutoTuneNode(Node):
                     v = math.hypot(vx, vy)
                     if v > peak_v_observed:
                         peak_v_observed = v
-                    if (v > STEP_ID_OPEN_LOOP_VPEAK_LIMIT_MM_S
+                    # Multi-frame consensus safety cutoff. Vision
+                    # noise can spike a single instantaneous v to
+                    # 1000+ mm/s; we only end the tilt early when
+                    # at least N of the last 5 samples are over the
+                    # limit (sustained motion, not a glitch).
+                    recent_v.append(v)
+                    if len(recent_v) > 5:
+                        recent_v.pop(0)
+                    n_over = sum(
+                        1 for vi in recent_v
+                        if vi > STEP_ID_OPEN_LOOP_VPEAK_LIMIT_MM_S)
+                    if (n_over >= STEP_ID_OPEN_LOOP_VPEAK_CONSENSUS_N
                             and (now - t0) > 0.3):
                         self.get_logger().info(
                             f'  open-loop: cutting tilt short at '
-                            f'{(now-t0)*1000:.0f} ms — ball at '
-                            f'{v:.0f} mm/s exceeds safety cap '
-                            f'{STEP_ID_OPEN_LOOP_VPEAK_LIMIT_MM_S:.0f}')
+                            f'{(now-t0)*1000:.0f} ms — ball '
+                            f'sustained over '
+                            f'{STEP_ID_OPEN_LOOP_VPEAK_LIMIT_MM_S:.0f} '
+                            f'mm/s '
+                            f'({n_over}/5 samples)')
                         break
                 last_xy = (float(p.x), float(p.y))
                 last_t = now
