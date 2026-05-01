@@ -1437,6 +1437,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     self._send_json({
                         'w_b': -1.50, 'w_g': 0.40, 'w_r': 1.00,
                         'bias': -0.50, 'score_floor': 0.30,
+                        'nn_conf_min': 0.0001,
                         'note': 'defaults (no JSON yet)',
                     })
             except Exception as e:
@@ -1690,6 +1691,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     'w_r':  float(body.get('w_r', 1.00)),
                     'bias': float(body.get('bias', -0.50)),
                     'score_floor': float(body.get('score_floor', 0.30)),
+                    'nn_conf_min': float(body.get('nn_conf_min', 0.0001)),
                     'saved_at_utc': time.strftime(
                         '%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                 }
@@ -1700,6 +1702,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 d['w_r']  = max(-3.0, min(3.0, d['w_r']))
                 d['bias'] = max(-2.0, min(2.0, d['bias']))
                 d['score_floor'] = max(0.0, min(1.0, d['score_floor']))
+                # nn_conf_min is host-side only — clamp matches the
+                # node's _on_nn_conf_min_cmd clamp [0, 0.05].
+                d['nn_conf_min'] = max(0.0, min(0.05, d['nn_conf_min']))
                 path = os.path.expanduser(
                     '~/stable_bot_repo/stewart_vision/blobs/'
                     'v0_weights.json')

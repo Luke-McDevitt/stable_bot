@@ -1082,6 +1082,17 @@ class OakDriverNode(Node):
         # operator can adjust via /oak/cmd_hsv at runtime.
         self._hsv_lo = HSV_LO.copy()
         self._hsv_hi = HSV_HI.copy()
+        # Host-side confidence floor on the NN's published m_avg.
+        # NOT baked into the blob — applied in the NN tick handler
+        # so the operator can tune it live without a rebuild + reload.
+        # 0.0001 is well below the typical real-detection range
+        # (~3e-4 for a 6-px-wide ball at 320×180); the corner-phantom
+        # guard handles the (0,0) noise case independently.
+        try:
+            self._nn_conf_min = float(
+                os.environ.get('OAK_NN_CONF_MIN', '0.0001'))
+        except Exception:
+            self._nn_conf_min = 0.0001
         # Spatial output / SLC config queues — only present when depth
         # is enabled. _tick guards on these being non-None.
         if self.enable_depth:
@@ -1199,6 +1210,12 @@ class OakDriverNode(Node):
         # preserved across the rebuild.
         self.create_subscription(
             Empty, '/oak/cmd_reload_nn', self._on_reload_nn_cmd, 1)
+        # Host-side NN conf floor (Float32). Slider in the GUI's NN
+        # weights panel publishes here; takes effect on the next NN
+        # detection tick. Distinct from score_floor (which is baked
+        # into the blob and needs Rebuild & reload).
+        self.create_subscription(
+            Float32, '/oak/cmd_nn_conf_min', self._on_nn_conf_min_cmd, 1)
         # Debug overlay: live RGB tinted lime where HSV passes, with
         # the detected blob outlined red. Lets the operator see what
         # the detector is actually picking up while they tune the
@@ -1245,6 +1262,7 @@ class OakDriverNode(Node):
                 'v0_backend': str(self.v0_backend),
                 'v0_blob': (os.path.basename(self._v0_blob_path)
                             if self._v0_blob_path else None),
+                'nn_conf_min': float(self._nn_conf_min),
                 # Live HSV bounds — operator sliders push to /oak/cmd_hsv
                 # and these values reflect the latest accepted values.
                 'hsv_lo': [int(v) for v in self._hsv_lo],
@@ -1504,6 +1522,21 @@ class OakDriverNode(Node):
             self.get_logger().error(f"NN reload failed: {e!r}")
         finally:
             self._reloading = False
+
+    def _on_nn_conf_min_cmd(self, msg: Float32):
+        """Live update of the host-side NN confidence floor. Clamped
+        to [0, 0.05] — values above 0.05 would reject every realistic
+        ball detection (m_avg saturates well below that), values below
+        0 are nonsensical. Updates take effect on the next NN tick."""
+        try:
+            v = max(0.0, min(0.05, float(msg.data)))
+            self._nn_conf_min = v
+            self.get_logger().info(
+                f"/oak/cmd_nn_conf_min → {v:.5f}")
+            self._publish_config_snapshot()
+        except Exception as e:
+            self.get_logger().warn(
+                f"/oak/cmd_nn_conf_min parse failed: {e}")
 
     def _log_pipeline_health(self):
         """Periodic snapshot so we can tell which stage of the V0 /
@@ -1796,25 +1829,30 @@ class OakDriverNode(Node):
                 except Exception:
                     v0_stamp = self.get_clock().now().to_msg()
                     self._v0_last_age_s = float('nan')
-                # Confidence floor. The NN's m_avg is the average of
-                # ReLU(score - SCORE_FLOOR) across the frame. With
-                # SCORE_FLOOR=0.30 baked into the blob, only pixels
-                # with strong orange contribute. When the ball is
-                # absent, sensor noise occasionally bumps a few
-                # pixels above SCORE_FLOOR and m_avg lands ~1e-4 to
-                # ~1e-3 — the soft-argmax then degenerates to
-                # (0,0) (top-left corner) because both numerator and
-                # denominator are tiny. The 1e-4 floor we used to
-                # have was right on this noise band, so the GUI
-                # showed a persistent emerald circle in the corner.
-                # Bump to a level that requires a real detection
-                # (~1 % of frame area = orange ball typically covers
-                # 0.5–3 % at 60 cm range, score ≥ ~0.5 over that area).
-                # Override via OAK_NN_CONF_MIN if your ball is much
-                # smaller / further.
-                NN_CONF_MIN = float(
-                    os.environ.get('OAK_NN_CONF_MIN', '0.005'))
-                if conf > NN_CONF_MIN:
+                # Two filters guard the published detection:
+                #
+                #   (1) Corner-phantom guard. When the ball is absent,
+                #       sensor noise occasionally bumps a handful of
+                #       pixels above SCORE_FLOOR. The soft-argmax then
+                #       degenerates to (0, 0) (top-left corner)
+                #       because both numerator and denominator are
+                #       tiny — Div produces a near-zero quotient. The
+                #       prior fix was to crank conf_min up, but that
+                #       also rejected real low-pixel-count detections
+                #       (a 6-px ball covers ~30 px of the 320×180
+                #       frame → m_avg ≈ 3e-4, well below the old
+                #       0.005 floor). The corner check rejects the
+                #       degenerate case independently of magnitude.
+                #
+                #   (2) Conf floor. m_avg = sum(ReLU(score-floor))/N
+                #       — a real detection still has to clear a
+                #       small floor or noise leaks through. 1e-4 is
+                #       safely below the smallest plausible ball
+                #       (~6 px wide @ 320×180); operator can tune
+                #       live via the GUI slider (publishes to
+                #       /oak/cmd_nn_conf_min) without a blob rebuild.
+                CORNER_REJECT = (cx_n < 0.02 and cy_n < 0.02)
+                if not CORNER_REJECT and conf > self._nn_conf_min:
                     p = PointStamped()
                     p.header.stamp = v0_stamp
                     p.header.frame_id = 'oak_rgb'

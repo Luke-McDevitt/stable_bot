@@ -4,6 +4,7 @@
   "w_r": 1.0,
   "bias": -0.5,
   "score_floor": 0.3,
+  "nn_conf_min": 0.0001,
   "saved_at_utc": "2026-04-30T22:00:00Z",
-  "_note": "Color-score weights for the on-device V0 NN. Compose: score = w_b*B + w_g*G + w_r*R + bias. Pixels with score > score_floor contribute to the soft-argmax centroid. Tuned 2026-04-30 to favor saturated orange (R high, some G, very little B) over pure red (which the original W_R=1/W_G=-0.4 weights wrongly preferred). Edit via the GUI's NN-weight sliders or this file directly; rebuild the blob with stewart_vision/scripts/build_v0_blob.py to apply."
+  "_note": "Color-score weights for the on-device V0 NN. Compose: score = w_b*B + w_g*G + w_r*R + bias. Pixels with score > score_floor contribute to the soft-argmax centroid. nn_conf_min is a host-side floor on the published m_avg (NOT baked into the blob — applied in oak_driver_node). Tuned 2026-04-30 to favor saturated orange (R high, some G, very little B) over pure red (which the original W_R=1/W_G=-0.4 weights wrongly preferred). Edit via the GUI's NN-weight sliders or this file directly; rebuild the blob with stewart_vision/scripts/build_v0_blob.py to apply (conf-min skips the rebuild since it's host-side)."
 }

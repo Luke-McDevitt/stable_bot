@@ -307,6 +307,12 @@
               <span id="nn-score-floor-val" class="mono text-slate-300 ml-1">0.30</span>
               <input id="nn-score-floor" type="range" min="0" max="1" step="0.01" value="0.3" class="w-full">
             </label>
+            <label class="text-xs text-slate-400 col-span-2"
+                   title="Host-side floor on the published m_avg confidence. Live-tunable — publishes to /oak/cmd_nn_conf_min on each drag, no rebuild + reload needed. Real detections land ~3e-4 for a 6 px ball; raise to suppress phantoms when the platform is empty.">
+              NN_CONF_MIN <span class="text-slate-500">(host-side, no rebuild)</span>
+              <span id="nn-conf-min-val" class="mono text-slate-300 ml-1">0.00010</span>
+              <input id="nn-conf-min" type="range" min="0" max="0.005" step="0.00005" value="0.0001" class="w-full">
+            </label>
           </div>
           <div class="flex items-center gap-2 mt-2 flex-wrap">
             <button id="nn-weights-save"
@@ -2143,6 +2149,11 @@ function setupROSInterface() {
   topic.oak_reload_nn_cmd = new ROSLIB.Topic({
     ros, name: '/oak/cmd_reload_nn',
     messageType: 'std_msgs/msg/Empty' });
+  // Host-side NN confidence floor. Live-tuned via the NN_CONF_MIN
+  // slider; the node clamps + applies on the next NN tick.
+  topic.oak_nn_conf_min_cmd = new ROSLIB.Topic({
+    ros, name: '/oak/cmd_nn_conf_min',
+    messageType: 'std_msgs/msg/Float32' });
   // V0 detector debug overlay (live RGB tinted by HSV mask). Subscribed
   // only when the "V0 debug overlay" checkbox under the live feed is
   // ticked. When subscribed, callback writes to the SAME #vision-feed-img
@@ -4212,6 +4223,25 @@ function initVisionGUI() {
       if (v) v.innerText = parseFloat(s.value).toFixed(2);
     });
   }
+  // NN_CONF_MIN slider — separate from the rest because (a) it's
+  // host-side (no rebuild needed), (b) it publishes live to
+  // /oak/cmd_nn_conf_min on every drag for instant feedback, and
+  // (c) its display formatter is 5-decimal not 2.
+  const nnConfMinSlider = $('nn-conf-min');
+  const nnConfMinLabel  = $('nn-conf-min-val');
+  const _nnConfFmt = v => parseFloat(v).toFixed(5);
+  if (nnConfMinSlider) {
+    nnConfMinSlider.addEventListener('input', () => {
+      if (nnConfMinLabel) nnConfMinLabel.innerText = _nnConfFmt(nnConfMinSlider.value);
+      // Live publish on every drag — the node clamps to [0, 0.05].
+      try {
+        if (topic.oak_nn_conf_min_cmd) {
+          topic.oak_nn_conf_min_cmd.publish(new ROSLIB.Message({
+            data: parseFloat(nnConfMinSlider.value) }));
+        }
+      } catch (e) {}
+    });
+  }
   // Pull current values from the server so the sliders reflect what's
   // on disk, not the HTML defaults.
   fetch('/v0/weights')
@@ -4223,6 +4253,18 @@ function initVisionGUI() {
           if (s) s.value = d[key];
           if (v) v.innerText = parseFloat(d[key]).toFixed(2);
         }
+      }
+      if ('nn_conf_min' in d) {
+        if (nnConfMinSlider) nnConfMinSlider.value = d.nn_conf_min;
+        if (nnConfMinLabel)  nnConfMinLabel.innerText = _nnConfFmt(d.nn_conf_min);
+        // Push the loaded value to the node so its in-memory state
+        // matches the JSON without waiting for the operator to drag.
+        try {
+          if (topic.oak_nn_conf_min_cmd) {
+            topic.oak_nn_conf_min_cmd.publish(new ROSLIB.Message({
+              data: parseFloat(d.nn_conf_min) }));
+          }
+        } catch (e) {}
       }
     })
     .catch(() => {});
@@ -6074,6 +6116,8 @@ function _nnWeightsRead() {
     bias: parseFloat(document.getElementById('nn-bias')?.value || -0.5),
     score_floor: parseFloat(
       document.getElementById('nn-score-floor')?.value || 0.3),
+    nn_conf_min: parseFloat(
+      document.getElementById('nn-conf-min')?.value || 0.0001),
   };
 }
 function _nnSetStatus(text, ok) {
