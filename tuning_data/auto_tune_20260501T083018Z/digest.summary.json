@@ -1,0 +1,40 @@
+{
+  "n_trials": 20,
+  "best_fitness": 0.3787709910447594,
+  "best_trial": 4,
+  "best_gains": {
+    "accel_tilt_deg": 3.0,
+    "brake_horizon_mm": 60.0,
+    "brake_tilt_deg": 6.0,
+    "control_latency_s": 0.1,
+    "err_tol_mm": 15.0,
+    "kd": 0.034999999999999996,
+    "ki": 0.003,
+    "kp": 0.015,
+    "max_tilt_deg": 3.0,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "stiction_break_s": 0.6,
+    "stiction_v_threshold_mm_s": 20.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0
+  },
+  "best_components": {
+    "f_err": 0.45332913298078176,
+    "f_p95": 0.62070189619084,
+    "f_settle": 0.0,
+    "f_hold": 0.0,
+    "f_calm": 0.8616671168546898,
+    "rms_err_mm": 60.29513958486247,
+    "p95_err_mm": 61.10793379831106,
+    "on_target_fraction": 0.0,
+    "mean_speed_mm_per_s": 16.054097973502973,
+    "stuck_on_center_fraction": 0.0
+  },
+  "mean_fitness": 0.25633771043963927,
+  "median_fitness": 0.2415664649678915,
+  "final_fitness": 0.2993337491646494,
+  "n_settled": 0,
+  "n_aborted": 0,
+  "n_stuck_on_center": 0
+}
