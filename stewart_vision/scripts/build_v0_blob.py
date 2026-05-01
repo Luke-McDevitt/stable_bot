@@ -166,7 +166,26 @@ def build_onnx(out_path: str, w_b, w_g, w_r, bias,
     _const('floor', np.array([[[[score_floor]]]], dtype=np.float32))
     _const('density_floor_const',
            np.array([[[[density_floor]]]], dtype=np.float32))
-    _const('eps',   np.array([[[[1e-6]]]],        dtype=np.float32))
+
+    # FP16 numerics fix (2026-04-30, V0.5b): bumped eps from 1e-6 to
+    # 1e-4 because Myriad X uses FP16 with denormals flushed to zero
+    # (smallest normal ≈ 6.1e-5). 1e-6 silently became 0 on hardware,
+    # turning the soft-argmax denominator into 0+0=0 → 0/0=NaN
+    # whenever no orange pixels were present. The host's getFirstLayerFp16
+    # then read NaN and silently rejected the publish (NaN > floor is
+    # False). Confirmed via the [nn-debug] log: cx_n=NaN cy_n=NaN
+    # conf=0 on every frame.
+    _const('eps',   np.array([[[[1e-4]]]],        dtype=np.float32))
+
+    # Scale-up factor on m before the soft-argmax pools. m_avg for
+    # small detections (5-px ball ≈ 2.4e-4, 2-px ball ≈ 1.6e-5) lives
+    # right at or below the FP16 normal threshold — even after fixing
+    # eps, m_avg itself can flush to zero on small balls. Multiplying
+    # m by 1000 lifts every intermediate into FP16 normal range
+    # (smallest is now ~1.6e-2, comfortable). The conf field of the
+    # output uses the UNSCALED m_avg (separate global pool below) so
+    # the host's existing radius calculation stays calibrated.
+    _const('m_scale', np.array([[[[1000.0]]]], dtype=np.float32))
 
     # 5×5 box-blur kernel for the spatial-coherence stage. Stored as
     # a Conv weight (1 in / 1 out / 5×5, all entries 1/25) instead of
@@ -211,14 +230,22 @@ def build_onnx(out_path: str, w_b, w_g, w_r, bias,
         helper.make_node('Sub', ['m_density', 'density_floor_const'],
                          ['m_density_minus_floor']),
         helper.make_node('Relu', ['m_density_minus_floor'], ['m']),
+        # Conf output uses the UNSCALED m_avg so the host's existing
+        # radius proxy `(conf * V0_W * V0_H) ** 0.5` keeps the right
+        # calibration.
         helper.make_node('GlobalAveragePool', ['m'], ['m_avg']),
-        helper.make_node('Mul', ['m', 'xs_grid'], ['m_xs']),
-        helper.make_node('GlobalAveragePool', ['m_xs'], ['mx_avg']),
-        helper.make_node('Mul', ['m', 'ys_grid'], ['m_ys']),
-        helper.make_node('GlobalAveragePool', ['m_ys'], ['my_avg']),
-        helper.make_node('Add', ['m_avg', 'eps'], ['denom']),
-        helper.make_node('Div', ['mx_avg', 'denom'], ['cx']),
-        helper.make_node('Div', ['my_avg', 'denom'], ['cy']),
+        # Soft-argmax math runs in scaled space (m × 1000) so neither
+        # m_avg nor mx_avg/my_avg can underflow FP16 — see m_scale
+        # comment above.
+        helper.make_node('Mul', ['m', 'm_scale'], ['m_K']),
+        helper.make_node('GlobalAveragePool', ['m_K'], ['m_avg_K']),
+        helper.make_node('Mul', ['m_K', 'xs_grid'], ['m_xs_K']),
+        helper.make_node('GlobalAveragePool', ['m_xs_K'], ['mx_avg_K']),
+        helper.make_node('Mul', ['m_K', 'ys_grid'], ['m_ys_K']),
+        helper.make_node('GlobalAveragePool', ['m_ys_K'], ['my_avg_K']),
+        helper.make_node('Add', ['m_avg_K', 'eps'], ['denom_K']),
+        helper.make_node('Div', ['mx_avg_K', 'denom_K'], ['cx']),
+        helper.make_node('Div', ['my_avg_K', 'denom_K'], ['cy']),
         helper.make_node('Concat',
                          ['cx', 'cy', 'm_avg'], ['cxcyconf'],
                          axis=1),
