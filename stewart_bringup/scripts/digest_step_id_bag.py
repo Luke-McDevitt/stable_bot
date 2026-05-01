@@ -23,12 +23,27 @@ Reads tuning_data/step_id_<UTC>/ and writes alongside it:
                                by time within the trial. Convergent
                                spiral → origin = stable; closed loop =
                                limit cycle; outward growth = unstable.
-  samples.csv                — flat per-sample dump across all
-                               verification trials: trial_idx, t,
-                               x, y, vx, vy, err, target_x, target_y,
-                               start/target marker IDs. Lets the
-                               downstream review do any analysis the
-                               canned plots don't cover.
+  tilt_timeseries.png        — per verification trial: commanded tilt
+                               (pitch + roll) vs IMU-achieved tilt
+                               over time, plus a phase-mix bar
+                               (PID/STICTION_BREAK/SETTLE share of
+                               trial time). Shows max_tilt saturation
+                               events, stiction-relief activations,
+                               inner-loop tracking quality.
+  speed_histogram.png        — per verification trial: histogram of
+                               ball-speed values on log scale, with
+                               the 800 mm/s velocity-gate threshold
+                               marked. Visualises how often vision
+                               noise pushes velocity past the
+                               controller's clamp.
+  samples.csv                — flat per-sample dump covering BOTH
+                               open-loop replicates AND verification
+                               trials. `phase` column distinguishes
+                               (open_loop_repN | verification_trial_N).
+                               Includes IMU + commanded-tilt + phase-
+                               code per sample for verification rows
+                               so any analysis the canned plots don't
+                               cover can be done downstream.
   recommended_gains.png      — predicted closed-loop step response with
                                current gains vs recommended gains,
                                based on the second-order plant model
@@ -77,97 +92,136 @@ def _load_summary(d: Path) -> dict:
 
 
 def _plant_gain_fit_png(session: dict, out_path: Path) -> None:
-    ol = session.get('phases', {}).get('open_loop')
-    if not ol or not ol.get('samples'):
-        return
-    samples = ol['samples']
-    ts = np.array([s['t'] for s in samples])
-    xs = np.array([s['x'] for s in samples])
-    ys = np.array([s['y'] for s in samples])
-    phases = [s.get('phase', '') for s in samples]
-    tilt_mask = np.array([p == 'tilt' for p in phases])
-    # Project onto expected motion direction so the parabolic fit is
-    # 1-D and visually clean.
-    fit = ol.get('fit', {})
-    motion_unit = fit.get('expected_motion_unit', [1.0, 0.0])
-    baseline_xy = fit.get('baseline_xy', [0.0, 0.0])
-    a_fit = fit.get('a_fit_mm_s2', 0.0)
-    fit_window = fit.get('fit_window_s', [0.0, 0.5])
-    d = ((xs - baseline_xy[0]) * motion_unit[0]
-         + (ys - baseline_xy[1]) * motion_unit[1])
-    # IMU-rpy time series for verification: did the platform actually
-    # tilt? Pulled from the per-sample imu_*_deg fields written by
-    # auto_tune_node. Falls back to all-zero if the trial bag predates
-    # the IMU recording change.
-    imu_roll = np.array([s.get('imu_roll_deg', 0.0) for s in samples])
-    imu_pitch = np.array([s.get('imu_pitch_deg', 0.0) for s in samples])
-    commanded_roll = ol.get('roll_deg', 0.0)
-    commanded_pitch = ol.get('pitch_deg', 0.0)
-    achieved = ol.get('imu_achieved_tilt_deg', 0.0)
-    ratio = ol.get('imu_achievement_ratio', 0.0)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4), dpi=100)
-    # Left: raw x(t) and y(t) with phase colours.
-    ax = axes[0]
-    ax.plot(ts, xs, '-', color='#3b82f6', label='x [mm]')
-    ax.plot(ts, ys, '-', color='#ef4444', label='y [mm]')
-    ax.axvspan(0.0, fit_window[0], color='#9ca3af', alpha=0.15,
-               label='ramp / pre-fit')
-    ax.axvspan(fit_window[0], fit_window[1], color='#10b981',
-               alpha=0.15, label='fit window')
-    ax.set_xlabel('t [s] since tilt cmd')
-    ax.set_ylabel('ball position [mm]')
-    ax.set_title('open-loop tilt-step: raw ball trajectory')
-    ax.grid(alpha=0.25)
-    ax.legend(loc='best', fontsize=8)
-    # Middle: commanded vs achieved tilt.
-    ax = axes[1]
-    ax.plot(ts, imu_roll, '-', color='#3b82f6',
-            label='IMU roll [°]')
-    ax.plot(ts, imu_pitch, '-', color='#ef4444',
-            label='IMU pitch [°]')
-    ax.axhline(commanded_roll, color='#3b82f6',
-               linestyle=':', linewidth=1.0,
-               label=f'commanded roll={commanded_roll:+.2f}°')
-    ax.axhline(commanded_pitch, color='#ef4444',
-               linestyle=':', linewidth=1.0,
-               label=f'commanded pitch={commanded_pitch:+.2f}°')
-    ax.axvspan(fit_window[0], fit_window[1], color='#10b981',
-               alpha=0.15)
-    ax.set_xlabel('t [s] since tilt cmd')
-    ax.set_ylabel('platform tilt [°]')
-    ax.set_title(
-        f'IMU achievement: {achieved:.2f}° '
-        f'({ratio*100:.0f}% of commanded)')
-    ax.grid(alpha=0.25)
-    ax.legend(loc='best', fontsize=7)
-    # Right: 1-D projection + parabolic fit.
-    ax = axes[2]
-    ax.plot(ts, d, 'o', color='#60a5fa', markersize=3,
-            alpha=0.7, label='ball displacement (projected)')
-    if fit_window[1] > fit_window[0]:
-        t_pred = np.linspace(fit_window[0], fit_window[1], 50)
-        d_pred = 0.5 * a_fit * (t_pred - fit_window[0]) ** 2
-        # The c0/c1 terms shift the fit; recompute via polyfit on the
-        # window for visual fidelity.
-        wmask = (ts >= fit_window[0]) & (ts <= fit_window[1])
-        if wmask.sum() >= 3:
-            try:
-                co = np.polyfit(ts[wmask], d[wmask], 2)
-                d_pred = np.polyval(co, t_pred)
-                ax.plot(t_pred, d_pred, '-', color='#10b981',
-                        linewidth=2,
-                        label=(f'parabolic fit, a={a_fit:.0f} mm/s²'))
-            except Exception:
-                pass
-    g_eff = ol.get('g_eff_mm_s2_per_deg', 0.0)
-    td = ol.get('td_observed_s', 0.0)
-    ax.set_xlabel('t [s] since tilt cmd')
-    ax.set_ylabel('displacement along motion axis [mm]')
-    ax.set_title(
-        f'plant gain fit: G_eff={g_eff:.1f} mm/s²/°, '
-        f'Td={td*1000:.0f} ms')
-    ax.grid(alpha=0.25)
-    ax.legend(loc='best', fontsize=8)
+    """Open-loop plant ID visual. Multi-replicate when the session
+    ran ≥2 open-loop trials (default n=3): all replicates overlaid
+    in each panel with one colour per replicate, plus aggregate
+    label showing mean ± std and CV. Falls back to single-replicate
+    layout when phases.open_loop_replicates isn't present (older
+    sessions or n=1 runs)."""
+    phases = session.get('phases', {})
+    replicates = phases.get('open_loop_replicates') or []
+    aggregate = phases.get('open_loop_aggregate') or {}
+    # Back-compat: single-replicate sessions only have phases.open_loop
+    # populated. Treat as a 1-element replicate list.
+    if not replicates:
+        ol = phases.get('open_loop')
+        if not ol or not ol.get('samples'):
+            return
+        replicates = [ol]
+    n_reps = len(replicates)
+    cmap = plt.cm.viridis
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5), dpi=100)
+    # We'll plot per-replicate traces in each panel; one colour per
+    # replicate so they're visually distinguishable. Solid line for
+    # replicate 0 (which is also phases.open_loop for back-compat),
+    # dashed for the rest.
+    g_effs = []
+    fit_windows_for_shading = []
+    for i, ol in enumerate(replicates):
+        samples = ol.get('samples') or []
+        if not samples:
+            continue
+        ts = np.array([s['t'] for s in samples])
+        xs = np.array([s['x'] for s in samples])
+        ys = np.array([s['y'] for s in samples])
+        phases_per_sample = [s.get('phase', '') for s in samples]
+        # Project ball displacement onto motion direction (1-D fit).
+        fit = ol.get('fit', {})
+        motion_unit = fit.get('expected_motion_unit', [1.0, 0.0])
+        baseline_xy = fit.get('baseline_xy', [0.0, 0.0])
+        a_fit = fit.get('a_fit_mm_s2', 0.0)
+        fit_window = fit.get('fit_window_s', [0.0, 0.5])
+        fit_windows_for_shading.append(fit_window)
+        d = ((xs - baseline_xy[0]) * motion_unit[0]
+             + (ys - baseline_xy[1]) * motion_unit[1])
+        imu_roll = np.array([s.get('imu_roll_deg', 0.0)
+                             for s in samples])
+        imu_pitch = np.array([s.get('imu_pitch_deg', 0.0)
+                              for s in samples])
+        commanded_roll = ol.get('roll_deg', 0.0)
+        commanded_pitch = ol.get('pitch_deg', 0.0)
+        g_eff = ol.get('g_eff_mm_s2_per_deg', 0.0)
+        g_effs.append(g_eff)
+        ratio = ol.get('imu_achievement_ratio', 0.0)
+        color = cmap(i / max(n_reps - 1, 1))
+        rep_label = (f'rep {i+1} (G={g_eff:.0f}, '
+                     f'IMU={ratio*100:.0f}%)')
+        # Left: raw ball position projected onto motion axis (1-D
+        # signal). Replicates may differ in starting position so we
+        # plot displacement-from-baseline rather than absolute coords.
+        axes[0].plot(ts, d, '-', color=color, linewidth=1.4,
+                     alpha=0.85, label=rep_label)
+        # Middle: IMU achieved tilt (dominant axis only — whichever
+        # was commanded). Use signed value so under/over shoot is
+        # visible.
+        if abs(commanded_pitch) >= abs(commanded_roll):
+            axes[1].plot(ts, imu_pitch, '-', color=color,
+                         linewidth=1.4, alpha=0.85,
+                         label=f'rep {i+1} pitch')
+            axes[1].axhline(commanded_pitch, color=color,
+                            linestyle=':', linewidth=0.8, alpha=0.5)
+        else:
+            axes[1].plot(ts, imu_roll, '-', color=color,
+                         linewidth=1.4, alpha=0.85,
+                         label=f'rep {i+1} roll')
+            axes[1].axhline(commanded_roll, color=color,
+                            linestyle=':', linewidth=0.8, alpha=0.5)
+        # Right: parabolic fit on the post-motion-onset window.
+        if fit_window[1] > fit_window[0]:
+            wmask = (ts >= fit_window[0]) & (ts <= fit_window[1])
+            if wmask.sum() >= 3:
+                try:
+                    co = np.polyfit(ts[wmask], d[wmask], 2)
+                    t_pred = np.linspace(fit_window[0],
+                                         fit_window[1], 50)
+                    d_pred = np.polyval(co, t_pred)
+                    axes[2].plot(t_pred, d_pred, '-', color=color,
+                                 linewidth=2,
+                                 label=(f'rep {i+1} fit, '
+                                        f'a={a_fit:.0f} mm/s²'))
+                except Exception:
+                    pass
+        # Per-replicate raw-data scatter on the right panel — small
+        # dots so we can see what's being fit.
+        axes[2].plot(ts, d, '.', color=color, markersize=2,
+                     alpha=0.4)
+    # Shade the union of all fit windows on each panel — operator
+    # gets a sense of where the fits are operating.
+    if fit_windows_for_shading:
+        wmin = min(w[0] for w in fit_windows_for_shading)
+        wmax = max(w[1] for w in fit_windows_for_shading)
+        for ax in axes:
+            ax.axvspan(wmin, wmax, color='#10b981', alpha=0.07,
+                       zorder=0)
+    # Panel titles & axis labels.
+    if aggregate:
+        n = aggregate.get('n_replicates', n_reps)
+        gm = aggregate.get('g_eff_mean_mm_s2_per_deg', 0.0)
+        gs = aggregate.get('g_eff_std_mm_s2_per_deg', 0.0)
+        cv = aggregate.get('g_eff_cv', 0.0)
+        title_main = (f'open-loop plant ID, n={n}: '
+                      f'G_eff = {gm:.1f} ± {gs:.1f} mm/s²/° '
+                      f'(CV = {cv*100:.0f}%)')
+    else:
+        gm = g_effs[0] if g_effs else 0.0
+        title_main = (f'open-loop plant ID '
+                      f'(single trial): G_eff = {gm:.1f} mm/s²/°')
+    axes[0].set_xlabel('t [s] since tilt cmd')
+    axes[0].set_ylabel('displacement on motion axis [mm]')
+    axes[0].set_title('ball trajectory (1-D)')
+    axes[0].grid(alpha=0.25)
+    axes[0].legend(loc='best', fontsize=7)
+    axes[1].set_xlabel('t [s] since tilt cmd')
+    axes[1].set_ylabel('platform tilt [°]')
+    axes[1].set_title('IMU achievement (dominant axis)')
+    axes[1].grid(alpha=0.25)
+    axes[1].legend(loc='best', fontsize=7)
+    axes[2].set_xlabel('t [s] since tilt cmd')
+    axes[2].set_ylabel('displacement [mm]')
+    axes[2].set_title('parabolic fits')
+    axes[2].grid(alpha=0.25)
+    axes[2].legend(loc='best', fontsize=7)
+    fig.suptitle(title_main, fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
@@ -406,23 +460,92 @@ def _phase_plane_png(session: dict, out_path: Path) -> None:
 
 
 def _export_samples_csv(session: dict, out_path: Path) -> None:
-    """Flat per-sample dump across all verification trials. One row
-    per ball-state sample. Columns let downstream tooling do any
-    analysis the canned plots don't cover (pandas / plotly / Excel /
-    whatever) without re-parsing the JSON."""
-    trials = session.get('phases', {}).get('verification', []) or []
-    if not trials:
-        return
+    """Flat per-sample dump covering BOTH open-loop replicates and
+    verification trials. One row per ball-state sample. The `phase`
+    column distinguishes:
+      - 'open_loop_rep0', 'open_loop_rep1', ... (one per replicate)
+      - 'verification_trial_1', ... 'verification_trial_4'
+    Columns let downstream tooling (pandas / plotly / Excel /
+    whatever) do any analysis the canned plots don't cover without
+    re-parsing the JSON.
+    """
     fieldnames = [
-        'trial_idx', 'start_marker', 'target_marker',
+        'phase',                     # open_loop_repN | verification_trial_N
+        'trial_idx',                 # 0 for open-loop, 1-4 for verification
+        # Common geometry
+        'start_marker', 'target_marker',
         'target_x_mm', 'target_y_mm',
         'ball_start_x_mm', 'ball_start_y_mm',
+        # Verification-only metadata (blank for open-loop)
         'settled', 'settled_at_s',
+        # Time series
         't_in_trial_s', 'x_mm', 'y_mm',
         'vx_mm_s', 'vy_mm_s', 'speed_mm_s',
         'err_mm', 'v_toward_target_mm_s',
+        # Tilt instrumentation (NEW). For open-loop: cmd_pitch/roll
+        # are constant (the trial's commanded values); IMU is the
+        # platform's measured response. For verification: cmd_pitch/
+        # roll are the BALL_TRACK loop's per-tick output. Both
+        # populated when /ball_track/diagnostic was running (i.e.
+        # bag was recorded after 2026-05-01 commit 2eb6235).
+        'imu_pitch_deg', 'imu_roll_deg',
+        'cmd_pitch_deg', 'cmd_roll_deg',
+        'phase_code',                # 0 settle, 1 accel, 2 coast,
+                                     # 3 brake, 4 stiction_break,
+                                     # 5 pid, -1 stale, -2 no diag
     ]
     rows: list[dict] = []
+    # ---- Open-loop replicates (NEW) -----------------------------
+    # Each replicate is its own "trial" for the CSV; phase column
+    # carries the replicate number so they're distinguishable.
+    replicates = (session.get('phases', {})
+                  .get('open_loop_replicates') or [])
+    if not replicates:
+        # Back-compat: single open-loop trial sessions.
+        ol = session.get('phases', {}).get('open_loop')
+        if ol:
+            replicates = [ol]
+    for rep_idx, ol in enumerate(replicates):
+        samples = ol.get('samples') or []
+        if len(samples) < 2:
+            continue
+        ts = np.array([s['t'] for s in samples])
+        xs = np.array([s['x'] for s in samples])
+        ys = np.array([s['y'] for s in samples])
+        ball_start = ol.get('ball_start_xy', [xs[0], ys[0]])
+        cmd_pitch_const = ol.get('pitch_deg', 0.0)
+        cmd_roll_const = ol.get('roll_deg', 0.0)
+        sm = ol.get('start_marker', -1)
+        # Computed velocity for open-loop too.
+        vx = np.gradient(xs, ts)
+        vy = np.gradient(ys, ts)
+        speed = np.hypot(vx, vy)
+        for i, sample in enumerate(samples):
+            rows.append({
+                'phase': f'open_loop_rep{rep_idx}',
+                'trial_idx': 0,
+                'start_marker': int(sm),
+                'target_marker': -1,
+                'target_x_mm': '', 'target_y_mm': '',
+                'ball_start_x_mm': float(ball_start[0]),
+                'ball_start_y_mm': float(ball_start[1]),
+                'settled': '', 'settled_at_s': '',
+                't_in_trial_s': float(ts[i]),
+                'x_mm': float(xs[i]), 'y_mm': float(ys[i]),
+                'vx_mm_s': float(vx[i]), 'vy_mm_s': float(vy[i]),
+                'speed_mm_s': float(speed[i]),
+                'err_mm': '',
+                'v_toward_target_mm_s': '',
+                'imu_pitch_deg':
+                    float(sample.get('imu_pitch_deg', 0.0)),
+                'imu_roll_deg':
+                    float(sample.get('imu_roll_deg', 0.0)),
+                'cmd_pitch_deg': float(cmd_pitch_const),
+                'cmd_roll_deg': float(cmd_roll_const),
+                'phase_code': '',  # no phase concept in open-loop
+            })
+    # ---- Verification trials ------------------------------------
+    trials = session.get('phases', {}).get('verification', []) or []
     for trial in trials:
         samples = trial.get('samples', [])
         if len(samples) < 2:
@@ -432,8 +555,6 @@ def _export_samples_csv(session: dict, out_path: Path) -> None:
         ys = np.array([s['y'] for s in samples])
         target = trial.get('target_xy', [0, 0])
         ball_start = trial.get('ball_start_xy', [xs[0], ys[0]])
-        # Computed velocity (central differences). At the boundaries
-        # numpy.gradient uses one-sided differences automatically.
         vx = np.gradient(xs, ts)
         vy = np.gradient(ys, ts)
         speed = np.hypot(vx, vy)
@@ -443,8 +564,9 @@ def _export_samples_csv(session: dict, out_path: Path) -> None:
         ux = dx / np.maximum(err, 1e-3)
         uy = dy / np.maximum(err, 1e-3)
         v_toward = vx * ux + vy * uy
-        for i in range(len(samples)):
+        for i, sample in enumerate(samples):
             rows.append({
+                'phase': f'verification_trial_{trial.get("trial_idx", 0)}',
                 'trial_idx': int(trial.get('trial_idx', 0)),
                 'start_marker': int(trial.get('start_marker', -1)),
                 'target_marker': int(trial.get('target_marker', -1)),
@@ -457,13 +579,21 @@ def _export_samples_csv(session: dict, out_path: Path) -> None:
                                  if trial.get('settled_at_s') is not None
                                  else ''),
                 't_in_trial_s': float(ts[i]),
-                'x_mm': float(xs[i]),
-                'y_mm': float(ys[i]),
-                'vx_mm_s': float(vx[i]),
-                'vy_mm_s': float(vy[i]),
+                'x_mm': float(xs[i]), 'y_mm': float(ys[i]),
+                'vx_mm_s': float(vx[i]), 'vy_mm_s': float(vy[i]),
                 'speed_mm_s': float(speed[i]),
                 'err_mm': float(err[i]),
                 'v_toward_target_mm_s': float(v_toward[i]),
+                'imu_pitch_deg':
+                    float(sample.get('imu_pitch_deg', 0.0)),
+                'imu_roll_deg':
+                    float(sample.get('imu_roll_deg', 0.0)),
+                'cmd_pitch_deg':
+                    float(sample.get('cmd_pitch_deg', 0.0)),
+                'cmd_roll_deg':
+                    float(sample.get('cmd_roll_deg', 0.0)),
+                'phase_code':
+                    float(sample.get('phase_code', -2.0)),
             })
     if not rows:
         return
@@ -471,6 +601,221 @@ def _export_samples_csv(session: dict, out_path: Path) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+# ---------- Phase-code colour map -----------------------------
+# Mirrors stewart_control_node._ball_track_run's phase_code field.
+# Used by the tilt-timeseries plot's coloured strip.
+_PHASE_CODES = {
+    -2: ('no diag', '#cbd5e1'),    # no diag captured for this sample
+    -1: ('stale state', '#6b7280'),  # state-stale branch in ctrl node
+    0:  ('settle/PID', '#10b981'),
+    1:  ('accel (BB)', '#3b82f6'),
+    2:  ('coast (BB)', '#f59e0b'),
+    3:  ('brake (BB)', '#ef4444'),
+    4:  ('STICTION', '#a855f7'),
+    5:  ('PID', '#06b6d4'),
+}
+
+
+def _tilt_timeseries_png(session: dict, out_path: Path) -> None:
+    """Per verification trial: commanded tilt vs IMU-achieved tilt,
+    with a phase strip below showing PID / STICTION_BREAK / etc.
+    Surfaces controller-side behaviour the existing
+    step_response_per_trial.png doesn't show:
+      - max_tilt saturation events (commanded clamps at the cap)
+      - stiction-relief activation (phase = STICTION, magnitude
+        boosted to max_tilt regardless of error)
+      - inner-loop tracking quality (gap between commanded and IMU)
+      - vision-noise-driven tilt commands (high-frequency commanded
+        oscillation that IMU can't possibly track)
+
+    Falls back gracefully when verification samples don't carry the
+    cmd_pitch_deg / phase_code fields (older sessions): the panel
+    is just blank instead of crashing.
+    """
+    trials = session.get('phases', {}).get('verification', []) or []
+    if not trials:
+        return
+    n = len(trials)
+    # constrained_layout handles per-row title/label spacing better
+    # than tight_layout for this n-row grid; without it, trial-N
+    # titles overlap trial-(N-1)'s x-axis labels at n=4.
+    fig, axes = plt.subplots(n, 2, figsize=(13, 3.4 * n),
+                             dpi=100,
+                             gridspec_kw={'width_ratios': [4, 1],
+                                          'wspace': 0.18,
+                                          'hspace': 0.55},
+                             constrained_layout=True)
+    if n == 1:
+        axes = np.array([axes])
+    for i, t in enumerate(trials):
+        ax_main = axes[i][0]
+        ax_phase = axes[i][1]
+        samples = t.get('samples', [])
+        if len(samples) < 5:
+            ax_main.text(0.5, 0.5, 'no samples',
+                         ha='center', va='center',
+                         transform=ax_main.transAxes)
+            continue
+        ts = np.array([s['t'] for s in samples])
+        cmd_p = np.array([s.get('cmd_pitch_deg', 0.0)
+                          for s in samples])
+        cmd_r = np.array([s.get('cmd_roll_deg', 0.0)
+                          for s in samples])
+        imu_p = np.array([s.get('imu_pitch_deg', 0.0)
+                          for s in samples])
+        imu_r = np.array([s.get('imu_roll_deg', 0.0)
+                          for s in samples])
+        phase = np.array([s.get('phase_code', -2.0)
+                          for s in samples])
+        # Detect "no diag captured" — old session bag, or BALL_TRACK
+        # diag was never published. Annotate so reader knows.
+        no_diag = float(np.mean(phase == -2.0)) > 0.5
+        ax_main.plot(ts, cmd_p, '-', color='#ef4444', linewidth=1.5,
+                     label='cmd pitch')
+        ax_main.plot(ts, imu_p, '-', color='#fda4af', linewidth=1.0,
+                     label='IMU pitch', alpha=0.85)
+        ax_main.plot(ts, cmd_r, '-', color='#3b82f6', linewidth=1.5,
+                     label='cmd roll')
+        ax_main.plot(ts, imu_r, '-', color='#93c5fd', linewidth=1.0,
+                     label='IMU roll', alpha=0.85)
+        ax_main.axhline(0, color='#6b7280', linestyle=':',
+                        linewidth=0.6)
+        # Reference the active max_tilt as a horizontal band so
+        # saturation is immediately visible. Pull from current_gains
+        # because that's what was active during the verification trials.
+        current_gains = session.get('current_gains', {}) or {}
+        max_tilt = float(current_gains.get('max_tilt_deg', 2.5))
+        ax_main.axhline(max_tilt, color='#dc2626', linestyle='--',
+                        linewidth=0.7, alpha=0.5,
+                        label=f'±max_tilt ({max_tilt:.1f}°)')
+        ax_main.axhline(-max_tilt, color='#dc2626', linestyle='--',
+                        linewidth=0.7, alpha=0.5)
+        if t.get('settled') and t.get('settled_at_s'):
+            ax_main.axvline(t['settled_at_s'], color='#10b981',
+                            linestyle='--', linewidth=1.0,
+                            label='settled')
+        ax_main.set_xlabel('t [s]')
+        ax_main.set_ylabel('tilt [°]')
+        ax_main.set_title(
+            f'Trial {t.get("trial_idx", i+1)}: '
+            f'm{t.get("start_marker", "?")} → '
+            f'm{t.get("target_marker", "?")} '
+            f'{"SETTLED" if t.get("settled") else "DID NOT SETTLE"}'
+            + (' [no diag]' if no_diag else ''))
+        ax_main.grid(alpha=0.25)
+        ax_main.legend(loc='best', fontsize=7, ncol=3)
+        # Right column: phase strip — colour-coded vertical bars per
+        # tick. Visualises when the controller was in PID vs
+        # STICTION_BREAK vs SETTLE vs (during bang-bang) ACCEL/
+        # BRAKE/COAST. For PID-only sessions you mostly see green
+        # (PID) and purple (STICTION_BREAK) when the relief fires.
+        unique_phases = sorted(set(int(p) for p in phase))
+        # Build a stacked bar of phase fractions (proportional time
+        # in each phase across the trial).
+        total = len(phase)
+        fractions = []
+        labels = []
+        colors = []
+        for code in unique_phases:
+            count = int(np.sum(phase == code))
+            name, color = _PHASE_CODES.get(code, (f'?{code}', '#9ca3af'))
+            fractions.append(count / total)
+            labels.append(f'{name}\n{count/total*100:.0f}%')
+            colors.append(color)
+        bottom = 0.0
+        for frac, color, label in zip(fractions, colors, labels):
+            ax_phase.barh([0], [frac], left=[bottom],
+                          height=0.5, color=color,
+                          edgecolor='white', linewidth=0.5)
+            if frac > 0.10:  # only label segments visible enough
+                ax_phase.text(bottom + frac / 2, 0, label,
+                              ha='center', va='center',
+                              fontsize=7, color='white')
+            bottom += frac
+        ax_phase.set_xlim(0, 1)
+        ax_phase.set_ylim(-0.4, 0.4)
+        ax_phase.set_yticks([])
+        ax_phase.set_xticks([])
+        ax_phase.set_title('phase mix', fontsize=9)
+    # constrained_layout (set in subplots() above) handles spacing;
+    # don't call tight_layout — it warns and overrides.
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def _speed_histogram_png(session: dict, out_path: Path) -> None:
+    """Per verification trial: histogram of ball-speed values
+    (computed from KF positions via numpy.gradient). Marks the
+    BT_MAX_BALL_VEL_MM_S = 800 mm/s safety-gate threshold so the
+    operator can see how often vision noise pushes velocity past
+    the controller's clamp.
+
+    A trial dominated by physical motion has a unimodal speed
+    distribution peaking around 100-300 mm/s. A trial corrupted by
+    vision noise has a long tail or a bimodal distribution
+    extending past 800 mm/s — those samples are the ones the
+    controller's velocity gate is rejecting.
+    """
+    trials = session.get('phases', {}).get('verification', []) or []
+    if not trials:
+        return
+    n = len(trials)
+    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4), dpi=100,
+                             sharey=True)
+    if n == 1:
+        axes = np.array([axes])
+    GATE = 800.0
+    for i, t in enumerate(trials):
+        ax = axes[i]
+        samples = t.get('samples', [])
+        if len(samples) < 5:
+            ax.set_title(f'trial {t.get("trial_idx", i+1)}: '
+                         f'too few samples')
+            continue
+        ts = np.array([s['t'] for s in samples])
+        xs = np.array([s['x'] for s in samples])
+        ys = np.array([s['y'] for s in samples])
+        vx = np.gradient(xs, ts)
+        vy = np.gradient(ys, ts)
+        speed = np.hypot(vx, vy)
+        # Log scale because the tail goes to 4-5 m/s on noisy
+        # sessions; linear-scale plot would just show a spike near
+        # zero and you couldn't see the tail.
+        bins = np.logspace(0, np.log10(max(speed.max() + 1.0, 100)),
+                           40)
+        ax.hist(speed, bins=bins, color='#60a5fa',
+                edgecolor='#1e3a8a', alpha=0.75)
+        ax.axvline(GATE, color='#dc2626', linestyle='--',
+                   linewidth=1.2,
+                   label=f'gate {GATE:.0f} mm/s')
+        # Annotate fraction of samples above the gate.
+        n_over = int(np.sum(speed > GATE))
+        frac = n_over / len(speed)
+        ax.text(0.97, 0.95, f'{frac*100:.1f}% > gate\n'
+                            f'p95 = {np.percentile(speed, 95):.0f}\n'
+                            f'max = {speed.max():.0f}',
+                ha='right', va='top', transform=ax.transAxes,
+                fontsize=8, color='#1f2937',
+                bbox={'facecolor': 'white', 'edgecolor': '#cbd5e1',
+                      'pad': 3})
+        ax.set_xscale('log')
+        ax.set_xlabel('speed [mm/s]')
+        if i == 0:
+            ax.set_ylabel('count')
+        ax.set_title(
+            f'Trial {t.get("trial_idx", i+1)}: '
+            f'm{t.get("start_marker", "?")} → '
+            f'm{t.get("target_marker", "?")}')
+        ax.grid(alpha=0.25)
+        ax.legend(loc='upper left', fontsize=8)
+    fig.suptitle('speed distribution per trial '
+                 '(visualises vision-noise-driven outliers)',
+                 fontsize=10)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
 
 
 def _initial_accel_g_eff(trial: dict, window_s: float = 0.20
@@ -918,6 +1263,8 @@ def main():
     _step_response_per_trial_png(session, d / 'step_response_per_trial.png')
     _ball_paths_combined_png(session, d / 'ball_paths_combined.png')
     _phase_plane_png(session, d / 'phase_plane.png')
+    _tilt_timeseries_png(session, d / 'tilt_timeseries.png')
+    _speed_histogram_png(session, d / 'speed_histogram.png')
     _export_samples_csv(session, d / 'samples.csv')
     _recommended_gains_png(session, d / 'recommended_gains.png')
     with open(d / 'step_id_summary.json', 'w') as f:
@@ -930,6 +1277,8 @@ def main():
     print('  step_response_per_trial.png')
     print('  ball_paths_combined.png')
     print('  phase_plane.png')
+    print('  tilt_timeseries.png')
+    print('  speed_histogram.png')
     print('  samples.csv')
     print('  recommended_gains.png')
     print('  step_id_summary.json')

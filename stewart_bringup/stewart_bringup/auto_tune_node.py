@@ -349,6 +349,11 @@ STEP_ID_BAG_TOPICS = [
     '/control_result',
     '/auto_tune/status',
     '/auto_tune/trial',
+    '/ball_track/diagnostic',  # 50 Hz controller phase + cmd tilts;
+                               # used by digest's tilt_timeseries.png
+                               # to visualise saturation, stiction
+                               # relief events, and inner-loop
+                               # tracking quality
     '/oak/ball/v0/yolo_pixel',
     '/oak/ball/v0/cv2_pixel',
     '/leg_encoders',     # kept: stuck-leg detection during open-loop tilt
@@ -610,6 +615,32 @@ class AutoTuneNode(Node):
         self.create_subscription(
             Float32MultiArray, '/platform_rpy',
             self._on_platform_rpy, 10)
+        # Latest /ball_track/diagnostic snapshot — populated only
+        # while BALL_TRACK is running. 11-element Float32MultiArray
+        # per stewart_control_node._ball_track_run:
+        #   [0] t_rel_s          (loop-relative time)
+        #   [1] phase_code       (0 settle, 1 accel, 2 coast,
+        #                         3 brake, 4 stiction_break, 5 pid,
+        #                         -1 stale-state branch)
+        #   [2] tilt_pitch_cmd_deg
+        #   [3] tilt_roll_cmd_deg
+        #   [4] ex_mm
+        #   [5] ey_mm
+        #   [6] err_mag_mm
+        #   [7] v_toward_mm_s
+        #   [8] vel_mag_mm_s
+        #   [9] ux               (unit error)
+        #   [10] uy
+        # Used by the verification trial sample loop to attach the
+        # controller's commanded tilt + active phase to each ball-
+        # state sample. Lets the digest plot commanded-vs-achieved
+        # tilt over time (saturation visible) and a phase strip
+        # (when did stiction relief fire?).
+        self._step_id_ball_track_diag: Optional[list[float]] = None
+        self._step_id_ball_track_diag_t: float = 0.0
+        self.create_subscription(
+            Float32MultiArray, '/ball_track/diagnostic',
+            self._on_ball_track_diag, 20)
         self.pub_cmd = self.create_publisher(String, '/control_cmd', 10)
         # Latched-style status: rosbridge clients pick up the latest
         # snapshot on connect (we'll re-publish it every status update).
@@ -1473,6 +1504,11 @@ class AutoTuneNode(Node):
             self._step_id_imu_rpy = (float(msg.data[0]),
                                       float(msg.data[1]))
             self._step_id_imu_rpy_t = time.monotonic()
+
+    def _on_ball_track_diag(self, msg: Float32MultiArray) -> None:
+        if len(msg.data) >= 11:
+            self._step_id_ball_track_diag = list(msg.data)
+            self._step_id_ball_track_diag_t = time.monotonic()
 
     def _on_step_id_n_replicates_cmd(self, msg: Float64) -> None:
         """GUI sets the open-loop replicate count. Float64 because
@@ -2955,8 +2991,35 @@ class AutoTuneNode(Node):
                 break
             if self._ball_state is not None:
                 p = self._ball_state.pose.position
-                samples.append({'t': elapsed,
-                                'x': float(p.x), 'y': float(p.y)})
+                # Capture IMU + commanded-tilt + phase per sample so
+                # the digest can plot commanded-vs-achieved tilt
+                # (saturation visible) and a phase strip (when did
+                # stiction relief fire?). Both come from latched
+                # subscribers; if either is stale (e.g., diag arrived
+                # >0.5 s ago), values fall back to 0 and a NaN-like
+                # marker so the digest can mask them out.
+                imu = self._step_id_imu_rpy or (0.0, 0.0)
+                diag = self._step_id_ball_track_diag
+                diag_age = (now - self._step_id_ball_track_diag_t
+                            if self._step_id_ball_track_diag_t > 0
+                            else 999.0)
+                if diag is not None and diag_age < 0.5:
+                    cmd_pitch = float(diag[2])
+                    cmd_roll = float(diag[3])
+                    phase_code = float(diag[1])
+                else:
+                    cmd_pitch = 0.0
+                    cmd_roll = 0.0
+                    phase_code = -2.0  # "no diag" sentinel
+                samples.append({
+                    't': elapsed,
+                    'x': float(p.x), 'y': float(p.y),
+                    'imu_pitch_deg': float(imu[1]),
+                    'imu_roll_deg': float(imu[0]),
+                    'cmd_pitch_deg': cmd_pitch,
+                    'cmd_roll_deg': cmd_roll,
+                    'phase_code': phase_code,
+                })
             # Cross-sensor settle gate: target marker occluded AND
             # ball-position within tolerance.
             if self._is_ball_on_marker(target_marker):
