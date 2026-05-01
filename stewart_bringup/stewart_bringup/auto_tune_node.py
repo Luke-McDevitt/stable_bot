@@ -259,6 +259,19 @@ STEP_ID_POST_TILT_LEVEL_S     = 1.0    # hold flat after tilting so the
 STEP_ID_GOTO_TIMEOUT_S        = 25.0   # per-trial goto timeout
 STEP_ID_TARGET_OCCLUSION_S    = 1.0    # target marker continuously
                                        # occluded for this long → settled
+STEP_ID_INTER_TRIAL_SETTLE_S  = 3.0    # after a goto trial ends,
+                                       # explicitly hold the platform
+                                       # flat at start_z for this long
+                                       # so the operator can place the
+                                       # ball on the next marker
+                                       # without it rolling off due to
+                                       # residual tilt from the prior
+                                       # trial. Required because mode:
+                                       # LEVEL_HOLD alone doesn't zero
+                                       # current_rpy — it just stops
+                                       # BALL_TRACK; the level loop
+                                       # then tracks whatever rpy was
+                                       # last commanded.
 STEP_ID_INTER_TRIAL_DWELL_S   = 3.0    # dwell after operator confirms
                                        # ball on next-start marker
 STEP_ID_OPERATOR_PROMPT_S     = 300.0  # max wait for operator to place
@@ -2580,6 +2593,18 @@ class AutoTuneNode(Node):
             return out
         out['ball_start_xy'] = list(ball0)
         out['target_xy'] = list(target_xy)
+        # Status prompt: tell the operator the trial is starting and
+        # what's happening. Without this the GUI sits silent for 25 s
+        # and the operator can't tell when the trial actually started
+        # (the BALL_TRACK_GOTO publish is invisible from the operator's
+        # side until the ball moves).
+        self._status['prompt'] = (
+            f'Trial {trial_idx} RUNNING: marker {start_marker} → '
+            f'marker {target_marker} '
+            f'(target xy = {target_xy[0]:+.1f}, {target_xy[1]:+.1f}). '
+            f'Settles when target marker is occluded for '
+            f'{STEP_ID_TARGET_OCCLUSION_S:.0f} s.')
+        self._publish_status()
         # Fire the goto. Note: ref_generator handles the platform→IMU
         # rotation, so we send the marker centre in platform frame and
         # the existing pipeline takes care of the rest.
@@ -2593,6 +2618,7 @@ class AutoTuneNode(Node):
         settled = False
         settled_t: Optional[float] = None
         target_occluded_since: Optional[float] = None
+        last_progress_t = 0.0
         while not self._abort:
             now = time.monotonic()
             elapsed = now - t0
@@ -2614,10 +2640,61 @@ class AutoTuneNode(Node):
                     break
             else:
                 target_occluded_since = None
+            # Live progress: update the prompt every 1 s with elapsed
+            # time + current ball-to-target distance so the operator
+            # has visible signs of life.
+            if now - last_progress_t > 1.0:
+                last_progress_t = now
+                if self._ball_state is not None:
+                    p = self._ball_state.pose.position
+                    err = math.hypot(float(p.x) - target_xy[0],
+                                     float(p.y) - target_xy[1])
+                    self._status['prompt'] = (
+                        f'Trial {trial_idx} RUNNING — '
+                        f't={elapsed:.1f}s, err={err:.0f} mm '
+                        f'(marker {start_marker} → {target_marker})')
+                    self._publish_status()
             time.sleep(0.02)
-        # Drop back to LEVEL_HOLD between trials so the platform doesn't
-        # keep tilting while the ball is being placed.
+        # ---- End of trial: explicitly flatten the platform ----
+        # mode:LEVEL_HOLD stops BALL_TRACK but does NOT zero
+        # current_rpy. The level loop's setpoint becomes
+        # level_ref + current_rpy, so if BALL_TRACK left current_rpy
+        # at (1.5°, -2°), the platform stays tilted at that pose.
+        # Operator places ball → ball rolls off due to residual tilt.
+        # Fix: send LEVEL_HOLD AND a SetPose to (0,0,start_z)(0,0,0)
+        # then sleep STEP_ID_INTER_TRIAL_SETTLE_S so the platform
+        # actually reaches flat before the next trial's prompt.
         self._publish_mode('LEVEL_HOLD')
+        if settled:
+            self._status['prompt'] = (
+                f'Trial {trial_idx} SETTLED at t={settled_t:.1f}s. '
+                f'Leveling platform for {STEP_ID_INTER_TRIAL_SETTLE_S:.0f} '
+                f's…')
+        else:
+            self._status['prompt'] = (
+                f'Trial {trial_idx} did not settle within '
+                f'{STEP_ID_GOTO_TIMEOUT_S:.0f} s. Leveling platform '
+                f'for {STEP_ID_INTER_TRIAL_SETTLE_S:.0f} s…')
+        self._publish_status()
+        if self._set_pose_cli is not None:
+            try:
+                req = SetPose.Request()
+                req.x = 0.0
+                req.y = 0.0
+                req.z = float(self._step_id_start_z_mm)
+                req.roll = 0.0
+                req.pitch = 0.0
+                req.yaw = 0.0
+                req.blocking = False
+                self._set_pose_cli.call_async(req)
+            except Exception:
+                pass
+        # Settle wall-clock so the platform physically reaches flat
+        # before the operator is asked to place the next ball. Without
+        # this sleep the operator sees the prompt change ~50 ms after
+        # the trial ends, but the platform takes ~1 s to flatten,
+        # during which the ball rolls off.
+        self._sleep_with_abort(STEP_ID_INTER_TRIAL_SETTLE_S)
         out['settled'] = bool(settled)
         out['settled_at_s'] = (float(settled_t)
                                if settled_t is not None else None)
