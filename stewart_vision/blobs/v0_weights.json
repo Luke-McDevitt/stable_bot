@@ -2,9 +2,9 @@
   "w_b": -1.5,
   "w_g": 0.4,
   "w_r": 1.0,
-  "bias": -0.5,
+  "bias": -0.2,
   "score_floor": 0.02,
   "density_floor": 0.01,
   "nn_conf_min": 0.0,
-  "saved_at_utc": "2026-05-01T00:50:22Z"
+  "saved_at_utc": "2026-05-01T01:35:37Z"
 }
