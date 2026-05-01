@@ -26,6 +26,12 @@ Environment=OAK_ENABLE_DEPTH=0
 # Myriad X SHAVE budget. V0.5c was a dead end (NaN output, wrong
 # detection ceiling); kept in code for git-history fallback only.
 Environment=OAK_DISABLE_V0_NN=1
+# Strip pipeline elements that compete with the V1 NN for Myriad X
+# cycles. ArUco runs on RGB now (mono unused). The MJPEG encoder is
+# only used by the GUI live feed — disable for max V1 rate, re-enable
+# (Environment=OAK_DISABLE_JPEG=0) when you want the live feed back.
+Environment=OAK_ENABLE_MONO=0
+Environment=OAK_DISABLE_JPEG=0
 # Mono FPS stays at 15 (default). 2026-05-01: tried OAK_MONO_FPS=60
 # to test the hypothesis that mono rate gates RGB; at 60 fps mono,
 # platform_pose_node's ArUco solve was dropping out (pose=0 in

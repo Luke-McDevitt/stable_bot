@@ -626,7 +626,9 @@ def _load_rgb_intrinsics(yaml_path: str) -> Tuple[Optional[np.ndarray],
 def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
                     enable_depth: bool = False,
                     v0_blob_path: Optional[str] = None,
-                    v1_blob_path: Optional[str] = None):
+                    v1_blob_path: Optional[str] = None,
+                    enable_mono: bool = True,
+                    enable_jpeg: bool = True):
     """Build the OAK-D Pro AF pipeline. Returns the dai.Pipeline.
 
     Two configurations, selected by `enable_depth`:
@@ -760,16 +762,25 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
     cam_ctrl_in.setStreamName('cam_rgb_control')
     cam_ctrl_in.out.link(cam_rgb.inputControl)
 
-    # Mono left — raw output for ArUco pose recovery
-    mono_l = pipeline.create(dai.node.MonoCamera)
-    mono_l.setBoardSocket(dai.CameraBoardSocket.CAM_B)
-    mono_l.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
-    mono_l.setFps(mono_fps)
+    # Mono left — raw output for ArUco pose recovery. Disabled when
+    # enable_mono is False (saves Myriad X cycles + USB bandwidth);
+    # ArUco currently runs on RGB so mono is optional.
+    mono_l = None
+    if enable_mono:
+        mono_l = pipeline.create(dai.node.MonoCamera)
+        mono_l.setBoardSocket(dai.CameraBoardSocket.CAM_B)
+        mono_l.setResolution(
+            dai.MonoCameraProperties.SensorResolution.THE_800_P)
+        mono_l.setFps(mono_fps)
 
-    # JPEG encoder for RGB stream
-    enc_rgb = pipeline.create(dai.node.VideoEncoder)
-    enc_rgb.setDefaultProfilePreset(
-        rgb_fps, dai.VideoEncoderProperties.Profile.MJPEG)
+    # JPEG encoder for RGB stream — disabled when enable_jpeg is False
+    # to free Myriad X compute for the V1 NN. The GUI live feed uses
+    # this stream; turning it off means no live preview.
+    enc_rgb = None
+    if enable_jpeg:
+        enc_rgb = pipeline.create(dai.node.VideoEncoder)
+        enc_rgb.setDefaultProfilePreset(
+            rgb_fps, dai.VideoEncoderProperties.Profile.MJPEG)
     # Quality 50 (down from 70) — at 540p MJPEG that's ~35-45 KB/frame
     # vs ~70-90 KB at q70. Smaller per-frame payload reduces the
     # transfer + queue time inside the OAK pipeline, which directly
@@ -777,21 +788,20 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
     # uncompressed cam_rgb.video stream (not the JPEG output), so this
     # only affects the GUI live feed.  Override via
     # OAK_RGB_JPEG_QUALITY=NN if you need crisper screenshots.
-    try:
-        rgb_quality = int(os.environ.get('OAK_RGB_JPEG_QUALITY', '50'))
-        rgb_quality = max(20, min(100, rgb_quality))
-        enc_rgb.setQuality(rgb_quality)
-    except Exception:
-        pass
-    # Drop-newest-on-overflow at the encoder input: prevents frame
-    # backlog inside the OAK if encoding lags. A 7-frame queue at
-    # 60 Hz capture is exactly what the 115 ms latency profile was
-    # showing — non-blocking + queue-of-1 forces "always encode the
-    # newest, drop the older". Same idea for the encoder's frame pool.
-    enc_rgb.input.setQueueSize(1)
-    enc_rgb.input.setBlocking(False)
-    enc_rgb.setNumFramesPool(2)
-    cam_rgb.video.link(enc_rgb.input)
+    if enable_jpeg:
+        try:
+            rgb_quality = int(
+                os.environ.get('OAK_RGB_JPEG_QUALITY', '50'))
+            rgb_quality = max(20, min(100, rgb_quality))
+            enc_rgb.setQuality(rgb_quality)
+        except Exception:
+            pass
+        # Drop-newest-on-overflow at the encoder input: prevents
+        # frame backlog inside the OAK if encoding lags.
+        enc_rgb.input.setQueueSize(1)
+        enc_rgb.input.setBlocking(False)
+        enc_rgb.setNumFramesPool(2)
+        cam_rgb.video.link(enc_rgb.input)
 
     # Outputs
     def add_out(name, src):
@@ -813,17 +823,11 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
         src.link(out.input)
         return out
 
-    add_out('rgb_jpeg', enc_rgb.bitstream)
-    # Full-resolution raw RGB for V0 detection. We tried an on-device
-    # ImageManip downscale to 320×180 (Phase 2A, 2026-04-30) to save
-    # USB bandwidth; on USB-3 that wasn't binding, but the small frame
-    # made the cv2 HSV+contour detector flaky (ball ~5 px radius is
-    # right on the morph-open cliff edge). Bag data showed V0 success
-    # rate dropping from 8 Hz to <2 Hz. Reverted — Phase 2B's on-device
-    # NN path (see docs/oak_phase2b_on_device_v0.md) remains the right
-    # move once a custom .blob is compiled.
+    if enable_jpeg:
+        add_out('rgb_jpeg', enc_rgb.bitstream)
     add_out('rgb_raw',  cam_rgb.video)             # uncompressed for V0
-    add_out('left',     mono_l.out)                # raw mono left for ArUco
+    if enable_mono:
+        add_out('left', mono_l.out)                # raw mono left for ArUco
 
     # Phase 2B — on-device V0 detection. When a compiled .blob path is
     # supplied, fan out cam_rgb.video into an ImageManip downscaler ->
@@ -1181,10 +1185,28 @@ class OakDriverNode(Node):
         self._jpeg_quality_used = jpeg_q
         self.get_logger().info(
             f"Building OAK pipeline (rgb={rgb_fps} Hz, mono={mono_fps} Hz)…")
+        # OAK_ENABLE_MONO=0 — strip mono camera entirely (saves USB +
+        # Myriad X cycles). ArUco runs on RGB now, so mono is
+        # optional. OAK_DISABLE_JPEG=1 — strip the MJPEG encoder +
+        # rgb_jpeg XLink (drops the GUI live feed) to free Myriad X
+        # cycles for the V1 NN. With both off, V1 YOLO should be at
+        # the device's standalone benchmark ceiling.
+        self._enable_mono = (
+            os.environ.get('OAK_ENABLE_MONO', '1') == '1')
+        self._enable_jpeg = (
+            os.environ.get('OAK_DISABLE_JPEG', '0') != '1')
+        if not self._enable_mono:
+            self.get_logger().info(
+                "Mono camera disabled via OAK_ENABLE_MONO=0")
+        if not self._enable_jpeg:
+            self.get_logger().info(
+                "MJPEG encoder disabled via OAK_DISABLE_JPEG=1")
         pipeline = _build_pipeline(rgb_fps=rgb_fps, mono_fps=mono_fps,
                                    enable_depth=self.enable_depth,
                                    v0_blob_path=self._v0_blob_path,
-                                   v1_blob_path=self._v1_blob_path)
+                                   v1_blob_path=self._v1_blob_path,
+                                   enable_mono=self._enable_mono,
+                                   enable_jpeg=self._enable_jpeg)
 
         # USB speed cap. The Pi 5 caps total USB current at 600 mA
         # by default (raise to 1.2 A with `usb_max_current_enable=1`
@@ -1242,9 +1264,13 @@ class OakDriverNode(Node):
         # always holds the most recent frame; older ones are dropped.
         # We'd rather skip frames than serve stale ones to the
         # controller — see oscillating-latency observation 2026-04-29.
-        self.q_rgb_jpeg = self.device.getOutputQueue('rgb_jpeg', 1, False)
+        self.q_rgb_jpeg = (
+            self.device.getOutputQueue('rgb_jpeg', 1, False)
+            if self._enable_jpeg else None)
         self.q_rgb_raw  = self.device.getOutputQueue('rgb_raw',  1, False)
-        self.q_left     = self.device.getOutputQueue('left',     1, False)
+        self.q_left = (
+            self.device.getOutputQueue('left', 1, False)
+            if self._enable_mono else None)
         # Phase 2B: NN backend output queue. Open it whenever the
         # blob was found at startup (so the pipeline included the NN
         # node), regardless of the *initial* backend setting — the
@@ -1733,7 +1759,9 @@ class OakDriverNode(Node):
                 mono_fps=self._mono_fps_used,
                 enable_depth=self.enable_depth,
                 v0_blob_path=self._v0_blob_path,
-                v1_blob_path=self._v1_blob_path)
+                v1_blob_path=self._v1_blob_path,
+                enable_mono=self._enable_mono,
+                enable_jpeg=self._enable_jpeg)
             usb_speed_env = os.environ.get('OAK_USB_SPEED', 'high').lower()
             usb_speed_map = {
                 'high': dai.UsbSpeed.HIGH,
@@ -1747,9 +1775,13 @@ class OakDriverNode(Node):
                 f"USB speed: {self.device.getUsbSpeed()}")
 
             # Re-bind queues (must match constructor's setup).
-            self.q_rgb_jpeg = self.device.getOutputQueue('rgb_jpeg', 1, False)
+            self.q_rgb_jpeg = (
+                self.device.getOutputQueue('rgb_jpeg', 1, False)
+                if self._enable_jpeg else None)
             self.q_rgb_raw  = self.device.getOutputQueue('rgb_raw',  1, False)
-            self.q_left     = self.device.getOutputQueue('left',     1, False)
+            self.q_left = (
+                self.device.getOutputQueue('left', 1, False)
+                if self._enable_mono else None)
             self.q_v0_nn = (
                 self.device.getOutputQueue('v0_nn', 1, False)
                 if self._v0_blob_path is not None else None)
@@ -2137,8 +2169,8 @@ class OakDriverNode(Node):
         # don't.
         self._refresh_mask_if_stale()
 
-        # RGB JPEG stream
-        rgb_jpeg = self.q_rgb_jpeg.tryGet()
+        # RGB JPEG stream — skipped entirely when OAK_DISABLE_JPEG=1.
+        rgb_jpeg = self.q_rgb_jpeg.tryGet() if self.q_rgb_jpeg else None
         if rgb_jpeg is not None:
             self._n_rgb_jpeg += 1
             self._publish_compressed(
@@ -2617,7 +2649,7 @@ class OakDriverNode(Node):
         # Raw mono left — Stage C ArUco solve consumes this.
         # estimatePoseBoard takes (K, dist) and handles distortion
         # internally; no pre-rectification needed.
-        left = self.q_left.tryGet()
+        left = self.q_left.tryGet() if self.q_left else None
         if left is not None:
             self._encode_and_publish_mono(self.pub_left, left.getCvFrame())
 
