@@ -2037,8 +2037,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 repo = os.path.expanduser('~/stable_bot_repo')
                 rel = os.path.join('tuning_data', name)
+                # Plain `git add` — NOT `-f`. The bag/ subdir is
+                # gitignored (multi-MB mcap files exceed GitHub's
+                # 100 MB single-file limit). What gets pushed: the
+                # log.jsonl + summary.json + digest PNGs. The bag
+                # stays on the Pi for offline replay.
                 add = subprocess.run(
-                    ['git', '-C', repo, 'add', '-f', rel],
+                    ['git', '-C', repo, 'add', rel],
                     capture_output=True, text=True, timeout=10)
                 if add.returncode != 0:
                     self._send_json({
@@ -2052,7 +2057,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if diff.returncode == 0:
                     self._send_json({
                         'ok': True,
-                        'message': 'no changes to commit'})
+                        'message': 'no changes to commit (digest may '
+                                   'not be run yet — try Digest first)'})
                     return
                 try:
                     with open(os.path.join(full, 'summary.json')) as f:
@@ -2184,8 +2190,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         return
                     session = sessions[-1]
                 rel = os.path.join('tuning_data', session)
+                # Plain `git add` so .gitignore (which excludes the
+                # bag/*.mcap from this dir) is respected — bag is
+                # too big for GitHub's 100 MB file limit.
                 add = subprocess.run(
-                    ['git', '-C', repo, 'add', '-f', rel],
+                    ['git', '-C', repo, 'add', rel],
                     capture_output=True, text=True, timeout=10)
                 if add.returncode != 0:
                     self._send_json({

@@ -39,6 +39,15 @@ tuning_data/*_demo_run/metadata.yaml
 tuning_data/*_demo_untagged/*.mcap
 tuning_data/*_demo_untagged/metadata.yaml
 
+# Auto-tune session bags: the per-trial mcap is for offline replay
+# only and routinely exceeds GitHub's 100 MB single-file limit. The
+# digest (fitness_curve.png + gain_trajectory.png + target_coverage.png
+# + digest.summary.json + log.jsonl + summary.json) is the highlights
+# reel that DOES get committed.
+tuning_data/auto_tune_*/bag/
+tuning_data/auto_tune_*/bag/*.mcap
+tuning_data/auto_tune_*/bag/metadata.yaml
+
 # YOLO V1 training intermediates: extracted frames (JPEG dumps from
 # vision-debug bags) get uploaded to Roboflow for labeling. The
 # labeled output is committed under training_data/v1_yolov6/, which
