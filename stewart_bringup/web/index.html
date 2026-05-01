@@ -4494,6 +4494,14 @@ function initVisionGUI() {
     srv.autotune_stop.callService(new ROSLIB.ServiceRequest({}),
       (r) => _autotuneSetMsg(r.message || '', !!r.success),
       (e) => _autotuneSetMsg('stop failed: ' + e, false));
+    // The ref_generator stops publishing /ball_ref when the
+    // controller drops to LEVEL_HOLD, but the SVG keeps showing the
+    // last drawn target marker. Hide it explicitly so the operator
+    // sees a clean platform after Stop.
+    const refMarker = document.getElementById('ref-marker');
+    if (refMarker) refMarker.setAttribute('visibility', 'hidden');
+    const predPath = document.getElementById('pred-path');
+    if (predPath) predPath.setAttribute('visibility', 'hidden');
   });
   const autotuneClearBtn = $('autotune-history-clear');
   if (autotuneClearBtn) autotuneClearBtn.addEventListener('click', () => {

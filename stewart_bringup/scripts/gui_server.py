@@ -1983,6 +1983,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             f'{commit.stderr.strip()}'),
                     }, 500)
                     return
+                # pull --rebase first in case remote is ahead — long
+                # tuning sessions on the Pi are exactly the situation
+                # where work has been pushed from elsewhere in the
+                # meantime. The just-staged auto_tune session lives
+                # only in the index, so a rebase is non-destructive.
+                pull = subprocess.run(
+                    ['git', '-C', repo, 'pull', '--rebase'],
+                    capture_output=True, text=True, timeout=30)
+                if pull.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': (
+                            f'pull --rebase failed: '
+                            f'{pull.stderr.strip()}'),
+                    }, 500)
+                    return
                 push = subprocess.run(
                     ['git', '-C', repo, 'push'],
                     capture_output=True, text=True, timeout=30)
