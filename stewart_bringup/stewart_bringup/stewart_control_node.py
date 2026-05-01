@@ -4369,13 +4369,41 @@ class StewartControlNode(Node):
                         integ_x = 0.0
                         integ_y = 0.0
                 else:
+                    # Latency-compensated lookahead — mirror of the
+                    # bang-bang block above. End-to-end vision-to-
+                    # tilt-command lag is ~100 ms (capture, USB,
+                    # KF processing, control tick). Without lookahead
+                    # the P term reacts to where the ball was, not
+                    # where it is now; the gains analytically
+                    # recommended by STEP_ID assume a delay-free
+                    # plant, so an un-modeled 100 ms phase lag
+                    # erodes their predicted phase margin.
+                    #
+                    # Math: ex_lead = ex + edot_x · Td. Using
+                    # ex_lead in the P term is equivalent to
+                    # raising Kd by Kp·Td — i.e. lookahead = a
+                    # consistent Kp-to-Kd correlated bump. So when
+                    # an analytic Kp/Kd pair was computed assuming
+                    # zero dead-time, this restores the predicted
+                    # closed-loop poles.
+                    #
+                    # Integrator stays on raw ex (steady-state ball
+                    # is at rest, ex == ex_lead, so it doesn't
+                    # matter; but on transients we don't want the
+                    # integrator chasing the lookahead position).
+                    latency_s = float(g.get('control_latency_s', 0.10))
+                    ex_lead = ex + edot_x * latency_s
+                    ey_lead = ey + edot_y * latency_s
+
                     integ_x = max(-max_tilt, min(max_tilt,
                                                  integ_x + ex * period))
                     integ_y = max(-max_tilt, min(max_tilt,
                                                  integ_y + ey * period))
 
-                    tilt_pitch = ps * (kp * ex + kd * edot_x + ki * integ_x)
-                    tilt_roll  = rs * (kp * ey + kd * edot_y + ki * integ_y)
+                    tilt_pitch = ps * (kp * ex_lead + kd * edot_x
+                                       + ki * integ_x)
+                    tilt_roll  = rs * (kp * ey_lead + kd * edot_y
+                                       + ki * integ_y)
                     stiction_started_t = None
                     phase_code = 5   # PID
 
