@@ -1401,43 +1401,59 @@ class OakDriverNode(Node):
             f"{'ON' if self.mask_v0_to_platform else 'OFF'} "
             f"(toggle via OAK_MASK_V0_TO_PLATFORM=0|1)")
 
+        # Multi-threaded callback groups (used below for the high-rate
+        # YOLO timer + the slow tick + reload exclusivity). Must be
+        # created before any subscription/timer that references them.
+        from rclpy.callback_groups import (
+            MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup)
+        self._yolo_cbg = ReentrantCallbackGroup()
+        self._slow_cbg = ReentrantCallbackGroup()
+        self._excl_cbg = MutuallyExclusiveCallbackGroup()
+
         self.create_subscription(
-            PoseStamped, '/platform_pose', self._on_pose, 10)
+            PoseStamped, '/platform_pose', self._on_pose, 10,
+            callback_group=self._excl_cbg)
         # Runtime backend toggle. GUI publishes "cv2" or "nn" here;
         # invalid payloads are ignored. Switching to NN with no blob
         # logs a warning and stays on cv2.
         self.create_subscription(
-            String, '/oak/cmd_v0_backend', self._on_v0_backend_cmd, 1)
+            String, '/oak/cmd_v0_backend', self._on_v0_backend_cmd, 1,
+            callback_group=self._excl_cbg)
         # Runtime focus control. Payload formats:
         #   "auto"        — switch to CONTINUOUS_VIDEO autofocus
         #   "<int 0-255>" — manual focus at that lens position
         # GUI's Vision Debug panel exposes both. /oak/config reports
         # current state on its 5 s tick.
         self.create_subscription(
-            String, '/oak/cmd_focus', self._on_focus_cmd, 1)
+            String, '/oak/cmd_focus', self._on_focus_cmd, 1,
+            callback_group=self._excl_cbg)
         # Runtime HSV bound update. Payload: Float32MultiArray of
         # length 6 = [H_lo, H_hi, S_lo, S_hi, V_lo, V_hi]. Operator
         # drags the GUI sliders; cv2 detector picks up the new bounds
         # on its next frame.
         self.create_subscription(
-            Float32MultiArray, '/oak/cmd_hsv', self._on_hsv_cmd, 1)
+            Float32MultiArray, '/oak/cmd_hsv', self._on_hsv_cmd, 1,
+            callback_group=self._excl_cbg)
         # Hot-swap NN blob without restarting the process. GUI's
         # "Reload NN on device" button publishes here after a
         # successful blob rebuild. Tears down + rebuilds the DepthAI
         # pipeline in-place; ~3-5 s downtime, focus + HSV state
         # preserved across the rebuild.
         self.create_subscription(
-            Empty, '/oak/cmd_reload_nn', self._on_reload_nn_cmd, 1)
+            Empty, '/oak/cmd_reload_nn', self._on_reload_nn_cmd, 1,
+            callback_group=self._excl_cbg)
         # Host-side NN conf floor (Float32). Slider in the GUI's NN
         # weights panel publishes here; takes effect on the next NN
         # detection tick. Distinct from score_floor (which is baked
         # into the blob and needs Rebuild & reload).
         self.create_subscription(
-            Float32, '/oak/cmd_nn_conf_min', self._on_nn_conf_min_cmd, 1)
+            Float32, '/oak/cmd_nn_conf_min', self._on_nn_conf_min_cmd, 1,
+            callback_group=self._excl_cbg)
         # V1 YOLO confidence threshold (sigmoid prob, 0–1). Live-tuned.
         self.create_subscription(
             Float32, '/oak/cmd_v1_yolo_conf_min',
-            self._on_v1_yolo_conf_min_cmd, 1)
+            self._on_v1_yolo_conf_min_cmd, 1,
+            callback_group=self._excl_cbg)
         # Debug overlay: live RGB tinted lime where HSV passes, with
         # the detected blob outlined red. Lets the operator see what
         # the detector is actually picking up while they tune the
@@ -1458,9 +1474,18 @@ class OakDriverNode(Node):
         # measurement toward the platform plane behind the ball.
         self._slc_roi_half_norm = 24.0 / RGB_W
 
-        # Drive everything from a single timer; DepthAI queues are
-        # already producer-buffered, so we just drain them.
-        self.create_timer(1.0 / 60.0, self._tick)
+        # Two-tier timer design: a fast YOLO-only drainer at 120 Hz
+        # in its own ReentrantCallbackGroup, plus the slow tick at
+        # 60 Hz for everything else (rgb_jpeg, mono, cv2). With the
+        # MultiThreadedExecutor in main(), these run on separate
+        # threads so the slow tick can't choke the YOLO drain.
+        # State-mutating subscribers (pose/focus/hsv/conf_min/reload/
+        # backend) all live in _excl_cbg, so they serialize among
+        # themselves but don't interfere with either timer.
+        self.create_timer(1.0 / 120.0, self._tick_yolo,
+                          callback_group=self._yolo_cbg)
+        self.create_timer(1.0 / 60.0, self._tick,
+                          callback_group=self._slow_cbg)
 
         # Publish initial /oak/config so any subscriber that joins
         # before the first 30 s health tick has the snapshot in hand.
@@ -2038,6 +2063,67 @@ class OakDriverNode(Node):
             return
         self._publish_compressed(pub, buf.tobytes(), 'jpeg')
 
+    def _tick_yolo(self):
+        """High-rate YOLO drain — runs at 120 Hz in its own thread.
+
+        Pulls one v1_yolo NN output per tick (latest only), runs the
+        appropriate decoder (v6 or v8), and publishes to
+        /oak/ball/v0/yolo_pixel + (when active backend)
+        /oak/ball/v0/rgb_pixel.
+
+        At 120 Hz tick + 60 Hz device output, the host has 2 ticks per
+        device frame, so we don't drop frames at the host queue even
+        if some ticks slip. Wrapped in try/except in case _on_reload
+        nulls the queue mid-tick.
+        """
+        if getattr(self, '_reloading', False):
+            return
+        q = self.q_v1_yolo
+        if q is None:
+            return
+        try:
+            yolo_msg = q.tryGet()
+        except Exception:
+            return  # queue closed during reload
+        if yolo_msg is None:
+            return
+        self._n_v0_attempts += 1
+        self._n_v0_nn_attempts += 1
+        try:
+            raw = yolo_msg.getFirstLayerFp16()
+            decoder = (yolo_v6_decode if self._v1_arch == 'v6'
+                       else yolo_v1_decode)
+            det = decoder(raw, self._v1_yolo_conf_min)
+        except Exception as e:
+            det = None
+            self.get_logger().warn(
+                f"[yolo-debug] decode failed: {e!r}")
+        try:
+            capture_dai = yolo_msg.getTimestamp().total_seconds()
+            now_dai = dai.Clock.now().total_seconds()
+            age_s = max(0.0, now_dai - capture_dai)
+            yolo_stamp = (self.get_clock().now()
+                          - Duration(seconds=age_s)).to_msg()
+        except Exception:
+            yolo_stamp = self.get_clock().now().to_msg()
+        if det is None:
+            return
+        cx, cy, w, h, conf = det
+        p = PointStamped()
+        p.header.stamp = yolo_stamp
+        p.header.frame_id = 'oak_rgb'
+        p.point.x = cx
+        p.point.y = cy
+        p.point.z = float(((w * h) ** 0.5) * 0.5)
+        self.pub_v0_yolo.publish(p)
+        self._n_v0_nn_pub += 1
+        if self.v0_backend == 'v1_yolo':
+            self.pub_v0.publish(p)
+            self._n_v0 += 1
+            d = Float32MultiArray()
+            d.data = [float(cx), float(cy), float(p.point.z), float(conf)]
+            self.pub_v0_diag.publish(d)
+
     def _tick(self):
         # Bail if a hot-reload of the NN blob is in progress — queues
         # are nulled and the device is closed during _on_reload_nn_cmd.
@@ -2188,52 +2274,9 @@ class OakDriverNode(Node):
                                   float(conf)]
                         self.pub_v0_diag.publish(d)
 
-        # V1 YOLO backend — drain output queue, parse, publish to
-        # /oak/ball/v0/yolo_pixel and (when active backend) mirror to
-        # /oak/ball/v0/rgb_pixel for the controller. Output tensor is
-        # (1, 7, 2100): cx, cy, w, h + 3 class scores per anchor.
-        if self.q_v1_yolo is not None:
-            yolo_msg = self.q_v1_yolo.tryGet()
-            if yolo_msg is not None:
-                self._n_v0_attempts += 1
-                try:
-                    raw = yolo_msg.getFirstLayerFp16()
-                    decoder = (yolo_v6_decode
-                               if self._v1_arch == 'v6'
-                               else yolo_v1_decode)
-                    det = decoder(raw, self._v1_yolo_conf_min)
-                except Exception as e:
-                    det = None
-                    self.get_logger().warn(
-                        f"[yolo-debug] decode failed: {e!r}")
-                # Capture-time stamp from the NNData (inherits the
-                # input frame's timestamp).
-                try:
-                    capture_dai = yolo_msg.getTimestamp().total_seconds()
-                    now_dai = dai.Clock.now().total_seconds()
-                    age_s = max(0.0, now_dai - capture_dai)
-                    yolo_stamp = (self.get_clock().now()
-                                  - Duration(seconds=age_s)).to_msg()
-                except Exception:
-                    yolo_stamp = self.get_clock().now().to_msg()
-                if det is not None:
-                    cx, cy, w, h, conf = det
-                    p = PointStamped()
-                    p.header.stamp = yolo_stamp
-                    p.header.frame_id = 'oak_rgb'
-                    p.point.x = cx
-                    p.point.y = cy
-                    # Radius proxy: half the geometric mean of w and h
-                    # (matches the cv2 path's "ball radius in 540p px").
-                    p.point.z = float(((w * h) ** 0.5) * 0.5)
-                    self.pub_v0_yolo.publish(p)
-                    if self.v0_backend == 'v1_yolo':
-                        self.pub_v0.publish(p)
-                        self._n_v0 += 1
-                        d = Float32MultiArray()
-                        d.data = [float(cx), float(cy),
-                                  float(p.point.z), float(conf)]
-                        self.pub_v0_diag.publish(d)
+        # V1 YOLO drain moved to _tick_yolo (120 Hz on its own thread)
+        # so it can keep up with the OAK's 60 Hz NN output without
+        # being blocked by rgb_jpeg / mono publishing in this tick.
 
         # RGB raw → cv2 V0 detector → /oak/ball/v0/rgb_pixel.
         # When OAK_V0_BACKEND=nn we still pull from this queue (depth
@@ -2594,11 +2637,21 @@ class OakDriverNode(Node):
 def main():
     rclpy.init()
     node = OakDriverNode()
+    # Multi-threaded executor so the high-rate YOLO drain timer
+    # (120 Hz, in its own ReentrantCallbackGroup) can preempt the
+    # slower tick + ROS subscribers. Pi 5 has 4 cores; 4 threads
+    # gives parallelism without thrashing. Reload handler is in a
+    # MutuallyExclusiveCallbackGroup that locks against the tick
+    # groups, preventing device tear-down during a tick.
+    from rclpy.executors import MultiThreadedExecutor
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 
