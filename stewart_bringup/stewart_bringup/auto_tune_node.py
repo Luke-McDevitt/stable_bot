@@ -2238,7 +2238,20 @@ class AutoTuneNode(Node):
             # corrupting one of the fits, or the IMU achievement is
             # inconsistent. Whatever the cause, an analytic gain
             # derived from such a noisy estimate is dangerous.
-            if g_eff_cv > STEP_ID_OL_CV_THRESHOLD:
+            # n=1 special case: with a single replicate, std is 0
+            # and CV is trivially 0, so the CV gate would otherwise
+                # silently pass single-trial sessions. Force a fail
+                # message so the operator sees that fewer than 2
+                # replicates can't be cross-validated. Doesn't apply
+                # when operator deliberately set OL reps = 1 from the
+                # GUI — they get a recommendation tagged as
+                # "single-trial, do not trust" but no fail.
+            if len(g_effs) < 2:
+                self.get_logger().warn(
+                    f'only 1 usable replicate ({len(ol_replicates)} '
+                    f'attempted); skipping CV cross-validation. '
+                    f'Recommendation will be tagged as single-trial.')
+            if g_eff_cv > STEP_ID_OL_CV_THRESHOLD and len(g_effs) >= 2:
                 # Diagnose what's likely driving the inconsistency
                 # by inspecting per-replicate state. A wide spread
                 # in tilt_actual_duration across replicates is the
