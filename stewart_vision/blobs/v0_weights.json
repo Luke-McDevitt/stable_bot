@@ -3,8 +3,8 @@
   "w_g": 0.4,
   "w_r": 1.0,
   "bias": -0.5,
-  "score_floor": 0.12,
-  "density_floor": 0.03,
+  "score_floor": 0.03,
+  "density_floor": 0.01,
   "nn_conf_min": 0.0,
-  "saved_at_utc": "2026-05-01T00:32:28Z"
+  "saved_at_utc": "2026-05-01T00:32:52Z"
 }
