@@ -207,14 +207,29 @@ class CalibrationNode(Node):
     # ---- helpers ------------------------------------------------------------
 
     def _solve_pose(self, corners, ids):
-        """Run estimatePoseBoard on the cached detections. Returns
-        (success, rvec, tvec, mean_reproj_err_px).
+        """Solve board pose from the cached detections. Returns
+        (success, rvec, tvec, mean_reproj_err_px, error_message).
+
+        OpenCV 4.7+ removed cv2.aruco.estimatePoseBoard. Replacement
+        is Board.matchImagePoints() to lift detected corners to 3-D
+        board points, then solvePnP. Falls through to the legacy API
+        on older OpenCV builds.
         """
-        rvec = np.zeros(3, dtype=np.float64)
-        tvec = np.zeros(3, dtype=np.float64)
         try:
-            ok, rvec, tvec = cv2.aruco.estimatePoseBoard(
-                corners, ids, self.board, self.K, self.dist, rvec, tvec)
+            if hasattr(self.board, 'matchImagePoints'):
+                obj_pts, img_pts = self.board.matchImagePoints(corners, ids)
+                if obj_pts is None or len(obj_pts) < 4:
+                    return (False, None, None, float('inf'),
+                            "matchImagePoints: <4 correspondences")
+                ok, rvec, tvec = cv2.solvePnP(
+                    obj_pts, img_pts, self.K, self.dist,
+                    flags=cv2.SOLVEPNP_ITERATIVE)
+            else:
+                rvec = np.zeros(3, dtype=np.float64)
+                tvec = np.zeros(3, dtype=np.float64)
+                ok, rvec, tvec = cv2.aruco.estimatePoseBoard(
+                    corners, ids, self.board, self.K, self.dist,
+                    rvec, tvec)
         except Exception as e:
             return False, None, None, float('inf'), str(e)
         if not ok:
