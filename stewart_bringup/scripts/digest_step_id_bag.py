@@ -11,6 +11,24 @@ Reads tuning_data/step_id_<UTC>/ and writes alongside it:
                                one row per trial. Columns: ball
                                trajectory in xy, x(t)/y(t) vs time,
                                error magnitude vs time.
+  ball_paths_combined.png    — all verification trials' xy paths
+                               overlaid on a single platform disc.
+                               Time-coloured per trial (light → dark)
+                               with start dots and target stars.
+                               Quick visual of trial-to-trial
+                               consistency, axis asymmetry, and
+                               oscillation patterns.
+  phase_plane.png            — phase-plane plot per trial: |error| vs
+                               velocity-toward-target, scatter coloured
+                               by time within the trial. Convergent
+                               spiral → origin = stable; closed loop =
+                               limit cycle; outward growth = unstable.
+  samples.csv                — flat per-sample dump across all
+                               verification trials: trial_idx, t,
+                               x, y, vx, vy, err, target_x, target_y,
+                               start/target marker IDs. Lets the
+                               downstream review do any analysis the
+                               canned plots don't cover.
   recommended_gains.png      — predicted closed-loop step response with
                                current gains vs recommended gains,
                                based on the second-order plant model
@@ -36,6 +54,7 @@ only the JSON. Bag stays on the Pi for retrospective deep-dives.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import os
@@ -226,6 +245,234 @@ def _step_response_per_trial_png(session: dict, out_path: Path) -> None:
     plt.close(fig)
 
 
+# ---------- Marker layout (used by the path-overlay plot) ---------
+
+# Hardcoded to match stewart_vision/config/marker_layout.yaml. The
+# digest doesn't have an obvious read path to that YAML (it lives in
+# a different package), and the marker geometry is a build-time fixed
+# property — printing the markers happens once and they're glued onto
+# the plate. If the layout ever changes, this list and the YAML need
+# to update together.
+_MARKER_LAYOUT = [
+    (0,    0.0,  120.0),
+    (1,   84.853,  84.853),
+    (2,  120.0,    0.0),
+    (3,   84.853, -84.853),
+    (4,    0.0, -120.0),
+    (5,  -84.853, -84.853),
+    (6, -120.0,    0.0),
+    (7,  -84.853,  84.853),
+]
+
+
+def _ball_paths_combined_png(session: dict, out_path: Path) -> None:
+    """Overlay all verification trials' xy paths on a single platform
+    disc. Each trial's path is a single colour (one slot from the
+    viridis cmap per trial); within a trial, marker dots are
+    colour-graded by time so early/late points are visible. Start
+    (filled circle) and target (star) markers per trial."""
+    trials = session.get('phases', {}).get('verification', []) or []
+    if not trials:
+        return
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
+    # Platform circle (200 mm radius) + marker ring (r=120 mm)
+    theta = np.linspace(0, 2 * np.pi, 200)
+    ax.plot(200 * np.cos(theta), 200 * np.sin(theta),
+            '-', color='#9ca3af', linewidth=0.8,
+            label='platform rim (r=200 mm)')
+    ax.plot(120 * np.cos(theta), 120 * np.sin(theta),
+            ':', color='#9ca3af', linewidth=0.6,
+            label='ArUco ring (r=120 mm)')
+    # Marker positions
+    for mid, mx, my in _MARKER_LAYOUT:
+        ax.plot(mx, my, 's', color='#475569', markersize=7,
+                markeredgecolor='#cbd5e1')
+        ax.annotate(f'm{mid}', (mx, my), xytext=(7, 7),
+                    textcoords='offset points', fontsize=9,
+                    color='#94a3b8')
+    # Centre + dead zone
+    ax.plot(0, 0, 'x', color='#dc2626', markersize=10, markeredgewidth=2)
+    ax.add_patch(plt.Circle((0, 0), 30, fill=False,
+                            edgecolor='#dc2626', linestyle=':',
+                            linewidth=0.8, alpha=0.6))
+    # Trial paths, one colour per trial.
+    cmap = plt.cm.viridis
+    n_trials = len(trials)
+    for i, trial in enumerate(trials):
+        samples = trial.get('samples', [])
+        if not samples:
+            continue
+        ts = np.array([s['t'] for s in samples])
+        xs = np.array([s['x'] for s in samples])
+        ys = np.array([s['y'] for s in samples])
+        color = cmap(i / max(n_trials - 1, 1))
+        # Path line
+        ax.plot(xs, ys, '-', color=color, linewidth=1.4, alpha=0.85,
+                label=(f'Trial {trial.get("trial_idx", i+1)}: '
+                       f'm{trial.get("start_marker", "?")} → '
+                       f'm{trial.get("target_marker", "?")} '
+                       f'({"settled" if trial.get("settled") else "did not settle"})'))
+        # Time-graded sample dots — every Nth point so the plot
+        # doesn't get overwhelmed at 30 Hz × 25 s
+        stride = max(1, len(ts) // 60)
+        idx = np.arange(0, len(ts), stride)
+        ax.scatter(xs[idx], ys[idx],
+                   c=ts[idx],
+                   cmap='Greys' if i % 2 == 0 else 'Blues',
+                   s=8, alpha=0.5, edgecolors='none')
+        # Start (filled circle) + target (star)
+        start = trial.get('ball_start_xy', [xs[0], ys[0]])
+        target = trial.get('target_xy', [0, 0])
+        ax.plot(start[0], start[1], 'o', color=color, markersize=10,
+                markeredgecolor='white', markeredgewidth=1.5)
+        ax.plot(target[0], target[1], '*', color=color,
+                markersize=18, markeredgecolor='white',
+                markeredgewidth=1.0)
+    ax.set_xlim(-220, 220)
+    ax.set_ylim(-220, 220)
+    ax.set_aspect('equal')
+    ax.grid(alpha=0.25)
+    ax.set_xlabel('x [mm]')
+    ax.set_ylabel('y [mm]')
+    ax.set_title('Verification trials: ball paths overlaid')
+    ax.legend(loc='upper right', fontsize=7)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def _phase_plane_png(session: dict, out_path: Path) -> None:
+    """Phase-plane per trial: |error| vs velocity-toward-target,
+    coloured by time within the trial. Stable controller draws an
+    inward spiral toward (0, 0); closed loop = limit cycle; outward
+    growth = unstable. Settle band drawn at err=15 mm."""
+    trials = session.get('phases', {}).get('verification', []) or []
+    if not trials:
+        return
+    n = len(trials)
+    fig, axes = plt.subplots(1, n, figsize=(4.5 * n, 4.5), dpi=100)
+    if n == 1:
+        axes = np.array([axes])
+    last_sc = None
+    for i, trial in enumerate(trials):
+        ax = axes[i]
+        samples = trial.get('samples', [])
+        if len(samples) < 5:
+            ax.set_title(f'Trial {trial.get("trial_idx", i+1)}: '
+                         f'too few samples')
+            continue
+        ts = np.array([s['t'] for s in samples])
+        xs = np.array([s['x'] for s in samples])
+        ys = np.array([s['y'] for s in samples])
+        target = trial.get('target_xy', [0, 0])
+        dx = target[0] - xs
+        dy = target[1] - ys
+        err = np.hypot(dx, dy)
+        # Velocity via central differences
+        vx = np.gradient(xs, ts)
+        vy = np.gradient(ys, ts)
+        # Velocity component toward target (positive when ball
+        # closing in, negative when receding).
+        ux = dx / np.maximum(err, 1e-3)
+        uy = dy / np.maximum(err, 1e-3)
+        v_toward = vx * ux + vy * uy
+        sc = ax.scatter(err, v_toward, c=ts, cmap='viridis',
+                        s=10, alpha=0.75, edgecolors='none')
+        last_sc = sc
+        ax.axhline(0, color='#6b7280', linestyle=':', linewidth=0.8)
+        ax.axvline(15, color='#10b981', linestyle=':',
+                   linewidth=0.8, label='settle band 15 mm')
+        # Mark start and end with annotations
+        ax.plot(err[0], v_toward[0], 'o', color='#3b82f6',
+                markersize=10, markeredgecolor='white',
+                label='start')
+        ax.plot(err[-1], v_toward[-1], 's', color='#ef4444',
+                markersize=10, markeredgecolor='white',
+                label='end')
+        ax.set_xlabel('|error| [mm]')
+        ax.set_ylabel('v toward target [mm/s]')
+        ax.set_title(
+            f'Trial {trial.get("trial_idx", i+1)}: '
+            f'm{trial.get("start_marker", "?")} → '
+            f'm{trial.get("target_marker", "?")}\n'
+            f'{"SETTLED" if trial.get("settled") else "DID NOT SETTLE"}')
+        ax.grid(alpha=0.25)
+        ax.legend(loc='best', fontsize=8)
+    if last_sc is not None:
+        fig.colorbar(last_sc, ax=axes.tolist(),
+                     label='t [s] within trial', shrink=0.8)
+    fig.savefig(out_path, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _export_samples_csv(session: dict, out_path: Path) -> None:
+    """Flat per-sample dump across all verification trials. One row
+    per ball-state sample. Columns let downstream tooling do any
+    analysis the canned plots don't cover (pandas / plotly / Excel /
+    whatever) without re-parsing the JSON."""
+    trials = session.get('phases', {}).get('verification', []) or []
+    if not trials:
+        return
+    fieldnames = [
+        'trial_idx', 'start_marker', 'target_marker',
+        'target_x_mm', 'target_y_mm',
+        'ball_start_x_mm', 'ball_start_y_mm',
+        'settled', 'settled_at_s',
+        't_in_trial_s', 'x_mm', 'y_mm',
+        'vx_mm_s', 'vy_mm_s', 'speed_mm_s',
+        'err_mm', 'v_toward_target_mm_s',
+    ]
+    rows: list[dict] = []
+    for trial in trials:
+        samples = trial.get('samples', [])
+        if len(samples) < 2:
+            continue
+        ts = np.array([s['t'] for s in samples])
+        xs = np.array([s['x'] for s in samples])
+        ys = np.array([s['y'] for s in samples])
+        target = trial.get('target_xy', [0, 0])
+        ball_start = trial.get('ball_start_xy', [xs[0], ys[0]])
+        # Computed velocity (central differences). At the boundaries
+        # numpy.gradient uses one-sided differences automatically.
+        vx = np.gradient(xs, ts)
+        vy = np.gradient(ys, ts)
+        speed = np.hypot(vx, vy)
+        dx = target[0] - xs
+        dy = target[1] - ys
+        err = np.hypot(dx, dy)
+        ux = dx / np.maximum(err, 1e-3)
+        uy = dy / np.maximum(err, 1e-3)
+        v_toward = vx * ux + vy * uy
+        for i in range(len(samples)):
+            rows.append({
+                'trial_idx': int(trial.get('trial_idx', 0)),
+                'start_marker': int(trial.get('start_marker', -1)),
+                'target_marker': int(trial.get('target_marker', -1)),
+                'target_x_mm': float(target[0]),
+                'target_y_mm': float(target[1]),
+                'ball_start_x_mm': float(ball_start[0]),
+                'ball_start_y_mm': float(ball_start[1]),
+                'settled': bool(trial.get('settled', False)),
+                'settled_at_s': (float(trial['settled_at_s'])
+                                 if trial.get('settled_at_s') is not None
+                                 else ''),
+                't_in_trial_s': float(ts[i]),
+                'x_mm': float(xs[i]),
+                'y_mm': float(ys[i]),
+                'vx_mm_s': float(vx[i]),
+                'vy_mm_s': float(vy[i]),
+                'speed_mm_s': float(speed[i]),
+                'err_mm': float(err[i]),
+                'v_toward_target_mm_s': float(v_toward[i]),
+            })
+    if not rows:
+        return
+    with open(out_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def _initial_accel_g_eff(trial: dict, window_s: float = 0.20
                          ) -> float | None:
     """From a closed-loop trial's first window_s of samples, fit the
@@ -375,6 +622,9 @@ def main():
     refined = _refine_summary(session)
     _plant_gain_fit_png(session, d / 'plant_gain_fit.png')
     _step_response_per_trial_png(session, d / 'step_response_per_trial.png')
+    _ball_paths_combined_png(session, d / 'ball_paths_combined.png')
+    _phase_plane_png(session, d / 'phase_plane.png')
+    _export_samples_csv(session, d / 'samples.csv')
     _recommended_gains_png(session, d / 'recommended_gains.png')
     with open(d / 'step_id_summary.json', 'w') as f:
         json.dump(refined, f, indent=2,
@@ -384,6 +634,9 @@ def main():
     print(f'digest written → {d}')
     print('  plant_gain_fit.png')
     print('  step_response_per_trial.png')
+    print('  ball_paths_combined.png')
+    print('  phase_plane.png')
+    print('  samples.csv')
     print('  recommended_gains.png')
     print('  step_id_summary.json')
     print('  step_id_recommendation.json')
