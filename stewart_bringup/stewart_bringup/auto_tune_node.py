@@ -110,7 +110,9 @@ LEVEL_HOLD_BETWEEN_S   = 2.0
 HOLD_TOL_MM            = 25.0    # f_hold counts samples within this band
 RESET_Z_EVERY_N_TRIALS = 5       # call set_pose to nominal Z every N trials
                                   # to defeat accumulated drift
-NOMINAL_Z_MM           = 35.0    # operating Z range is 30-50; midpoint
+NOMINAL_Z_MM           = 75.0    # higher than the 30-50 demo range —
+                                  # less ball-sticking on the center bolt
+                                  # (per operator observation 2026-05-01)
 
 # Optimizer
 NOISE_FLOOR            = 0.02
