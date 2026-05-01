@@ -1,0 +1,10 @@
+# Meituan YOLOv6 dataset config — paths absolute so YOLOv6's path
+# resolution doesn't fight us. Same labels as data.yaml (used by
+# Ultralytics); v6 just wants slightly different keys.
+train: /home/sorak/stable_bot_repo/training_data/v1_yolov6/run1/images/train
+val: /home/sorak/stable_bot_repo/training_data/v1_yolov6/run1/images/valid
+test: /home/sorak/stable_bot_repo/training_data/v1_yolov6/run1/images/valid
+
+is_coco: False
+nc: 3
+names: ['aruco', 'ball', 'hand']

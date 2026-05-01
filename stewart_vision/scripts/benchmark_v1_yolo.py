@@ -39,20 +39,19 @@ from pathlib import Path
 import depthai as dai
 
 
-def find_blob() -> str:
-    """Find v1_yolov8n_320.blob in the usual places."""
+def find_blob(name: str) -> str:
+    """Find the named blob in the usual locations."""
     repo = os.path.expanduser('~/stable_bot_repo')
     candidates = [
-        os.path.join(repo, 'stewart_vision', 'blobs',
-                     'v1_yolov8n_320.blob'),
+        os.path.join(repo, 'stewart_vision', 'blobs', name),
         os.path.expanduser(
-            '~/ros2_ws/install/stewart_vision/share/stewart_vision/'
-            'blobs/v1_yolov8n_320.blob'),
+            f'~/ros2_ws/install/stewart_vision/share/stewart_vision/'
+            f'blobs/{name}'),
     ]
     for p in candidates:
         if os.path.isfile(p):
             return p
-    raise SystemExit(f"v1 blob not found at any of: {candidates}")
+    return None
 
 
 def build_minimal_pipeline(blob_path: str, rgb_fps: int = 60,
@@ -154,28 +153,36 @@ def measure(label: str, pipeline: dai.Pipeline,
 
 
 def main():
-    blob = find_blob()
-    print(f"blob: {blob} ({os.path.getsize(blob):,} bytes)")
-
     super_speed = os.environ.get('USB', 'super').lower() == 'super'
     usb_speed = dai.UsbSpeed.SUPER if super_speed else dai.UsbSpeed.HIGH
     print(f"USB cap: {usb_speed.name}")
 
-    # 1. Minimal: only YOLO. No RGB raw, no JPEG, no mono. This is the
-    #    purest measure of what the model + Myriad X can do.
-    measure("MINIMAL (YOLO only, no RGB/JPEG output)",
-            build_minimal_pipeline(blob),
-            usb_speed)
+    # Blob lookup — try v6 first (preferred), fall back to v8.
+    blobs = []
+    for label, name in (('YOLOv6n', 'v1_yolov6n_320.blob'),
+                        ('YOLOv8n', 'v1_yolov8n_320.blob')):
+        p = find_blob(name)
+        if p:
+            blobs.append((label, p))
+        else:
+            print(f"  ({label} blob {name} not found, skipping)")
 
-    # 2. With JPEG output (host can preview but no big USB traffic).
-    measure("YOLO + JPEG (low USB traffic)",
-            build_minimal_pipeline(blob, include_jpeg=True),
-            usb_speed)
+    if not blobs:
+        raise SystemExit("No v1_*.blob found. Train + compile first.")
 
-    # 3. With raw RGB output (the bandwidth hog).
-    measure("YOLO + raw RGB (HIGH USB traffic — to confirm contention)",
-            build_minimal_pipeline(blob, include_rgb_raw=True),
-            usb_speed)
+    for label, blob in blobs:
+        print(f"\n##### {label} — {blob} ({os.path.getsize(blob):,} bytes) #####")
+
+        # 1. Minimal: only YOLO. No RGB raw, no JPEG, no mono. The
+        #    purest measure of what the model + Myriad X can do.
+        measure(f"{label} MINIMAL (YOLO only, no RGB/JPEG)",
+                build_minimal_pipeline(blob),
+                usb_speed)
+
+        # 2. With raw RGB output (representative of the live pipeline).
+        measure(f"{label} + raw RGB",
+                build_minimal_pipeline(blob, include_rgb_raw=True),
+                usb_speed)
 
 
 if __name__ == '__main__':

@@ -78,7 +78,12 @@ V0_W, V0_H = 640, 360
 # classes (aruco / ball / hand); we filter to ball at inference. Blob
 # is at stewart_vision/blobs/v1_yolov8n_320.blob.
 V1_W, V1_H = 320, 320
-V1_BLOB_NAME = 'v1_yolov8n_320.blob'
+# Two trained backends — Ultralytics YOLOv8n and Meituan YOLOv6n,
+# both at 320×320 single-platform. Prefer v6n if its blob is on disk
+# (faster on Myriad X — Luxonis benches v6n at ~67 FPS@416 vs v8n
+# at ~30 FPS@320). Fall back to v8n if only that one is available.
+V1_BLOB_NAME_V6 = 'v1_yolov6n_320.blob'
+V1_BLOB_NAME_V8 = 'v1_yolov8n_320.blob'
 V1_NUM_CLASSES = 3
 V1_BALL_CLASS_IDX = 1   # data.yaml: ['aruco', 'ball', 'hand']
 V1_NUM_ANCHORS = 2100   # 320/8² + 320/16² + 320/32² = 1600+400+100
@@ -129,6 +134,48 @@ def yolo_v1_decode(out_flat, conf_threshold: float):
     h_540  = h_320 / V1_LETTERBOX_SCALE
     # Reject detections that landed in the gray padding (camera can't
     # see there). NN-space y range for real frame is [PAD_Y, NN_H-PAD_Y].
+    if cy_320 < V1_PAD_Y or cy_320 > (V1_H - V1_PAD_Y):
+        return None
+    return (cx_540, cy_540, w_540, h_540, conf)
+
+
+def yolo_v6_decode(out_flat, conf_threshold: float):
+    """Parse a YOLOv6n output buffer (Meituan YOLOv6 architecture).
+
+    Differences from v8 layout:
+      - Output shape: (1, num_anchors=2100, 4+1+nc=8) — anchor-major.
+      - Per-anchor channels: [cx, cy, w, h, obj, p_aruco, p_ball, p_hand]
+      - obj is always 1.0 in `--inplace` exports (the model bakes it in)
+      - Class scores are sigmoid-activated (0–1)
+
+    Returns:
+      (cx_540, cy_540, w_540, h_540, conf) tuple, or None.
+
+    The flat buffer layout from getFirstLayerFp16() is row-major over
+    the (anchor, channel) order, so:
+        index = anchor * 8 + channel
+    """
+    import numpy as np
+    arr = np.asarray(out_flat, dtype=np.float32)
+    n_per = 4 + 1 + V1_NUM_CLASSES   # 8
+    if arr.size != n_per * V1_NUM_ANCHORS:
+        return None
+    arr = arr.reshape(V1_NUM_ANCHORS, n_per)
+    obj = arr[:, 4]                              # (2100,)
+    class_scores = arr[:, 5:5 + V1_NUM_CLASSES]  # (2100, 3)
+    ball_scores = obj * class_scores[:, V1_BALL_CLASS_IDX]
+    best = int(np.argmax(ball_scores))
+    conf = float(ball_scores[best])
+    if conf < conf_threshold:
+        return None
+    cx_320 = float(arr[best, 0])
+    cy_320 = float(arr[best, 1])
+    w_320  = float(arr[best, 2])
+    h_320  = float(arr[best, 3])
+    cx_540 = (cx_320 - V1_PAD_X) / V1_LETTERBOX_SCALE
+    cy_540 = (cy_320 - V1_PAD_Y) / V1_LETTERBOX_SCALE
+    w_540  = w_320 / V1_LETTERBOX_SCALE
+    h_540  = h_320 / V1_LETTERBOX_SCALE
     if cy_320 < V1_PAD_Y or cy_320 > (V1_H - V1_PAD_Y):
         return None
     return (cx_540, cy_540, w_540, h_540, conf)
@@ -1031,7 +1078,26 @@ class OakDriverNode(Node):
             return None
 
         self._v0_blob_path = _search_blob(f'v0_{V0_W}x{V0_H}.blob')
-        self._v1_blob_path = _search_blob(V1_BLOB_NAME)
+        # Prefer YOLOv6n (faster on RVC2) — fall back to v8n. The
+        # decoder dispatches on self._v1_arch.
+        self._v1_blob_path = _search_blob(V1_BLOB_NAME_V6)
+        self._v1_arch = 'v6' if self._v1_blob_path else None
+        if self._v1_blob_path is None:
+            self._v1_blob_path = _search_blob(V1_BLOB_NAME_V8)
+            self._v1_arch = 'v8' if self._v1_blob_path else None
+        # OAK_FORCE_V1_ARCH=v6|v8 lets the operator override which
+        # architecture is loaded (e.g., A/B compare without renaming
+        # blobs).
+        forced = os.environ.get('OAK_FORCE_V1_ARCH', '').strip().lower()
+        if forced in ('v6', 'v8'):
+            forced_blob = (V1_BLOB_NAME_V6 if forced == 'v6'
+                           else V1_BLOB_NAME_V8)
+            forced_path = _search_blob(forced_blob)
+            if forced_path:
+                self._v1_blob_path = forced_path
+                self._v1_arch = forced
+                self.get_logger().info(
+                    f"V1 arch forced to {forced} via OAK_FORCE_V1_ARCH")
         # OAK_DISABLE_V0_NN=1 — skip the V0.5c color-filter NN entirely
         # so V1 YOLO has the full Myriad X SHAVE budget. With both NN
         # nodes loaded, each runs at ~half its solo throughput. Disable
@@ -1045,7 +1111,8 @@ class OakDriverNode(Node):
                 f"V0 NN blob available: {self._v0_blob_path}")
         if self._v1_blob_path:
             self.get_logger().info(
-                f"V1 YOLO blob available: {self._v1_blob_path}")
+                f"V1 YOLO blob available ({self._v1_arch}): "
+                f"{self._v1_blob_path}")
         if self.v0_backend == 'v0_nn' and self._v0_blob_path is None:
             self.get_logger().warn(
                 "OAK_V0_BACKEND=v0_nn but no V0 blob found; "
@@ -1419,6 +1486,7 @@ class OakDriverNode(Node):
                             if self._v0_blob_path else None),
                 'v1_blob': (os.path.basename(self._v1_blob_path)
                             if self._v1_blob_path else None),
+                'v1_arch': str(self._v1_arch or 'none'),
                 'nn_conf_min': float(self._nn_conf_min),
                 'v1_yolo_conf_min': float(self._v1_yolo_conf_min),
                 # Live HSV bounds — operator sliders push to /oak/cmd_hsv
@@ -1614,12 +1682,26 @@ class OakDriverNode(Node):
                         return p
                 return None
             self._v0_blob_path = _search_blob(f'v0_{V0_W}x{V0_H}.blob')
-            self._v1_blob_path = _search_blob(V1_BLOB_NAME)
+            # Re-resolve V1 blob; prefer v6n, fall back to v8n.
+            self._v1_blob_path = _search_blob(V1_BLOB_NAME_V6)
+            self._v1_arch = 'v6' if self._v1_blob_path else None
+            if self._v1_blob_path is None:
+                self._v1_blob_path = _search_blob(V1_BLOB_NAME_V8)
+                self._v1_arch = 'v8' if self._v1_blob_path else None
+            forced = os.environ.get('OAK_FORCE_V1_ARCH', '').strip().lower()
+            if forced in ('v6', 'v8'):
+                forced_blob = (V1_BLOB_NAME_V6 if forced == 'v6'
+                               else V1_BLOB_NAME_V8)
+                forced_path = _search_blob(forced_blob)
+                if forced_path:
+                    self._v1_blob_path = forced_path
+                    self._v1_arch = forced
             if os.environ.get('OAK_DISABLE_V0_NN', '0') == '1':
                 self._v0_blob_path = None
             self.get_logger().info(
                 f"  blobs: V0={self._v0_blob_path or 'MISSING'}, "
-                f"V1={self._v1_blob_path or 'MISSING'}")
+                f"V1[{self._v1_arch or 'none'}]="
+                f"{self._v1_blob_path or 'MISSING'}")
 
             pipeline = _build_pipeline(
                 rgb_fps=self._rgb_fps_used,
@@ -2116,7 +2198,10 @@ class OakDriverNode(Node):
                 self._n_v0_attempts += 1
                 try:
                     raw = yolo_msg.getFirstLayerFp16()
-                    det = yolo_v1_decode(raw, self._v1_yolo_conf_min)
+                    decoder = (yolo_v6_decode
+                               if self._v1_arch == 'v6'
+                               else yolo_v1_decode)
+                    det = decoder(raw, self._v1_yolo_conf_min)
                 except Exception as e:
                     det = None
                     self.get_logger().warn(
