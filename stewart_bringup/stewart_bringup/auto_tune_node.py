@@ -303,7 +303,11 @@ STEP_ID_BAG_TOPICS = [
 def _load_marker_layout() -> list[tuple[int, float, float]]:
     """Read marker_layout.yaml from the stewart_vision package share dir.
     Returns list of (id, x_mm, y_mm) sorted by id. Falls back to the
-    source-tree copy if the share dir is missing (dev mode)."""
+    source-tree copy if the share dir is missing (dev mode).
+
+    Coordinates are in PLATFORM frame (the natural frame for marker
+    geometry). Use _rotate_platform_to_imu() to transform into IMU
+    frame for cross-sensor comparison against /ball_state."""
     candidates = []
     try:
         from ament_index_python.packages import (
@@ -327,6 +331,54 @@ def _load_marker_layout() -> list[tuple[int, float, float]]:
             out.sort(key=lambda r: r[0])
             return out
     return []
+
+
+def _load_aruco_imu_alignment() -> Optional[list[list[float]]]:
+    """Read the 2x2 rotation that takes platform-frame xy → IMU-frame xy.
+    Same file ball_localizer_node consumes — keeping STEP_ID's
+    cross-sensor checks in IMU frame consistent with /ball_state.
+
+    Returns the 2x2 matrix as a list of two-row lists, or None if
+    the file is missing (in which case STEP_ID falls back to an
+    identity rotation — equivalent to assuming platform == IMU
+    frame, which is wrong on this hardware but lets the session
+    proceed with looser position tolerance)."""
+    candidates = []
+    try:
+        from ament_index_python.packages import (
+            get_package_share_directory)
+        candidates.append(os.path.join(
+            get_package_share_directory('stewart_vision'),
+            'config', 'aruco_imu_alignment.yaml'))
+    except Exception:
+        pass
+    candidates.append(os.path.expanduser(
+        '~/stable_bot_repo/stewart_vision/config/'
+        'aruco_imu_alignment.yaml'))
+    for path in candidates:
+        if os.path.isfile(path):
+            try:
+                with open(path) as f:
+                    d = yaml.safe_load(f) or {}
+                m = d.get('matrix')
+                if (isinstance(m, list) and len(m) == 2
+                        and all(isinstance(r, list) and len(r) == 2
+                                for r in m)):
+                    return [[float(x) for x in r] for r in m]
+            except Exception:
+                continue
+    return None
+
+
+def _rotate_platform_to_imu(xy: tuple[float, float],
+                            R: Optional[list[list[float]]]
+                            ) -> tuple[float, float]:
+    """Apply the platform→IMU rotation. R None → identity passthrough."""
+    if R is None:
+        return xy
+    x, y = xy
+    return (R[0][0] * x + R[0][1] * y,
+            R[1][0] * x + R[1][1] * y)
 
 
 # Fitness weights (sum should equal 1.0).
@@ -436,6 +488,18 @@ class AutoTuneNode(Node):
         self._step_id_thread = None
         self._step_id_operator_confirmed = False
         self._step_id_marker_layout = _load_marker_layout()
+        # Platform→IMU rotation for cross-sensor position checks. The
+        # /ball_state topic is in IMU frame (post the §0 fix in
+        # ref_generator + ball_localizer); marker_layout is in
+        # platform frame. We rotate marker centres into IMU frame
+        # at session start so the distance-to-marker check actually
+        # works. None → identity passthrough (warning logged).
+        self._step_id_R_platform_to_imu = _load_aruco_imu_alignment()
+        if self._step_id_R_platform_to_imu is None:
+            self.get_logger().warn(
+                'aruco_imu_alignment.yaml not loaded — STEP_ID '
+                'cross-sensor position check will use identity '
+                'rotation (looser tolerance).')
         self.pub_cmd = self.create_publisher(String, '/control_cmd', 10)
         # Latched-style status: rosbridge clients pick up the latest
         # snapshot on connect (we'll re-publish it every status update).
@@ -1288,18 +1352,39 @@ class AutoTuneNode(Node):
         return res
 
     def _marker_xy(self, marker_id: int) -> Optional[tuple[float, float]]:
+        """Marker centre in PLATFORM frame (the natural frame for
+        goto targets — ref_generator handles the platform→IMU
+        rotation downstream)."""
         for mid, x, y in self._step_id_marker_layout:
             if mid == marker_id:
                 return (x, y)
         return None
 
+    def _marker_xy_imu(self, marker_id: int
+                       ) -> Optional[tuple[float, float]]:
+        """Marker centre in IMU frame, for cross-sensor distance
+        comparisons against /ball_state (which is in IMU frame
+        after the §0 alignment fix)."""
+        xy = self._marker_xy(marker_id)
+        if xy is None:
+            return None
+        return _rotate_platform_to_imu(
+            xy, self._step_id_R_platform_to_imu)
+
     def _detect_starting_marker(self, timeout_s: float = 60.0
-                                ) -> Optional[int]:
+                                ) -> tuple[Optional[int], str]:
         """Wait until exactly one marker ID is consistently missing
         from /platform_pose/marker_ids for STEP_ID_OCCLUSION_DWELL_S
         AND the ball state position is within
-        STEP_ID_BALL_ON_MARKER_TOL_MM of that marker's centre.
-        Returns the marker ID, or None on timeout / abort.
+        STEP_ID_BALL_ON_MARKER_TOL_MM of that marker's IMU-frame centre.
+
+        Returns (marker_id_or_None, reason). Reasons:
+          - 'detected'   — marker found, normal completion
+          - 'aborted'    — operator pressed Stop
+          - 'timeout'    — timeout_s elapsed
+          - 'no_topic'   — never received a /platform_pose/marker_ids
+                           message (vision pipeline may be down or the
+                           new build isn't running)
 
         Cross-sensor confirmation: the missing-ID test alone could be
         fooled by a transient occlusion (operator's hand, glare); the
@@ -1309,31 +1394,68 @@ class AutoTuneNode(Node):
         t_start = time.monotonic()
         candidate: Optional[int] = None
         candidate_since: Optional[float] = None
+        last_status_t = 0.0
         while not self._abort:
             if time.monotonic() - t_start > timeout_s:
-                return None
+                if self._marker_ids_t == 0.0:
+                    return (None, 'no_topic')
+                return (None, 'timeout')
             now = time.monotonic()
             visible = set(self._marker_ids) & all_ids
             missing = all_ids - visible
+            ball = self._latest_ball_xy()
+
+            # Live-status diagnostics: every 1 s, refresh the prompt
+            # with the current state of the gate so the operator can
+            # see exactly why we're not progressing.
+            if now - last_status_t > 1.0:
+                last_status_t = now
+                if self._marker_ids_t == 0.0:
+                    diag = ('Waiting for /platform_pose/marker_ids — '
+                            'is platform_pose_node running with the '
+                            'new build?')
+                else:
+                    if not visible:
+                        diag = ('Topic alive but 0/8 markers detected '
+                                '— camera blocked or ball off-centre?')
+                    else:
+                        miss_str = (','.join(str(m) for m in sorted(missing))
+                                    if missing else 'none')
+                        diag = (f'{len(visible)}/8 visible, missing: '
+                                f'[{miss_str}]')
+                        if len(missing) == 1 and ball is not None:
+                            m = next(iter(missing))
+                            mxy = self._marker_xy_imu(m)
+                            if mxy is not None:
+                                d = math.hypot(ball[0] - mxy[0],
+                                               ball[1] - mxy[1])
+                                diag += (f'; ball→m{m} dist={d:.0f} mm '
+                                         f'(need ≤'
+                                         f'{STEP_ID_BALL_ON_MARKER_TOL_MM:.0f})')
+                        elif ball is None:
+                            diag += '; no /ball_state yet'
+                self._status['prompt'] = diag
+                self._publish_status()
+
             # Need exactly one missing ID — if 0, the ball isn't
             # blocking anything (or operator hasn't placed it yet);
             # if >1, the camera is partially blocked or the ball is
             # straddling two markers (unusual).
             if len(missing) == 1:
                 m = next(iter(missing))
-                # Ball-position cross-check.
-                ball = self._latest_ball_xy()
-                marker_xy = self._marker_xy(m)
-                if ball is not None and marker_xy is not None:
-                    dist = math.hypot(ball[0] - marker_xy[0],
-                                      ball[1] - marker_xy[1])
+                # Cross-sensor check uses the IMU-frame marker centre
+                # so it's in the same frame as /ball_state.
+                marker_xy_imu = self._marker_xy_imu(m)
+                if ball is not None and marker_xy_imu is not None:
+                    dist = math.hypot(ball[0] - marker_xy_imu[0],
+                                      ball[1] - marker_xy_imu[1])
                     if dist <= STEP_ID_BALL_ON_MARKER_TOL_MM:
                         if candidate != m:
                             candidate = m
                             candidate_since = now
                         elif (now - (candidate_since or now)
                               >= STEP_ID_OCCLUSION_DWELL_S):
-                            return m
+                            return (m, 'detected')
                     else:
                         candidate = None
                         candidate_since = None
@@ -1344,7 +1466,7 @@ class AutoTuneNode(Node):
                 candidate = None
                 candidate_since = None
             time.sleep(0.05)
-        return None
+        return (None, 'aborted')
 
     def _wait_for_ball_on_marker(self, expected_marker: int,
                                  timeout_s: float
@@ -1404,16 +1526,19 @@ class AutoTuneNode(Node):
     def _is_ball_on_marker(self, marker_id: int) -> bool:
         """Snapshot test: is the ball on the given marker right now?
         Both the occlusion AND ball-position checks must pass. Used by
-        _wait_for_ball_on_marker and the closed-loop settle gate."""
+        _wait_for_ball_on_marker and the closed-loop settle gate.
+        Position check rotates marker centre into IMU frame so it
+        compares against /ball_state in the same frame."""
         all_ids = {mid for mid, _, _ in self._step_id_marker_layout}
         visible = set(self._marker_ids) & all_ids
         if marker_id not in (all_ids - visible):
             return False
         ball = self._latest_ball_xy()
-        marker_xy = self._marker_xy(marker_id)
-        if ball is None or marker_xy is None:
+        marker_xy_imu = self._marker_xy_imu(marker_id)
+        if ball is None or marker_xy_imu is None:
             return False
-        d = math.hypot(ball[0] - marker_xy[0], ball[1] - marker_xy[1])
+        d = math.hypot(ball[0] - marker_xy_imu[0],
+                       ball[1] - marker_xy_imu[1])
         return d <= STEP_ID_BALL_ON_MARKER_TOL_MM
 
     def _safe_open_loop_direction(self, marker_id: int
@@ -1493,11 +1618,28 @@ class AutoTuneNode(Node):
                 '(place ball on any marker)')
             self._status['state'] = 'step_id_detecting_marker'
             self._publish_status()
-            start_marker = self._detect_starting_marker(timeout_s=300.0)
+            start_marker, reason = self._detect_starting_marker(
+                timeout_s=300.0)
             if start_marker is None:
+                # Differentiate exit reasons so the operator-visible
+                # message reflects what actually happened. Earlier
+                # version reported "5 min timeout" for every None
+                # return — including operator Stop, which is
+                # misleading.
+                msg_by_reason = {
+                    'aborted':  'aborted by operator (Stop pressed)',
+                    'timeout':  'no starting marker detected within '
+                                '5 min — try placing the ball again '
+                                'and ensure exactly one marker is '
+                                'occluded',
+                    'no_topic': '/platform_pose/marker_ids never '
+                                'published — is the new build live? '
+                                'Check `ros2 topic hz '
+                                '/platform_pose/marker_ids`',
+                }
                 self._fail_step_id(
                     log_dir, summary_path, session,
-                    'no starting marker detected within 5 min')
+                    msg_by_reason.get(reason, f'detect failed: {reason}'))
                 return
             self.get_logger().info(
                 f'step_id: ball detected on marker {start_marker}')
