@@ -1622,6 +1622,26 @@
                  class="bg-slate-700 rounded px-1 py-0.5 mono w-12">
         </label>
       </div>
+      <!-- Vision backend selector. Switches the detector that feeds
+           /ball_state. The OAK driver flips an in-memory flag and
+           emits the new source on its next NN tick — no pipeline
+           rebuild needed. Each switch is also bagged via /oak/config
+           and snapshotted into the session JSON so plots can label
+           with which backend was running. The "current" line below
+           shows what /oak/config last reported, so the operator
+           knows the switch landed. -->
+      <div class="flex items-center gap-2 text-xs mb-2 mt-1 flex-wrap">
+        <span class="text-slate-400">vision backend:</span>
+        <select id="stepid-vision-backend"
+                class="bg-slate-700 rounded px-1 py-0.5 text-xs"
+                title="Which ball detector feeds /ball_state. cv2 = host HSV (brittle to motion blur); v0_nn = on-device linear color score (fast, simple); v1_yolo = on-device trained YOLO (best motion-blur robustness). To switch v6 vs v8 YOLO architecture, edit OAK_FORCE_V1_ARCH in stable_bot.service and re-deploy.">
+          <option value="cv2">cv2 (host HSV)</option>
+          <option value="v0_nn">v0_nn (on-device color NN)</option>
+          <option value="v1_yolo" selected>v1_yolo (on-device YOLO)</option>
+        </select>
+        <span id="stepid-vision-backend-current"
+              class="text-xs text-slate-500 mono"></span>
+      </div>
       <div id="stepid-prompt"
            class="text-xs bg-slate-900 rounded px-2 py-1 text-amber-300 mb-2 mono">
         idle — click Start
@@ -4796,6 +4816,23 @@ function initVisionGUI() {
                                             _publishStepIdNReplicates);
     setTimeout(_publishStepIdNReplicates, 1500);
   }
+  // Vision backend selector — publishes to the existing
+  // /oak/cmd_v0_backend topic that oak_driver_node subscribes to.
+  // The driver flips an in-memory flag and emits the new source on
+  // its next NN tick (no pipeline rebuild). /oak/config is then
+  // republished with the new backend, which onOakConfig() picks up
+  // to update the "live: ..." indicator below the dropdown.
+  const stepidVisionBackendSel = $('stepid-vision-backend');
+  if (stepidVisionBackendSel) {
+    stepidVisionBackendSel.addEventListener('change', () => {
+      if (!topic.oak_v0_backend_cmd) return;
+      const wanted = stepidVisionBackendSel.value;
+      try {
+        topic.oak_v0_backend_cmd.publish(
+          new ROSLIB.Message({ data: wanted }));
+      } catch (e) {}
+    });
+  }
   if (stepidStartBtn) stepidStartBtn.addEventListener('click', () => {
     if (!srv.stepid_start) return;
     // Re-publish start-Z, tilt-magnitude and replicate count right
@@ -7389,6 +7426,31 @@ function onOakConfig(cfg) {
     let mapped = (cfg.v0_backend || 'cv2').toLowerCase();
     if (mapped === 'v0_nn' || mapped === 'nn') mapped = 'v1_yolo';
     if (dropdown.value !== mapped) dropdown.value = mapped;
+  }
+  // Sync the STEP_ID panel's vision backend selector + the "currently
+  // running" line below it.
+  const stepidSel = document.getElementById('stepid-vision-backend');
+  const stepidCur = document.getElementById('stepid-vision-backend-current');
+  if (stepidSel) {
+    const v = (cfg.v0_backend || 'cv2').toLowerCase();
+    // Don't clobber while operator is mid-interaction with the dropdown.
+    if (document.activeElement !== stepidSel
+        && stepidSel.value !== v) {
+      stepidSel.value = v;
+    }
+  }
+  if (stepidCur) {
+    const v = (cfg.v0_backend || 'cv2').toLowerCase();
+    let extra = '';
+    if (v === 'v1_yolo') {
+      const arch = cfg.v1_arch || '?';
+      const blob = cfg.v1_blob || '?';
+      extra = ` · arch=${arch} · ${blob}`;
+    } else if (v === 'v0_nn') {
+      const blob = cfg.v0_blob || '?';
+      extra = ` · ${blob}`;
+    }
+    stepidCur.innerText = `live: ${v}${extra}`;
   }
   // Focus state — highlight the active mode and sync the slider.
   const focusMode = (cfg.focus_mode || 'manual').toLowerCase();

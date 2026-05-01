@@ -373,6 +373,16 @@ STEP_ID_BAG_TOPICS = [
                                # to visualise saturation, stiction
                                # relief events, and inner-loop
                                # tracking quality
+    '/oak/config',             # JSON snapshot @ ~5 Hz: v0_backend,
+                               # v1_arch, blob filenames, exposure,
+                               # focus, jpeg_fps. Tags every session
+                               # with which detector was running so
+                               # apples-to-apples comparison across
+                               # sessions actually works.
+    '/oak/health',             # per-stream Hz + per-path latency
+                               # @ 5 Hz. Diagnoses whether the
+                               # vision pipeline is keeping up
+                               # during the session.
     '/oak/ball/v0/yolo_pixel',
     '/oak/ball/v0/cv2_pixel',
     '/leg_encoders',     # kept: stuck-leg detection during open-loop tilt
@@ -660,6 +670,16 @@ class AutoTuneNode(Node):
         self.create_subscription(
             Float32MultiArray, '/ball_track/diagnostic',
             self._on_ball_track_diag, 20)
+        # Latest /oak/config snapshot (JSON String, ~5 Hz). Carries
+        # v0_backend, v1_arch, exposure, etc. Captured into each
+        # trial's output so the digest can label plots with which
+        # detector was running and the comparison across sessions
+        # is actually apples-to-apples.
+        self._step_id_oak_config: Optional[dict] = None
+        self._step_id_oak_config_t: float = 0.0
+        self.create_subscription(
+            String, '/oak/config',
+            self._on_oak_config, 5)
         self.pub_cmd = self.create_publisher(String, '/control_cmd', 10)
         # Latched-style status: rosbridge clients pick up the latest
         # snapshot on connect (we'll re-publish it every status update).
@@ -1529,6 +1549,33 @@ class AutoTuneNode(Node):
             self._step_id_ball_track_diag = list(msg.data)
             self._step_id_ball_track_diag_t = time.monotonic()
 
+    def _on_oak_config(self, msg: String) -> None:
+        try:
+            self._step_id_oak_config = json.loads(msg.data)
+            self._step_id_oak_config_t = time.monotonic()
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    def _vision_backend_snapshot(self) -> dict:
+        """Compact snapshot of the detector currently feeding the
+        controller. Captured into each trial's output. Falls back
+        to empty if /oak/config hasn't been received yet."""
+        cfg = self._step_id_oak_config or {}
+        return {
+            'v0_backend': cfg.get('v0_backend'),
+            'v1_arch': cfg.get('v1_arch'),
+            'v0_blob': cfg.get('v0_blob'),
+            'v1_blob': cfg.get('v1_blob'),
+            'rgb_fps': cfg.get('rgb_fps'),
+            'mono_fps': cfg.get('mono_fps'),
+            'exp_us': cfg.get('exp_us'),
+            'iso': cfg.get('iso'),
+            'jpeg_fps': cfg.get('jpeg_fps'),
+            'config_age_s': (
+                time.monotonic() - self._step_id_oak_config_t
+                if self._step_id_oak_config_t > 0 else None),
+        }
+
     def _on_step_id_n_replicates_cmd(self, msg: Float64) -> None:
         """GUI sets the open-loop replicate count. Float64 because
         the existing /step_id/cmd_* topics are all Float64; we round
@@ -2008,6 +2055,14 @@ class AutoTuneNode(Node):
                 'current_gains': {
                     k: float(v) for k, v in current_gains.items()
                     if isinstance(v, (int, float))},
+                # Session-level vision-backend snapshot. Most
+                # sessions use one backend throughout, so this is
+                # the "headline" tag for the whole run. Per-trial
+                # snapshots in phases.open_loop / phases.verification
+                # carry the value at the moment of each trial in
+                # case the operator switched mid-session.
+                'vision_backend_at_start':
+                    self._vision_backend_snapshot(),
                 'phases': {},
             }
             self._status.update({
@@ -2528,6 +2583,13 @@ class AutoTuneNode(Node):
             out['abort_reason'] = 'no ball state at trial start'
             return out
         out['ball_start_xy'] = list(ball0)
+        # Snapshot vision backend at trial start. Different detectors
+        # produce different position-noise profiles → different
+        # G_eff fits, different verification trial outcomes. Tagging
+        # every trial with backend lets us compare apples-to-apples
+        # across sessions (cv2 vs v0_nn vs v1_yolo, v6 vs v8).
+        out['vision_backend_at_start'] = (
+            self._vision_backend_snapshot())
         # Snapshot platform state at trial start. Without this we
         # can't reproduce / diagnose session-to-session divergences
         # like 202650Z (IMU achievement 101%) vs 203101Z (achievement
@@ -3102,6 +3164,11 @@ class AutoTuneNode(Node):
             return out
         out['ball_start_xy'] = list(ball0)
         out['target_xy'] = list(target_xy)
+        # Same snapshot as the open-loop trial — the verification
+        # phase can run with a different backend than the open-loop
+        # phase if the operator switched mid-session.
+        out['vision_backend_at_start'] = (
+            self._vision_backend_snapshot())
         # Status prompt: tell the operator the trial is starting and
         # what's happening. Without this the GUI sits silent for 25 s
         # and the operator can't tell when the trial actually started

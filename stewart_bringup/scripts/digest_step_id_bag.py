@@ -91,6 +91,38 @@ def _load_summary(d: Path) -> dict:
         return json.load(f)
 
 
+def _vision_backend_tag(session: dict) -> str:
+    """One-line summary of the vision backend used in this session,
+    suitable for embedding in plot titles. Pulls from the session-
+    level snapshot first, falls back to the first replicate's
+    snapshot, and finally to '(unknown)' when the session predates
+    the snapshot capture."""
+    vb = session.get('vision_backend_at_start') or {}
+    if not vb.get('v0_backend'):
+        # Fall back to first replicate's snapshot for older
+        # sessions that didn't have a session-level field.
+        reps = (session.get('phases', {})
+                .get('open_loop_replicates') or [])
+        if not reps:
+            ol = session.get('phases', {}).get('open_loop')
+            reps = [ol] if ol else []
+        if reps:
+            vb = reps[0].get('vision_backend_at_start') or {}
+    bk = vb.get('v0_backend')
+    if not bk:
+        return '(vision backend: unknown)'
+    extra_parts = []
+    if bk == 'v1_yolo':
+        arch = vb.get('v1_arch')
+        if arch:
+            extra_parts.append(arch)
+    rgb_fps = vb.get('rgb_fps')
+    if rgb_fps:
+        extra_parts.append(f'{rgb_fps}fps')
+    extra = ' / '.join(extra_parts)
+    return f'vision: {bk}{" / " + extra if extra else ""}'
+
+
 def _plant_gain_fit_png(session: dict, out_path: Path) -> None:
     """Open-loop plant ID visual. Multi-replicate when the session
     ran ≥2 open-loop trials (default n=3): all replicates overlaid
@@ -221,7 +253,11 @@ def _plant_gain_fit_png(session: dict, out_path: Path) -> None:
     axes[2].set_title('parabolic fits')
     axes[2].grid(alpha=0.25)
     axes[2].legend(loc='best', fontsize=7)
-    fig.suptitle(title_main, fontsize=11)
+    # Append vision-backend tag so the operator can compare apples-
+    # to-apples across sessions (cv2 vs v1_yolo will produce very
+    # different open-loop fits because of motion-blur robustness).
+    fig.suptitle(f'{title_main}   ·   {_vision_backend_tag(session)}',
+                 fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
@@ -388,7 +424,9 @@ def _ball_paths_combined_png(session: dict, out_path: Path) -> None:
     ax.grid(alpha=0.25)
     ax.set_xlabel('x [mm]')
     ax.set_ylabel('y [mm]')
-    ax.set_title('Verification trials: ball paths overlaid')
+    ax.set_title(
+        'Verification trials: ball paths overlaid'
+        f'   ·   {_vision_backend_tag(session)}')
     ax.legend(loc='upper right', fontsize=7)
     fig.tight_layout()
     fig.savefig(out_path)
@@ -741,6 +779,9 @@ def _tilt_timeseries_png(session: dict, out_path: Path) -> None:
         ax_phase.set_title('phase mix', fontsize=9)
     # constrained_layout (set in subplots() above) handles spacing;
     # don't call tight_layout — it warns and overrides.
+    fig.suptitle(
+        f'commanded vs IMU tilt + phase mix per trial   ·   '
+        f'{_vision_backend_tag(session)}', fontsize=10)
     fig.savefig(out_path)
     plt.close(fig)
 
@@ -810,9 +851,10 @@ def _speed_histogram_png(session: dict, out_path: Path) -> None:
             f'm{t.get("target_marker", "?")}')
         ax.grid(alpha=0.25)
         ax.legend(loc='upper left', fontsize=8)
-    fig.suptitle('speed distribution per trial '
-                 '(visualises vision-noise-driven outliers)',
-                 fontsize=10)
+    fig.suptitle(
+        f'speed distribution per trial   ·   '
+        f'{_vision_backend_tag(session)}',
+        fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
@@ -1196,6 +1238,19 @@ def _write_recommendation(session: dict, out_path: Path) -> None:
     verif_analysis = session.get('verification_analysis', {})
     aggregate = session.get('phases', {}).get('open_loop_aggregate',
                                               {})
+    # Vision backend tag: which detector was running during this
+    # session. Lets cross-session comparison stay apples-to-apples.
+    vision_backend = (session.get('vision_backend_at_start')
+                      or {}).copy()
+    if not vision_backend.get('v0_backend'):
+        # Fall back to first replicate's snapshot.
+        reps = (session.get('phases', {})
+                .get('open_loop_replicates') or [])
+        if not reps and session.get('phases', {}).get('open_loop'):
+            reps = [session['phases']['open_loop']]
+        if reps:
+            vision_backend = (reps[0].get('vision_backend_at_start')
+                              or {}).copy()
     summary = {
         'current_gains': cur,
         'recommended_gains': {
@@ -1204,6 +1259,7 @@ def _write_recommendation(session: dict, out_path: Path) -> None:
             'ki': rec.get('ki'),
             'max_tilt_deg': rec.get('max_tilt_deg'),
         },
+        'vision_backend': vision_backend,
         # If verification suggested a refinement, surface it here
         # alongside the original analytic recommendation. Operator
         # picks which to apply via the GUI editable inputs.
