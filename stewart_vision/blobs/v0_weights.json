@@ -1,10 +1,11 @@
 {
-  "w_b": -1.0,
+  "w_b": -1.5,
   "w_g": 0.4,
   "w_r": 1.0,
-  "bias": 0.25,
-  "score_floor": 0.02,
-  "density_floor": 0.01,
-  "nn_conf_min": 0.0,
-  "saved_at_utc": "2026-05-01T01:36:39Z"
+  "bias": -0.3,
+  "score_floor": 0.0,
+  "density_floor": 0.02,
+  "nn_conf_min": 0.0001,
+  "saved_at_utc": "2026-05-01T01:50:00Z",
+  "_note": "V0.5c @ 640x360. Weights reset to a clean orange-favoring baseline after V0.5b+c tuning chase. bias=-0.3 (was -0.5) is more permissive to handle desaturation in the OAK's downscale; w_b=-1.5 + w_r=1.0 still rejects white and red better than orange. score_floor=0 (let the spatial filter decide). density_floor=0.02 (rejects scattered noise). nn_conf_min=1e-4 host-side floor, tunable live via slider."
 }

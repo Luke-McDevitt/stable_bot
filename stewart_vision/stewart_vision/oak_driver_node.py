@@ -70,7 +70,7 @@ MONO_W, MONO_H = 1280, 800
 # current pipeline (Phase 2A's downscale was reverted because the cv2
 # detector struggled with a 5-px-radius ball). See
 # docs/oak_phase2b_on_device_v0.md.
-V0_W, V0_H = 320, 180
+V0_W, V0_H = 640, 360
 
 
 # --- V0 color-threshold detector ---------------------------------------------

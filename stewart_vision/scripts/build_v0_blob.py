@@ -72,7 +72,7 @@ import numpy as np
 # Input resolution to the NN. Chosen to match the ImageManip downscale in
 # stewart_vision/oak_driver_node.py (V0_W, V0_H = 320, 180). Multiple of
 # 16 — required by ImageManip's warp/resize engine on RVC2.
-NN_W, NN_H = 320, 180
+NN_W, NN_H = 640, 360
 
 # Default linear color-score weights (orange-favoring, 2026-04-30
 # retune). Sanity at saturated colours (R, G, B normalised to 1.0):

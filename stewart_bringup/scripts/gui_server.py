@@ -1787,15 +1787,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 repo = os.path.expanduser('~/stable_bot_repo')
                 env = os.environ.copy()
-                # Three artifacts produced by the Save / Rebuild flow.
-                # Add each one only if it actually exists, so this
-                # works even if the operator clicks Push before
-                # Rebuild has run yet.
-                rels = [
-                    'stewart_vision/blobs/v0_weights.json',
-                    'stewart_vision/blobs/v0_320x180.blob',
-                    'stewart_vision/blobs/v0_320x180.onnx',
-                ]
+                # Artifacts produced by the Save / Rebuild flow.
+                # Glob the .blob/.onnx paths so this still works after
+                # NN_W/NN_H changes (e.g., 320x180 → 640x360 bumps).
+                # The JSON is fixed; everything else discovered live.
+                import glob as _glob
+                rels = ['stewart_vision/blobs/v0_weights.json']
+                blobs_dir = os.path.join(repo, 'stewart_vision', 'blobs')
+                for pattern in ('v0_*.blob', 'v0_*.onnx'):
+                    for p in sorted(_glob.glob(os.path.join(blobs_dir, pattern))):
+                        rels.append(os.path.relpath(p, repo))
                 rels = [r for r in rels
                         if os.path.isfile(os.path.join(repo, r))]
                 if not rels:
