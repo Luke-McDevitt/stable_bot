@@ -748,8 +748,21 @@ def _build_pipeline(rgb_fps: int = 60, mono_fps: int = 15,
 
     # Outputs
     def add_out(name, src):
+        # Non-blocking + queue=1 on the DEVICE side so a slow USB
+        # consumer can't backpressure the upstream node. This was a
+        # major bug pre-2026-05-01: rgb_raw XLink with default
+        # blocking=True caused cam_rgb to throttle to ~15 fps because
+        # 540p@60 fps raw exceeds USB 2.0 bandwidth (746 Mbps vs 480
+        # Mbps available). The on-device NN paths feed off cam_rgb,
+        # so they were getting starved of input frames. Latest-only +
+        # non-blocking lets the device pipeline run at full rate;
+        # frames drop at the XLink queue when USB can't keep up.
+        # Host-side queues are already configured non-blocking with
+        # size 1 (see getOutputQueue calls in __init__).
         out = pipeline.create(dai.node.XLinkOut)
         out.setStreamName(name)
+        out.input.setBlocking(False)
+        out.input.setQueueSize(1)
         src.link(out.input)
         return out
 
