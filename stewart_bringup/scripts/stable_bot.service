@@ -26,6 +26,12 @@ Environment=OAK_ENABLE_DEPTH=0
 # Myriad X SHAVE budget. V0.5c was a dead end (NaN output, wrong
 # detection ceiling); kept in code for git-history fallback only.
 Environment=OAK_DISABLE_V0_NN=1
+# Boot-time default detector. v1_yolo (on-device YOLO trained on the
+# foam ball) is the cleanest path under motion blur, per operator
+# A/B test 2026-05-01 (v1 ~20% cleaner than cv2 HSV). Runtime-
+# switchable via /oak/cmd_v0_backend topic + STEP_ID GUI panel
+# selector; this just sets what's running at boot.
+Environment=OAK_V0_BACKEND=v1_yolo
 # Pipeline performance knobs.
 #   OAK_ENABLE_MONO=0  — mono unused (ArUco runs on RGB), saves USB.
 #   OAK_DISABLE_JPEG=0 — keep JPEG ON; the encoder ate Myriad X
@@ -42,10 +48,12 @@ Environment=OAK_ENABLE_MONO=0
 Environment=OAK_DISABLE_JPEG=0
 Environment=OAK_JPEG_FPS=10
 # Force V1 architecture (overrides auto-detect: prefer v6, fall back to v8).
-# Uncomment to A/B compare:
-#   v6 = YOLOv6n (Meituan, ~60 Hz solo benchmark — current default)
+#   v6 = YOLOv6n (Meituan, ~60 Hz solo benchmark)
 #   v8 = YOLOv8n (Ultralytics, ~30 Hz solo benchmark, slightly higher mAP)
-# Environment=OAK_FORCE_V1_ARCH=v8
+# Operator A/B'd 2026-05-01 — v8 produced ~20% cleaner detection on
+# the foam ball under motion blur. Locked in here as the default;
+# comment this line and the auto-detect picks v6 first again.
+Environment=OAK_FORCE_V1_ARCH=v8
 # Mono FPS stays at 15 (default). 2026-05-01: tried OAK_MONO_FPS=60
 # to test the hypothesis that mono rate gates RGB; at 60 fps mono,
 # platform_pose_node's ArUco solve was dropping out (pose=0 in
