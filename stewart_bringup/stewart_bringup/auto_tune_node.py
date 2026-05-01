@@ -483,6 +483,17 @@ class AutoTuneNode(Node):
         self.create_subscription(
             Int32MultiArray, '/platform_pose/marker_ids',
             self._on_marker_ids, 10)
+        # /status snapshot for arming + level-enabled pre-flight check.
+        # Refuse to start STEP_ID if the system isn't armed — otherwise
+        # the open-loop tilt does nothing and G_eff comes out as ~0
+        # (observed 2026-05-01 17:34:55Z session: G_eff=3.87 mm/s²/°,
+        # ball moved <1 mm during the entire 0.5 s tilt, recommended
+        # gains came out useless because the platform never physically
+        # responded to the SetPose).
+        self._status_snapshot: dict = {}
+        self._status_t: float = 0.0
+        self.create_subscription(
+            String, '/status', self._on_status, 10)
         # STEP_ID session state. None when not running.
         self._step_id_running = False
         self._step_id_thread = None
@@ -618,20 +629,18 @@ class AutoTuneNode(Node):
             res.success = False
             res.message = 'auto_tune not running'
             return res
-        # Cooperative abort flag for the trial loop.
+        # Set abort and publish ONE quick LEVEL_HOLD so any in-flight
+        # ball-track tilt is immediately superseded. The full
+        # platform-shutdown sequence (multi-publish + SetPose +
+        # sleeps to defend against the BALL_TRACK_GOTO/LEVEL_HOLD
+        # ordering race) happens in the session thread's finally
+        # clause via _stop_platform_definitively. Doing the long
+        # sequence here would block the service handler.
         self._abort = True
-        # IMMEDIATELY return the platform to LEVEL_HOLD — don't wait for
-        # the trial loop to notice the flag. Without this, the platform
-        # keeps tilting until the current trial's collect-loop ticks
-        # again (up to 20 ms), and during a runaway gain set that's
-        # 20 ms too long.
         self._publish_mode('LEVEL_HOLD')
-        # Belt and braces: also send a zero-tilt set_pose so even if
-        # something is mis-mapping LEVEL_HOLD, we explicitly set the
-        # platform flat at nominal Z.
-        self._reset_pose_to_nominal(blocking=False)
         res.success = True
-        res.message = 'auto_tune stopping — platform → LEVEL_HOLD'
+        res.message = ('auto_tune stopping — leveling platform '
+                       '(takes ~1 s)')
         return res
 
     # ----- Trial loop -------------------------------------------------------
@@ -1324,6 +1333,41 @@ class AutoTuneNode(Node):
         self._marker_ids = list(msg.data)
         self._marker_ids_t = time.monotonic()
 
+    def _on_status(self, msg: String) -> None:
+        try:
+            self._status_snapshot = json.loads(msg.data)
+            self._status_t = time.monotonic()
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    def _check_preflight(self) -> tuple[bool, str]:
+        """Pre-flight check before starting any tuning session.
+        Returns (ok, message). Currently checks:
+          - /status received recently (proves control_node alive)
+          - 'armed': True (otherwise SetPose commands do nothing)
+          - 'level_enabled': True (otherwise tilt commands aren't
+            tracked by the level-PI loop and the open-loop fit will
+            measure something other than the cascaded plant)
+        """
+        if (self._status_t == 0.0
+                or time.monotonic() - self._status_t > 2.0):
+            return (False,
+                    'no recent /status from stewart_control — '
+                    'is the control node running?')
+        s = self._status_snapshot
+        if not s.get('armed'):
+            return (False,
+                    'system not armed — STEP_ID needs the legs in '
+                    'closed-loop position control to actually tilt. '
+                    'Click ARM ALL in the GUI first.')
+        if not s.get('level_enabled'):
+            return (False,
+                    'level loop disabled — STEP_ID measures the '
+                    'cascaded plant (level-PI inner loop must be '
+                    'tracking commanded tilt). Enable the level '
+                    'loop first.')
+        return (True, 'ok')
+
     def _srv_step_id_start(self, req, res):
         if self._running or self._step_id_running:
             res.success = False
@@ -1332,6 +1376,18 @@ class AutoTuneNode(Node):
         if not self._step_id_marker_layout:
             res.success = False
             res.message = 'marker_layout.yaml not loaded — STEP_ID needs it'
+            return res
+        # Pre-flight: arming + level loop. Refuse to start if the
+        # legs aren't in CLOSED_LOOP — observed scenario where an
+        # entire STEP_ID session ran with the platform unarmed,
+        # G_eff came out as 3.87 mm/s²/° (vs ~120 expected) because
+        # the platform never physically tilted, recommended gains
+        # were 430× current and useless.
+        ok, msg = self._check_preflight()
+        if not ok:
+            res.success = False
+            res.message = f'preflight failed: {msg}'
+            self.get_logger().warn(f'step_id refused start: {msg}')
             return res
         self._abort = False
         self._step_id_operator_confirmed = False
@@ -1471,55 +1527,71 @@ class AutoTuneNode(Node):
     def _wait_for_ball_on_marker(self, expected_marker: int,
                                  timeout_s: float
                                  = STEP_ID_OPERATOR_PROMPT_S) -> bool:
-        """Hard pause: wait until the ball is on the expected marker,
-        either because it organically ended up there or because the
-        operator manually placed it and clicked Confirm. Either signal
-        ends the wait. Returns True on success, False on timeout/abort.
+        """Hard pause: ALWAYS waits for the operator to click Confirm
+        before proceeding, even if the ball appears to be on the
+        expected marker organically. This is the user-requested (A)
+        behavior: "the goal is to have repeatable starting and ending
+        positions so we can directly compare runs."
+
+        Why no organic-arrival shortcut: a hand hovering over a marker
+        plus a transiently-matching KF position can trip the gate (one
+        such session ran trial 2 immediately after trial 1 because of
+        this; the ball wasn't actually on the expected start marker).
+        Operator-in-the-loop confirmation eliminates that whole class
+        of false-positive starts.
+
+        The Confirm button still cross-checks via _is_ball_on_marker
+        before accepting — operator can't rush the platform by
+        clicking before placing the ball. Returns True on success,
+        False on timeout/abort.
         """
         marker_xy = self._marker_xy(expected_marker)
         if marker_xy is None:
             return False
-        all_ids = {mid for mid, _, _ in self._step_id_marker_layout}
         t_start = time.monotonic()
         self._step_id_operator_confirmed = False
         # Tell the GUI / log we're waiting.
         self._status['state'] = 'step_id_waiting_for_ball'
         self._status['waiting_for_marker'] = int(expected_marker)
         self._status['prompt'] = (
-            f'Place ball on marker {expected_marker}, then click Confirm '
-            f'(or wait for it to settle there organically).')
+            f'Place ball on marker {expected_marker}, then click '
+            f'"✓ Ball is on marker" to continue.')
         self._publish_status()
-        candidate_since: Optional[float] = None
+        last_status_t = 0.0
         while not self._abort:
-            if time.monotonic() - t_start > timeout_s:
+            now = time.monotonic()
+            if now - t_start > timeout_s:
                 self._status['prompt'] = (
-                    f'Timeout: ball never reached marker {expected_marker}.')
+                    f'Timeout: operator never confirmed ball on '
+                    f'marker {expected_marker}.')
                 self._publish_status()
                 return False
-            # Path A: operator clicked Confirm.
+            # Live diagnostic so the operator can see the gate state
+            # (same UX as _detect_starting_marker).
+            if now - last_status_t > 1.0:
+                last_status_t = now
+                if self._is_ball_on_marker(expected_marker):
+                    diag = (f'Ball appears to be on marker '
+                            f'{expected_marker}. Click "✓ Ball is on '
+                            f'marker" when ready.')
+                else:
+                    diag = (f'Place ball on marker {expected_marker}. '
+                            f'Then click Confirm.')
+                self._status['prompt'] = diag
+                self._publish_status()
             if self._step_id_operator_confirmed:
-                # Verify the cross-sensor gate before accepting:
-                # operator could click Confirm while the ball is still
-                # rolling, which would poison the trial.
+                # Cross-sensor verify before accepting — the operator
+                # may have clicked while the ball was still rolling
+                # or before placing it. Re-arm so a future re-press
+                # is required after the next failed verify.
+                self._step_id_operator_confirmed = False
                 if self._is_ball_on_marker(expected_marker):
                     return True
-                # Else keep waiting; operator pressed early.
-                self._step_id_operator_confirmed = False
                 self._status['prompt'] = (
-                    f'Confirm pressed but ball not yet on marker '
-                    f'{expected_marker} — re-place and try again.')
+                    f'Confirm pressed but ball not yet detected on '
+                    f'marker {expected_marker} — re-place and click '
+                    f'Confirm again.')
                 self._publish_status()
-            # Path B: organic arrival. Same cross-sensor gate as
-            # _detect_starting_marker but for a specific expected ID.
-            if self._is_ball_on_marker(expected_marker):
-                now = time.monotonic()
-                if candidate_since is None:
-                    candidate_since = now
-                elif (now - candidate_since
-                      >= STEP_ID_OCCLUSION_DWELL_S):
-                    return True
-            else:
-                candidate_since = None
             time.sleep(0.05)
         return False
 
@@ -1670,6 +1742,21 @@ class AutoTuneNode(Node):
 
             # --- Phase 3: compute recommended gains ----------------------
             g_eff = ol_trial.get('g_eff_mm_s2_per_deg', 0.0)
+            # Sanity gate: physical floor is roughly 60 mm/s²/° (level-PI
+            # losing half its setpoint) up to 200 mm/s²/° (slight
+            # over-tilt). G_eff well below 20 means the platform didn't
+            # actually move during the open-loop tilt — most likely
+            # cause is unarmed legs. Refuse to compute gains from
+            # garbage; tell the operator what to fix.
+            if g_eff < 20.0:
+                self._fail_step_id(
+                    log_dir, summary_path, session,
+                    (f'open-loop fit found G_eff={g_eff:.1f} mm/s²/° '
+                     f'(physical floor ~60). Platform likely did not '
+                     f'tilt during the trial. Confirm the system is '
+                     f'armed and the level loop is enabled, then '
+                     f'restart.'))
+                return
             recommended = self._compute_recommended_gains(
                 g_eff_mm_s2_per_deg=g_eff,
                 td_observed_s=ol_trial.get('td_observed_s', 0.15),
@@ -1721,15 +1808,14 @@ class AutoTuneNode(Node):
                         f'{expected_start}; goto marker {target}.'),
                 })
                 self._publish_status()
-                # Hard pause for ball on the expected start marker. Skip
-                # the wait if it's already there (organic arrival from
-                # the previous trial).
-                if not self._is_ball_on_marker(expected_start):
-                    if not self._wait_for_ball_on_marker(expected_start):
-                        self.get_logger().warn(
-                            f'  ball never on marker {expected_start} — '
-                            f'aborting verification phase')
-                        break
+                # Hard pause: always wait for operator confirm before
+                # starting each trial. No organic-arrival shortcut —
+                # see _wait_for_ball_on_marker docstring for why.
+                if not self._wait_for_ball_on_marker(expected_start):
+                    self.get_logger().warn(
+                        f'  operator never confirmed ball on marker '
+                        f'{expected_start} — aborting verification phase')
+                    break
                 self._sleep_with_abort(STEP_ID_INTER_TRIAL_DWELL_S)
                 if self._abort:
                     break
@@ -1756,14 +1842,69 @@ class AutoTuneNode(Node):
             self._status['prompt'] = f'crashed: {e!r}'
             self._publish_status()
         finally:
+            # Robust shutdown: guarantee BALL_TRACK is stopped and
+            # current_rpy is zeroed before we mark the session done.
+            # Why the multi-publish dance instead of one LEVEL_HOLD:
+            #   - call_async on SetPose returns IMMEDIATELY on the
+            #     client side regardless of req.blocking, so we can't
+            #     wait on it that way; we have to give it wall-clock
+            #     time to land at the control node.
+            #   - If a BALL_TRACK_GOTO was published from a trial loop
+            #     just before abort fired, there's an ordering race.
+            #     Publishing LEVEL_HOLD multiple times spaced by short
+            #     sleeps ensures whichever order the control node sees,
+            #     the LAST message it processes is LEVEL_HOLD.
+            # Total ~0.8 s of platform-shutdown time. Acceptable.
             try:
-                self._publish_mode('LEVEL_HOLD')
-                self._reset_pose_to_nominal(blocking=False)
+                self._stop_platform_definitively()
             except Exception:
                 pass
             if bag_proc is not None:
                 self._stop_bag(bag_proc)
             self._step_id_running = False
+
+    def _stop_platform_definitively(self) -> None:
+        """Bring the platform to level and ensure BALL_TRACK is stopped,
+        defending against the BALL_TRACK_GOTO/LEVEL_HOLD ordering race.
+
+        Sequence (~0.8 s wall-clock):
+          1. publish LEVEL_HOLD                  → stops BALL_TRACK if
+                                                    enabled
+          2. sleep 100 ms                        → let control node
+                                                    drain any queued
+                                                    /control_cmd messages
+          3. publish LEVEL_HOLD again            → if any BALL_TRACK_GOTO
+                                                    was queued behind us,
+                                                    this supersedes it
+          4. sleep 200 ms
+          5. SetPose to (0,0,nominal_z) rpy=0   → forces current_rpy=0
+                                                    via _do_set_pose so
+                                                    even with level loop
+                                                    OFF the platform sits
+                                                    flat
+          6. sleep 500 ms                        → let SetPose actually
+                                                    move the legs
+          7. publish LEVEL_HOLD final            → belt-and-braces
+        """
+        try:
+            self._publish_mode('LEVEL_HOLD')
+        except Exception:
+            pass
+        time.sleep(0.10)
+        try:
+            self._publish_mode('LEVEL_HOLD')
+        except Exception:
+            pass
+        time.sleep(0.20)
+        try:
+            self._reset_pose_to_nominal(blocking=False)
+        except Exception:
+            pass
+        time.sleep(0.50)
+        try:
+            self._publish_mode('LEVEL_HOLD')
+        except Exception:
+            pass
 
     def _fail_step_id(self, log_dir, summary_path, session, reason):
         self.get_logger().error(f'step_id failed: {reason}')
