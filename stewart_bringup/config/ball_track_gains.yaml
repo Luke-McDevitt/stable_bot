@@ -1,5 +1,5 @@
 accel_tilt_deg: 5.0
-algorithm: bangbang
+algorithm: pid
 brake_horizon_mm: 80.0
 brake_tilt_deg: 9.0
 control_latency_s: 0.0
