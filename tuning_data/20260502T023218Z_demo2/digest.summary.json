@@ -1,0 +1,232 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260502T023218Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": "BALL_TRACK_GOTO",
+  "demo_params": {
+    "x_mm": -92.55170440673828,
+    "y_mm": 97.10343170166016
+  },
+  "duration_s": 67.418000867,
+  "topic_counts": {
+    "/ball_ref": 3847,
+    "/ball_state": 4969,
+    "/ball_track/diagnostic": 2850,
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 3709,
+    "/control_cmd": 16,
+    "/control_result": 0,
+    "/leg_currents": 1265,
+    "/leg_encoders": 1264,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/v0/diagnostic": 853,
+    "/oak/ball/v0/rgb_pixel": 853,
+    "/oak/config": 14,
+    "/oak/health": 14,
+    "/oak/latency_ms": 570,
+    "/odrive_errors": 134,
+    "/platform/imu/data": 19012,
+    "/platform_pose": 574,
+    "/platform_pose/markers_visible": 572,
+    "/platform_rpy": 1265,
+    "/status": 134
+  },
+  "gains_at_record": {
+    "kp": 0.0165,
+    "kd": 0.018,
+    "ki": 0.0,
+    "max_tilt_deg": 1.1,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 100.0,
+    "stiction_v_threshold_mm_s": 21.0,
+    "stiction_break_s": 0.15,
+    "brake_tilt_deg": 9.0,
+    "control_latency_s": 0.15,
+    "kd_v_tau_s": 0.35,
+    "stiction_ramp_start_deg": 0.0,
+    "stiction_ramp_max_deg": 5.0,
+    "stiction_ramp_rate_deg_per_s": 0.35,
+    "stiction_ramp_timeout_s": 8.0,
+    "stiction_moving_hyst_ticks": 3.0,
+    "stiction_pos_delta_mm": 12.0,
+    "tilt_slew_up_deg_per_s": 100.0,
+    "algorithm": "pid"
+  },
+  "next_step": {
+    "suggestion": "Kp +30% (\u21920.021) \u2014 ball got near target but didn't settle within tolerance.",
+    "suggested_gains": {
+      "kp": 0.0215
+    },
+    "rationale": [
+      "final-5s err=45mm > 1.5\u00d7err_tol=22mm but no clear failure mode; nudge Kp up."
+    ],
+    "metrics": {
+      "settled": false,
+      "median_tail_err_mm": 44.78669764456878,
+      "p95_err_mm": 198.25580112236625,
+      "peak_speed_mm_s": 63.77785716592096,
+      "saturation_fraction": 0.4624561403508772,
+      "cmd_jitter_deg_per_tick": 0.07867475127372377
+    }
+  },
+  "ball_state_n": 4969,
+  "ball_ref_n": 3847,
+  "mono_n": 3709,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 4968,
+    "mean": 98.38214439792716,
+    "std": 79.19643722162955,
+    "rms": 126.29775138510622,
+    "p50": 46.02491219834191,
+    "p95": 198.25580112236625,
+    "min": 9.233517518863579,
+    "max": 203.3893160524541
+  },
+  "error_x_mm": {
+    "n": 4968,
+    "mean": -39.47292188894781,
+    "std": 92.28497952874,
+    "rms": 100.37245144496042,
+    "p50": -11.187701429734112,
+    "p95": 82.2260380836013,
+    "min": -181.5814452292093,
+    "max": 84.95021815820543
+  },
+  "error_y_mm": {
+    "n": 4968,
+    "mean": 36.03815733560119,
+    "std": 67.65902904799638,
+    "rms": 76.65828719625272,
+    "p50": -1.7548365641138872,
+    "p95": 155.4397500287985,
+    "min": -43.605019971889774,
+    "max": 160.14364316251184
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 574,
+    "mean": 878.0066665132392,
+    "std": 2.5262365833793017,
+    "rms": 878.0103008011725,
+    "p50": 877.7140773531796,
+    "p95": 882.5140472224756,
+    "min": 868.675462393901,
+    "max": 885.9885432061534
+  },
+  "oak_latency_ms": {
+    "n": 570,
+    "mean": 111.7248525251422,
+    "std": 31.24739609294333,
+    "rms": 116.01225122526527,
+    "p50": 110.53799819946289,
+    "p95": 165.98610305786133,
+    "min": 43.52199935913086,
+    "max": 235.5279998779297
+  },
+  "oak_health": {
+    "n": 14,
+    "v0_arr_hz": {
+      "n": 14,
+      "mean": 26.779166221618652,
+      "std": 2.390901443291848,
+      "rms": 26.88568677264199,
+      "p50": 27.787479400634766,
+      "p95": 29.700260066986083,
+      "min": 20.9699764251709,
+      "max": 29.917043685913086
+    },
+    "v0_pub_hz": {
+      "n": 14,
+      "mean": 12.421289375850133,
+      "std": 1.3692907779151624,
+      "rms": 12.49653499947449,
+      "p50": 12.260581970214844,
+      "p95": 13.995339155197144,
+      "min": 8.987133026123047,
+      "max": 14.115017890930176
+    },
+    "jpeg_hz": {
+      "n": 14,
+      "mean": 8.400979007993426,
+      "std": 0.5467130976948064,
+      "rms": 8.418749521391954,
+      "p50": 8.489603996276855,
+      "p95": 9.0746563911438,
+      "min": 7.189706325531006,
+      "max": 9.169272422790527
+    },
+    "pose_hz": {
+      "n": 14,
+      "mean": 8.433018173490252,
+      "std": 0.6496680807660932,
+      "rms": 8.458005919221335,
+      "p50": 8.620313167572021,
+      "p95": 9.1596923828125,
+      "min": 6.590563774108887,
+      "max": 9.36860466003418
+    },
+    "jpeg_lat_ms": {
+      "n": 14,
+      "mean": 102.23592703683036,
+      "std": 21.1453908089772,
+      "rms": 104.39977169297104,
+      "p50": 103.35249710083008,
+      "p95": 137.54654693603516,
+      "min": 70.83899688720703,
+      "max": 145.2899932861328
+    },
+    "v0_lat_ms": {
+      "n": 14,
+      "mean": 55.10642841884068,
+      "std": 15.368598356742067,
+      "rms": 57.209372208858106,
+      "p50": 52.52299880981445,
+      "p95": 80.81339950561522,
+      "min": 38.946998596191406,
+      "max": 95.88300323486328
+    }
+  },
+  "oak_config": {
+    "rgb_fps": 60,
+    "mono_fps": 15,
+    "jpeg_quality": 50,
+    "focus_mode": "auto",
+    "focus_pos": 145,
+    "exp_us": 8000,
+    "iso": 1600,
+    "v0_backend": "cv2",
+    "v0_blob": null,
+    "v1_blob": "v1_yolov8n_320.blob",
+    "v1_arch": "v8",
+    "nn_conf_min": 0.00430000014603138,
+    "v1_yolo_conf_min": 0.3,
+    "jpeg_fps": 10,
+    "hsv_lo": [
+      5,
+      100,
+      60
+    ],
+    "hsv_hi": [
+      22,
+      255,
+      255
+    ],
+    "enable_depth": false,
+    "mask_v0_to_platform": true,
+    "usb_speed": "super",
+    "rgb_w": 960,
+    "rgb_h": 540
+  },
+  "markers_visible": {
+    "n": 572,
+    "mean": 7.316433566433567,
+    "min": 7,
+    "max": 9
+  }
+}

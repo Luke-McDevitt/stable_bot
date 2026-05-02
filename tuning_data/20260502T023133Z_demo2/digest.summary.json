@@ -1,0 +1,230 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260502T023133Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 30.826745124000002,
+  "topic_counts": {
+    "/ball_ref": 1754,
+    "/ball_state": 2238,
+    "/ball_track/diagnostic": 1298,
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 1706,
+    "/control_cmd": 7,
+    "/control_result": 0,
+    "/leg_currents": 561,
+    "/leg_encoders": 561,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/v0/diagnostic": 378,
+    "/oak/ball/v0/rgb_pixel": 381,
+    "/oak/config": 6,
+    "/oak/health": 6,
+    "/oak/latency_ms": 255,
+    "/odrive_errors": 61,
+    "/platform/imu/data": 8718,
+    "/platform_pose": 265,
+    "/platform_pose/markers_visible": 261,
+    "/platform_rpy": 554,
+    "/status": 60
+  },
+  "gains_at_record": {
+    "kp": 0.0165,
+    "kd": 0.018,
+    "ki": 0.0,
+    "max_tilt_deg": 1.1,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 100.0,
+    "stiction_v_threshold_mm_s": 21.0,
+    "stiction_break_s": 0.15,
+    "brake_tilt_deg": 9.0,
+    "control_latency_s": 0.15,
+    "kd_v_tau_s": 0.35,
+    "stiction_ramp_start_deg": 0.0,
+    "stiction_ramp_max_deg": 5.0,
+    "stiction_ramp_rate_deg_per_s": 0.35,
+    "stiction_ramp_timeout_s": 8.0,
+    "stiction_moving_hyst_ticks": 3.0,
+    "stiction_pos_delta_mm": 8.0,
+    "tilt_slew_up_deg_per_s": 100.0,
+    "algorithm": "pid"
+  },
+  "next_step": {
+    "suggestion": "Kp +50% (\u21920.025) and raise max_tilt to 1.5\u00b0 so the controller has enough authority to break stiction at this error magnitude.",
+    "suggested_gains": {
+      "kp": 0.0248,
+      "max_tilt_deg": 1.5
+    },
+    "rationale": [
+      "final-5s err=181mm with peak speed 46mm/s \u2014 ball not breaking stiction or Kp far too low."
+    ],
+    "metrics": {
+      "settled": false,
+      "median_tail_err_mm": 180.53742339386716,
+      "p95_err_mm": 186.05329397143396,
+      "peak_speed_mm_s": 45.954317333985855,
+      "saturation_fraction": 0.5508474576271186,
+      "cmd_jitter_deg_per_tick": 0.09903594807121355
+    }
+  },
+  "ball_state_n": 2238,
+  "ball_ref_n": 1754,
+  "mono_n": 1706,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 2238,
+    "mean": 180.61228793996116,
+    "std": 2.378517828333402,
+    "rms": 180.62794883950582,
+    "p50": 180.168037084197,
+    "p95": 186.05329397143396,
+    "min": 172.22954781439165,
+    "max": 188.212979165894
+  },
+  "error_x_mm": {
+    "n": 2238,
+    "mean": -158.65245448589283,
+    "std": 2.465578732783797,
+    "rms": 158.6716118052812,
+    "p50": -158.05707827476488,
+    "p95": -156.10404016073184,
+    "min": -166.95420176574999,
+    "max": -151.69717348507686
+  },
+  "error_y_mm": {
+    "n": 2238,
+    "mean": 86.30636227954919,
+    "std": 0.9936494112605226,
+    "rms": 86.31208205738805,
+    "p50": 86.49006946405066,
+    "p95": 87.4156459102194,
+    "min": 80.34933679436884,
+    "max": 89.49252393086974
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 265,
+    "mean": 878.237250671191,
+    "std": 2.0194762343502712,
+    "rms": 878.2395725260582,
+    "p50": 878.2489622474905,
+    "p95": 880.80668671654,
+    "min": 864.2741043857616,
+    "max": 882.0270233843122
+  },
+  "oak_latency_ms": {
+    "n": 255,
+    "mean": 109.03468221028646,
+    "std": 30.261251963300978,
+    "rms": 113.15611028611997,
+    "p50": 107.73999786376953,
+    "p95": 163.41859588623046,
+    "min": 46.70199966430664,
+    "max": 193.9969940185547
+  },
+  "oak_health": {
+    "n": 6,
+    "v0_arr_hz": {
+      "n": 6,
+      "mean": 26.3088436126709,
+      "std": 2.331594507926093,
+      "rms": 26.41195913190397,
+      "p50": 27.009495735168457,
+      "p95": 28.30112361907959,
+      "min": 21.581117630004883,
+      "max": 28.319355010986328
+    },
+    "v0_pub_hz": {
+      "n": 6,
+      "mean": 12.107146422068277,
+      "std": 1.059417250281094,
+      "rms": 12.153409373323761,
+      "p50": 12.56151533126831,
+      "p95": 12.78952670097351,
+      "min": 9.772582054138184,
+      "max": 12.821074485778809
+    },
+    "jpeg_hz": {
+      "n": 6,
+      "mean": 8.419246355692545,
+      "std": 0.31818930704206544,
+      "rms": 8.425256888247274,
+      "p50": 8.417693138122559,
+      "p95": 8.868844747543335,
+      "min": 7.94022274017334,
+      "max": 8.960639953613281
+    },
+    "pose_hz": {
+      "n": 6,
+      "mean": 8.38615115483602,
+      "std": 0.37537898206146275,
+      "rms": 8.394548264911638,
+      "p50": 8.409854888916016,
+      "p95": 8.874019861221313,
+      "min": 7.736627578735352,
+      "max": 8.960639953613281
+    },
+    "jpeg_lat_ms": {
+      "n": 6,
+      "mean": 100.71149826049805,
+      "std": 32.186762224470854,
+      "rms": 105.72981388600344,
+      "p50": 95.86599731445312,
+      "p95": 147.48699760437012,
+      "min": 62.55699920654297,
+      "max": 154.70199584960938
+    },
+    "v0_lat_ms": {
+      "n": 6,
+      "mean": 68.93616612752278,
+      "std": 18.874184604042114,
+      "rms": 71.47328063569546,
+      "p50": 61.45599937438965,
+      "p95": 97.22900009155273,
+      "min": 50.132999420166016,
+      "max": 99.95600128173828
+    }
+  },
+  "oak_config": {
+    "rgb_fps": 60,
+    "mono_fps": 15,
+    "jpeg_quality": 50,
+    "focus_mode": "auto",
+    "focus_pos": 145,
+    "exp_us": 8000,
+    "iso": 1600,
+    "v0_backend": "cv2",
+    "v0_blob": null,
+    "v1_blob": "v1_yolov8n_320.blob",
+    "v1_arch": "v8",
+    "nn_conf_min": 0.00430000014603138,
+    "v1_yolo_conf_min": 0.3,
+    "jpeg_fps": 10,
+    "hsv_lo": [
+      5,
+      100,
+      60
+    ],
+    "hsv_hi": [
+      22,
+      255,
+      255
+    ],
+    "enable_depth": false,
+    "mask_v0_to_platform": true,
+    "usb_speed": "super",
+    "rgb_w": 960,
+    "rgb_h": 540
+  },
+  "markers_visible": {
+    "n": 261,
+    "mean": 7.007662835249042,
+    "min": 7,
+    "max": 8
+  }
+}
