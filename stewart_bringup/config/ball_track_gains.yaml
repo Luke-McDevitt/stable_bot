@@ -2,7 +2,7 @@ accel_tilt_deg: 3.0
 algorithm: pid
 brake_horizon_mm: 100.0
 brake_tilt_deg: 9.0
-control_latency_s: 0.15
+control_latency_s: 0.2
 err_tol_mm: 15.0
 kd: 0.025
 kd_v_tau_s: 0.35
