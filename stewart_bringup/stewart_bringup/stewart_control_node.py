@@ -404,6 +404,16 @@ def _load_ball_track_gains():
         # vision-noise spikes that briefly read above threshold on a
         # physically stationary ball. At 50 Hz, 3 ticks = 60 ms.
         'stiction_moving_hyst_ticks':    3.0,
+        # Position-delta exit threshold for the stiction ramp. When
+        # > 0, the controller exits the ramp the moment the ball's
+        # position has moved this many mm from where it was when the
+        # dwell timer started. Position is far less noise-sensitive
+        # than velocity (which amplifies position noise via
+        # differentiation), so this is a more reliable "did the ball
+        # actually move" signal. 0 = disabled (only velocity-hyst
+        # decides). Try 5-10 mm to detect real motion while ignoring
+        # ~1-2 mm position jitter.
+        'stiction_pos_delta_mm':         0.0,
         # Slew-rate limit on tilt magnitude growth (PID-only). Caps how
         # fast Kp·err can ramp the commanded magnitude — keeps a
         # long-distance click from slamming straight to max_tilt and
@@ -2110,6 +2120,7 @@ class StewartControlNode(Node):
                             'stiction_ramp_rate_deg_per_s',
                             'stiction_ramp_timeout_s',
                             'stiction_moving_hyst_ticks',
+                            'stiction_pos_delta_mm',
                             'tilt_slew_up_deg_per_s')},
                 'algorithm': str(
                     self.ball_track_gains.get('algorithm', 'pid')),
@@ -3667,6 +3678,7 @@ class StewartControlNode(Node):
         'stiction_ramp_rate_deg_per_s':  (0.05, 10.0),
         'stiction_ramp_timeout_s':       (0.0, 30.0),
         'stiction_moving_hyst_ticks':    (1.0, 20.0),
+        'stiction_pos_delta_mm':         (0.0, 100.0),
         'tilt_slew_up_deg_per_s':        (0.5, 100.0),
     }
     _BALL_TRACK_STR_KEYS = ('algorithm',)
@@ -4258,6 +4270,15 @@ class StewartControlNode(Node):
         # ticks before declaring the ball "moving". At 50 Hz, N=3 =
         # 60 ms of sustained motion required.
         moving_count = 0
+        # Position-delta exit condition for the stiction ramp. When
+        # the dwell timer starts, snapshot the ball's position. If the
+        # ball later moves more than stiction_pos_delta_mm from that
+        # snapshot, declare the ball "moving" — independent of the
+        # noisy velocity reading. Position is far less noise-sensitive
+        # than velocity (which is the derivative of position and
+        # amplifies noise); a stationary ball's position only jitters
+        # by ~1-2 mm while velocity jitters at 30-60 mm/s.
+        stiction_pos_start = None
         # Time origin for the diagnostic topic.
         diag_t0 = time.monotonic()
         # Ball-fall recovery state. The loop normally goes flat (zero
@@ -4625,10 +4646,26 @@ class StewartControlNode(Node):
                     # ramp_max indefinitely, prior behavior).
                     ramp_timeout = float(
                         g.get('stiction_ramp_timeout_s', 0.0))
+                    # Position-delta exit threshold. 0 = disabled
+                    # (only velocity-hysteresis decides "moving").
+                    pos_delta_thr = float(
+                        g.get('stiction_pos_delta_mm', 0.0))
+                    # Check position delta from dwell-start snapshot.
+                    pos_moved_enough = False
+                    if (pos_delta_thr > 0.0
+                            and stiction_pos_start is not None):
+                        dx_p = px - stiction_pos_start[0]
+                        dy_p = py - stiction_pos_start[1]
+                        pos_moved_enough = (
+                            math.hypot(dx_p, dy_p) > pos_delta_thr)
                     if (not ball_moving
+                            and not pos_moved_enough
                             and err_mag > err_tol_pid):
                         if stiction_started_t is None:
                             stiction_started_t = now
+                            # Snapshot position at dwell start so the
+                            # delta check has something to compare to.
+                            stiction_pos_start = (px, py)
                         elif (now - stiction_started_t
                               > stiction_break_s_pid):
                             # Time spent in the ramp itself, after
@@ -4651,6 +4688,7 @@ class StewartControlNode(Node):
                                 # see the ball still stuck and
                                 # start a fresh dwell + ramp.
                                 stiction_started_t = None
+                                stiction_pos_start = None
                                 phase_code = 5   # back to PID
                             else:
                                 # Ramp magnitude is bounded by
@@ -4682,11 +4720,13 @@ class StewartControlNode(Node):
                                     tilt_roll = rs * uy * target_mag
                                 phase_code = 4   # STICTION_RAMP
                     else:
-                        # Ball is moving (vel ≥ threshold) or close
+                        # Ball is moving (vel ≥ threshold OR position
+                        # has moved past delta threshold) or close
                         # enough to target (err ≤ tol): no ramp
                         # needed; reset the timer so a future stuck
                         # event has to re-accumulate the dwell.
                         stiction_started_t = None
+                        stiction_pos_start = None
 
                 # Slew-rate limit on tilt magnitude growth. Caps how
                 # quickly the commanded tilt magnitude can climb so a

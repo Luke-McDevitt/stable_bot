@@ -901,6 +901,11 @@
             <input id="bt-g-stiction_ramp_timeout_s" type="number" step="0.25" min="0" max="30" value="0"
                    class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
           </label>
+          <label class="flex flex-col" title="Stiction RAMP — position-delta exit threshold (mm). If > 0, the controller exits the ramp the moment the ball has moved this far from its position when the dwell started. Position is way less noise-sensitive than velocity, so this is the most reliable 'ball actually moved' signal. Try 5-10 mm. 0 = disabled (only velocity-hyst decides).">
+            <span class="text-slate-400">Stiction pos delta [mm]</span>
+            <input id="bt-g-stiction_pos_delta_mm" type="number" step="1" min="0" max="100" value="0"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
         </div>
       </div>
       <div class="grid grid-cols-3 gap-2 mt-3">
@@ -6246,6 +6251,7 @@ const BT_GAIN_KEYS = [
   // Stiction RAMP — soft-start magnitudes when the ball is stuck (PID-only)
   'stiction_ramp_start_deg', 'stiction_ramp_max_deg',
   'stiction_ramp_rate_deg_per_s', 'stiction_ramp_timeout_s',
+  'stiction_pos_delta_mm',
   // Slew-rate limit on tilt magnitude growth (PID-only)
   'tilt_slew_up_deg_per_s',
 ];
