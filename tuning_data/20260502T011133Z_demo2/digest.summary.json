@@ -1,0 +1,153 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260502T011133Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 4.422635511,
+  "topic_counts": {
+    "/ball_ref": 237,
+    "/ball_state": 275,
+    "/ball_track/diagnostic": 187,
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 238,
+    "/control_cmd": 2,
+    "/control_result": 0,
+    "/leg_currents": 83,
+    "/leg_encoders": 82,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/v0/diagnostic": 33,
+    "/oak/ball/v0/rgb_pixel": 33,
+    "/oak/config": 0,
+    "/oak/health": 0,
+    "/oak/latency_ms": 25,
+    "/odrive_errors": 9,
+    "/platform/imu/data": 957,
+    "/platform_pose": 25,
+    "/platform_pose/markers_visible": 26,
+    "/platform_rpy": 83,
+    "/status": 9
+  },
+  "gains_at_record": {
+    "kp": 0.0175,
+    "kd": 0.02,
+    "ki": 0.0,
+    "max_tilt_deg": 2.5,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 100.0,
+    "stiction_v_threshold_mm_s": 20.0,
+    "stiction_break_s": 0.6,
+    "brake_tilt_deg": 9.0,
+    "control_latency_s": 0.1,
+    "kd_v_tau_s": 0.3,
+    "stiction_ramp_start_deg": 2.0,
+    "stiction_ramp_max_deg": 3.5,
+    "stiction_ramp_rate_deg_per_s": 0.5,
+    "algorithm": "pid"
+  },
+  "next_step": {
+    "suggestion": "Kp -30% (\u21920.012) \u2014 controller is saturated most of the trial; back off Kp to keep error ranges in the linear zone.",
+    "suggested_gains": {
+      "kp": 0.0123
+    },
+    "rationale": [
+      "cmd tilt at saturation 99% of trial; peak speed 1494mm/s \u2014 likely orbital limit cycle."
+    ],
+    "metrics": {
+      "settled": false,
+      "median_tail_err_mm": 250.3135298643127,
+      "p95_err_mm": 268.6658196696255,
+      "peak_speed_mm_s": 1494.2361754039443,
+      "saturation_fraction": 0.9893048128342246,
+      "cmd_jitter_deg_per_tick": 0.2625682638178104
+    }
+  },
+  "ball_state_n": 275,
+  "ball_ref_n": 237,
+  "mono_n": 238,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 273,
+    "mean": 187.25688048479037,
+    "std": 62.36368117027771,
+    "rms": 197.36860950516706,
+    "p50": 194.60191298375554,
+    "p95": 268.6658196696255,
+    "min": 85.25969077292655,
+    "max": 287.77820298071725
+  },
+  "error_x_mm": {
+    "n": 273,
+    "mean": -46.97013665371634,
+    "std": 105.30908051244971,
+    "rms": 115.30913309728074,
+    "p50": -53.06323374672124,
+    "p95": 102.03261608039978,
+    "min": -232.64326526717764,
+    "max": 111.51025832210365
+  },
+  "error_y_mm": {
+    "n": 273,
+    "mean": -92.77120020764036,
+    "std": 130.5820671240528,
+    "rms": 160.1816838541683,
+    "p50": -119.95355001460351,
+    "p95": 95.71602724892736,
+    "min": -251.56324518790527,
+    "max": 122.40614051979932
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 25,
+    "mean": 885.2477769651189,
+    "std": 1.9816459762634537,
+    "rms": 885.2499949406722,
+    "p50": 885.3081648128232,
+    "p95": 888.1781500335911,
+    "min": 882.1803943887923,
+    "max": 888.7474153144886
+  },
+  "oak_latency_ms": {
+    "n": 25,
+    "mean": 118.33420028686524,
+    "std": 32.329315573606245,
+    "rms": 122.67097294384583,
+    "p50": 116.09400177001953,
+    "p95": 163.90220031738278,
+    "min": 55.810001373291016,
+    "max": 176.0469970703125
+  },
+  "oak_health": {
+    "n": 0,
+    "v0_arr_hz": {
+      "n": 0
+    },
+    "v0_pub_hz": {
+      "n": 0
+    },
+    "jpeg_hz": {
+      "n": 0
+    },
+    "pose_hz": {
+      "n": 0
+    },
+    "jpeg_lat_ms": {
+      "n": 0
+    },
+    "v0_lat_ms": {
+      "n": 0
+    }
+  },
+  "oak_config": null,
+  "markers_visible": {
+    "n": 26,
+    "mean": 7.884615384615385,
+    "min": 7,
+    "max": 8
+  }
+}
