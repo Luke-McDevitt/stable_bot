@@ -4172,6 +4172,17 @@ class StewartControlNode(Node):
         period = self.ctrl_period_s
         integ_x = 0.0
         integ_y = 0.0
+        # Velocity LPF state for Kd. Vision-noise spikes drive the raw KF
+        # velocity to 4000+ mm/s on a ball that physically tops out at
+        # ~800; Kd × v_spike then dumps energy into the platform tilt
+        # at frame-rate timescales the ball can't actually follow. The
+        # 800 mm/s gate clips the worst outliers; this LPF additionally
+        # smooths the gate output so Kd sees the slow-varying orbital
+        # velocity (typical period ~1-3 s, so ~0.3-1 Hz) without the
+        # high-frequency noise on top. tau is read from the gain panel
+        # so it can be A/B'd live; tau=0 disables the filter.
+        edot_lpf_x = 0.0
+        edot_lpf_y = 0.0
         z_hold = float(self.current_xyz[2]) if self.current_xyz else 50.0
         # Stiction-break tracker. Bang-bang's ACCELERATE phase commands
         # accel_tilt (typ. 3°), but on a foam-on-vinyl deck that's
@@ -4300,6 +4311,24 @@ class StewartControlNode(Node):
                     scale = BT_MAX_BALL_VEL_MM_S / v_mag_pid
                     edot_x *= scale
                     edot_y *= scale
+
+                # Apply first-order LPF after the gate so Kd reads
+                # smoothed velocity. tau=0 disables (raw gated velocity
+                # passes through), tau~0.2 smooths frame-rate noise
+                # while still tracking orbital-rate motion (~3 s period).
+                kd_v_tau_s = float(g.get('kd_v_tau_s', 0.0))
+                if kd_v_tau_s > 1e-6:
+                    alpha = period / (kd_v_tau_s + period)
+                    edot_lpf_x += alpha * (edot_x - edot_lpf_x)
+                    edot_lpf_y += alpha * (edot_y - edot_lpf_y)
+                    edot_x = edot_lpf_x
+                    edot_y = edot_lpf_y
+                else:
+                    # Keep the LPF state seeded with the latest sample
+                    # so enabling tau mid-trial doesn't have to ramp
+                    # from zero.
+                    edot_lpf_x = edot_x
+                    edot_lpf_y = edot_y
 
                 # Algorithm selector — read each tick so a live save
                 # via the GUI can switch PID ↔ bang-bang without
