@@ -11,11 +11,11 @@ kp: 0.015
 max_tilt_deg: 1.1
 pitch_sign: -1.0
 roll_sign: 1.0
-stiction_break_s: 1.05
-stiction_ramp_max_deg: 6.0
-stiction_ramp_rate_deg_per_s: 1.35
+stiction_break_s: 0.25
+stiction_ramp_max_deg: 5.5
+stiction_ramp_rate_deg_per_s: 1.05
 stiction_ramp_start_deg: 0.0
 stiction_ramp_timeout_s: 4.25
-stiction_v_threshold_mm_s: 31.0
+stiction_v_threshold_mm_s: 21.0
 v_brake_mm_s: 80.0
 v_coast_mm_s: 30.0
