@@ -4575,9 +4575,16 @@ class StewartControlNode(Node):
                             # the initial dwell.
                             t_in_ramp = ((now - stiction_started_t)
                                          - stiction_break_s_pid)
+                            # Ramp is bounded by stiction_ramp_max_deg
+                            # only — NOT by max_tilt. max_tilt is the
+                            # in-flight damping cap; the ramp may need
+                            # to exceed it briefly to break stuck
+                            # stiction. The final per-axis saturation
+                            # below uses ramp_max as the cap when this
+                            # phase is active.
                             target_mag = min(
                                 ramp_start + ramp_rate * t_in_ramp,
-                                min(ramp_max, max_tilt))
+                                ramp_max)
                             pid_mag = math.hypot(tilt_pitch, tilt_roll)
                             if pid_mag > 1e-3:
                                 # Use PID's chosen direction (carries
@@ -4616,9 +4623,22 @@ class StewartControlNode(Node):
                         req_mag = cap_mag
                 last_tilt_mag = req_mag
 
-                # Saturate.
-                tilt_pitch = max(-max_tilt, min(max_tilt, tilt_pitch))
-                tilt_roll  = max(-max_tilt, min(max_tilt, tilt_roll))
+                # Saturate. When the stiction RAMP is the active
+                # phase we use stiction_ramp_max_deg as the cap
+                # instead of max_tilt — the ramp may need higher
+                # tilt to reliably break stuck stiction while
+                # max_tilt is kept low for in-flight damping.
+                # (phase_code == 4 means STICTION_RAMP for PID and
+                # STICTION_BREAK for bang-bang; both legitimately want
+                # the bigger cap when stuck.)
+                if phase_code == 4:
+                    _sat_ramp_max = float(g.get(
+                        'stiction_ramp_max_deg', 5.5))
+                    sat_cap = max(max_tilt, _sat_ramp_max)
+                else:
+                    sat_cap = max_tilt
+                tilt_pitch = max(-sat_cap, min(sat_cap, tilt_pitch))
+                tilt_roll  = max(-sat_cap, min(sat_cap, tilt_roll))
 
             self.ball_track_corr = [tilt_roll, tilt_pitch]
 
