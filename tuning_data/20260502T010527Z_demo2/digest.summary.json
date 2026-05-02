@@ -1,0 +1,79 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260502T010527Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 0.235074414,
+  "topic_counts": {
+    "/ball_ref": 7,
+    "/ball_state": 0,
+    "/ball_track/diagnostic": 0,
+    "/control_cmd": 1,
+    "/control_result": 0,
+    "/platform_pose": 2,
+    "/platform_pose/markers_visible": 0,
+    "/platform_rpy": 0,
+    "/status": 0
+  },
+  "gains_at_record": null,
+  "next_step": {
+    "suggestion": "no recommendation (no gains snapshot or no /ball_state data in bag)",
+    "suggested_gains": {},
+    "rationale": []
+  },
+  "ball_state_n": 0,
+  "ball_ref_n": 7,
+  "mono_n": 0,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 0
+  },
+  "error_x_mm": {
+    "n": 0
+  },
+  "error_y_mm": {
+    "n": 0
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 2,
+    "mean": 875.881417558704,
+    "std": 0.4147406758251577,
+    "rms": 875.8815157511164,
+    "p50": 875.881417558704,
+    "p95": 876.2546841669467,
+    "min": 875.4666768828789,
+    "max": 876.2961582345292
+  },
+  "oak_latency_ms": {
+    "n": 0
+  },
+  "oak_health": {
+    "n": 0,
+    "v0_arr_hz": {
+      "n": 0
+    },
+    "v0_pub_hz": {
+      "n": 0
+    },
+    "jpeg_hz": {
+      "n": 0
+    },
+    "pose_hz": {
+      "n": 0
+    },
+    "jpeg_lat_ms": {
+      "n": 0
+    },
+    "v0_lat_ms": {
+      "n": 0
+    }
+  },
+  "oak_config": null,
+  "markers_visible": {
+    "n": 0,
+    "mean": null,
+    "min": null,
+    "max": null
+  }
+}
