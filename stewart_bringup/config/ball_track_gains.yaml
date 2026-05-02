@@ -5,9 +5,9 @@ brake_tilt_deg: 9.0
 control_latency_s: 0.1
 err_tol_mm: 15.0
 kd: 0.025
-kd_v_tau_s: 0.25
+kd_v_tau_s: 0.3
 ki: 0.0
-kp: 0.015
+kp: 0.0175
 max_tilt_deg: 4.5
 pitch_sign: -1.0
 roll_sign: 1.0
