@@ -7,8 +7,8 @@ err_tol_mm: 15.0
 kd: 0.025
 kd_v_tau_s: 0.25
 ki: 0.0
-kp: 0.01
-max_tilt_deg: 4.0
+kp: 0.015
+max_tilt_deg: 4.5
 pitch_sign: -1.0
 roll_sign: 1.0
 stiction_break_s: 0.6
