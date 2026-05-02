@@ -374,6 +374,14 @@ def _load_ball_track_gains():
         # phase decisions (especially BRAKE) fire at the right
         # moment instead of N ms late.
         'control_latency_s':  0.10,
+        # Velocity LPF time constant for the PID Kd input. The KF
+        # velocity contains motion-blur noise spikes that Kd × v then
+        # dumps into the tilt command at frame-rate timescales the
+        # ball cannot follow. tau ~ 0.15-0.25 s passes orbital-rate
+        # velocity through (period 1-3 s = 0.3-1 Hz) while attenuating
+        # the high-frequency noise that drives the limit cycle.
+        # tau = 0 disables the filter (raw gated velocity goes to Kd).
+        'kd_v_tau_s':         0.0,
     }
     defaults_str = {
         'algorithm': 'pid',     # 'pid' | 'bangbang'
@@ -2067,7 +2075,8 @@ class StewartControlNode(Node):
                             'stiction_v_threshold_mm_s',
                             'stiction_break_s',
                             'brake_tilt_deg',
-                            'control_latency_s')},
+                            'control_latency_s',
+                            'kd_v_tau_s')},
                 'algorithm': str(
                     self.ball_track_gains.get('algorithm', 'pid')),
             },
@@ -3618,6 +3627,7 @@ class StewartControlNode(Node):
         'stiction_break_s':          (0.05, 5.0),
         'brake_tilt_deg':            (0.5, 15.0),
         'control_latency_s':         (0.0, 0.5),
+        'kd_v_tau_s':                (0.0, 1.0),
     }
     _BALL_TRACK_STR_KEYS = ('algorithm',)
     _BALL_TRACK_ALGORITHMS = ('pid', 'bangbang')
