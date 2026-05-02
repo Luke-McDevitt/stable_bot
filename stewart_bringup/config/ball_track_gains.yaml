@@ -7,11 +7,11 @@ err_tol_mm: 15.0
 kd: 0.02
 kd_v_tau_s: 0.35
 ki: 0.0
-kp: 0.015
+kp: 0.0165
 max_tilt_deg: 1.1
 pitch_sign: -1.0
 roll_sign: 1.0
-stiction_break_s: 0.25
+stiction_break_s: 0.15
 stiction_ramp_max_deg: 5.5
 stiction_ramp_rate_deg_per_s: 1.05
 stiction_ramp_start_deg: 0.0
