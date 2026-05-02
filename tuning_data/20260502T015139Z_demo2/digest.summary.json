@@ -1,0 +1,102 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260502T015139Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 6.285690976000001,
+  "topic_counts": {
+    "/ball_ref": 326,
+    "/ball_state": 0,
+    "/ball_track/diagnostic": 120,
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 0,
+    "/control_cmd": 3,
+    "/control_result": 0,
+    "/leg_currents": 127,
+    "/leg_encoders": 127,
+    "/odrive_errors": 13,
+    "/platform/imu/data": 1757,
+    "/platform_pose": 0,
+    "/platform_pose/markers_visible": 0,
+    "/platform_rpy": 127,
+    "/status": 13
+  },
+  "gains_at_record": {
+    "kp": 0.0165,
+    "kd": 0.02,
+    "ki": 0.0,
+    "max_tilt_deg": 1.5,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 100.0,
+    "stiction_v_threshold_mm_s": 26.0,
+    "stiction_break_s": 0.95,
+    "brake_tilt_deg": 9.0,
+    "control_latency_s": 0.15,
+    "kd_v_tau_s": 0.35,
+    "stiction_ramp_start_deg": 0.0,
+    "stiction_ramp_max_deg": 6.0,
+    "stiction_ramp_rate_deg_per_s": 2.05,
+    "stiction_ramp_timeout_s": 3.25,
+    "stiction_moving_hyst_ticks": 3.0,
+    "tilt_slew_up_deg_per_s": 100.0,
+    "algorithm": "pid"
+  },
+  "next_step": {
+    "suggestion": "no recommendation (no gains snapshot or no /ball_state data in bag)",
+    "suggested_gains": {},
+    "rationale": []
+  },
+  "ball_state_n": 0,
+  "ball_ref_n": 326,
+  "mono_n": 0,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 0
+  },
+  "error_x_mm": {
+    "n": 0
+  },
+  "error_y_mm": {
+    "n": 0
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 0
+  },
+  "oak_latency_ms": {
+    "n": 0
+  },
+  "oak_health": {
+    "n": 0,
+    "v0_arr_hz": {
+      "n": 0
+    },
+    "v0_pub_hz": {
+      "n": 0
+    },
+    "jpeg_hz": {
+      "n": 0
+    },
+    "pose_hz": {
+      "n": 0
+    },
+    "jpeg_lat_ms": {
+      "n": 0
+    },
+    "v0_lat_ms": {
+      "n": 0
+    }
+  },
+  "oak_config": null,
+  "markers_visible": {
+    "n": 0,
+    "mean": null,
+    "min": null,
+    "max": null
+  }
+}
