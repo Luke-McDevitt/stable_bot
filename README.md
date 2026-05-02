@@ -207,4 +207,4 @@ Open work, in roughly priority order:
 
 ## License
 
-[your license here]
+GNU General Public License (GPL) v3
