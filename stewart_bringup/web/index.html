@@ -876,6 +876,21 @@
             <input id="bt-g-kd_v_tau_s" type="number" step="0.05" min="0" max="1" value="0.0"
                    class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
           </label>
+          <label class="flex flex-col" title="Stiction RAMP — initial tilt magnitude when ball is stuck. Set just above the measured θ_s from STEP_ID stiction phase (e.g. 2.5° if θ_s = 2.14°).">
+            <span class="text-slate-400">Stiction ramp start [°]</span>
+            <input id="bt-g-stiction_ramp_start_deg" type="number" step="0.1" min="0" max="10" value="2.5"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
+          <label class="flex flex-col" title="Stiction RAMP — max tilt magnitude during the ramp. Capped at max_tilt anyway. Keep well below max_tilt so the ramp can't kick the ball as hard as the prior slam-to-max behavior.">
+            <span class="text-slate-400">Stiction ramp max [°]</span>
+            <input id="bt-g-stiction_ramp_max_deg" type="number" step="0.5" min="0.5" max="15" value="5.5"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
+          <label class="flex flex-col" title="Stiction RAMP — climb rate °/s. Low values (0.3-0.7) give the ball time to break loose at near-zero velocity, avoiding the kickoff that fed orbital limit cycles.">
+            <span class="text-slate-400">Stiction ramp rate [°/s]</span>
+            <input id="bt-g-stiction_ramp_rate_deg_per_s" type="number" step="0.1" min="0.05" max="10" value="0.5"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
         </div>
       </div>
       <div class="grid grid-cols-3 gap-2 mt-3">
@@ -5138,14 +5153,10 @@ function initVisionGUI() {
   // the operator sees which threshold set is live.
   const algoEl = document.getElementById('bt-g-' + BT_ALGO_KEY);
   if (algoEl) {
-    algoEl.addEventListener('change', () => {
-      markBtGainDirty(BT_ALGO_KEY);
-      const bbBlock = document.getElementById('bt-bb-thresholds');
-      if (bbBlock) {
-        bbBlock.style.opacity =
-          (algoEl.value === 'bangbang') ? '1.0' : '0.45';
-      }
-    });
+    // Just track dirty state; all inputs in the panel stay fully
+    // editable regardless of which algorithm is selected so the
+    // operator can pre-stage gains without flipping the dropdown.
+    algoEl.addEventListener('change', () => markBtGainDirty(BT_ALGO_KEY));
   }
   const btSave = $('bt-gains-save');
   if (btSave) btSave.addEventListener('click', () => {
@@ -6222,6 +6233,9 @@ const BT_GAIN_KEYS = [
   'brake_tilt_deg', 'control_latency_s',
   // Velocity LPF time constant for PID Kd input (PID-only)
   'kd_v_tau_s',
+  // Stiction RAMP — soft-start magnitudes when the ball is stuck (PID-only)
+  'stiction_ramp_start_deg', 'stiction_ramp_max_deg',
+  'stiction_ramp_rate_deg_per_s',
 ];
 // Special: algorithm is a string-typed field. Dirty/populate handled
 // via a separate small wrapper so the numeric BT_GAIN_KEYS path stays
@@ -6252,13 +6266,9 @@ function populateBtGainInputs(g) {
       if (el.value !== g[BT_ALGO_KEY]) el.value = g[BT_ALGO_KEY];
     }
   }
-  // Show/hide bang-bang threshold block based on selected algorithm.
-  const algoEl = document.getElementById('bt-g-' + BT_ALGO_KEY);
-  const bbBlock = document.getElementById('bt-bb-thresholds');
-  if (algoEl && bbBlock) {
-    bbBlock.style.opacity =
-      (algoEl.value === 'bangbang') ? '1.0' : '0.45';
-  }
+  // All inputs stay fully editable regardless of algorithm selection
+  // so the operator can pre-stage gains for both algorithms without
+  // toggling the dropdown.
 }
 
 function readBtGainInputs() {

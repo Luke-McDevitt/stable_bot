@@ -382,6 +382,17 @@ def _load_ball_track_gains():
         # the high-frequency noise that drives the limit cycle.
         # tau = 0 disables the filter (raw gated velocity goes to Kd).
         'kd_v_tau_s':         0.0,
+        # Stiction RAMP — soft-start magnitude when the ball is stuck.
+        # After stiction_break_s of being below stiction_v_threshold
+        # with non-trivial error, the controller starts commanding
+        # ramp_start_deg of tilt (just above the measured θ_s from
+        # STEP_ID), then ramps up at ramp_rate_deg_per_s until either
+        # the ball moves (handoff to PID) or ramp_max_deg is reached.
+        # This avoids the prior slam-to-max-tilt behavior that kicked
+        # the ball into a fast trajectory on every restart.
+        'stiction_ramp_start_deg':       2.5,   # ~θ_s + 0.4° margin
+        'stiction_ramp_max_deg':         5.5,   # well below max_tilt
+        'stiction_ramp_rate_deg_per_s':  0.5,   # slow climb
     }
     defaults_str = {
         'algorithm': 'pid',     # 'pid' | 'bangbang'
@@ -2076,7 +2087,10 @@ class StewartControlNode(Node):
                             'stiction_break_s',
                             'brake_tilt_deg',
                             'control_latency_s',
-                            'kd_v_tau_s')},
+                            'kd_v_tau_s',
+                            'stiction_ramp_start_deg',
+                            'stiction_ramp_max_deg',
+                            'stiction_ramp_rate_deg_per_s')},
                 'algorithm': str(
                     self.ball_track_gains.get('algorithm', 'pid')),
             },
@@ -3628,6 +3642,9 @@ class StewartControlNode(Node):
         'brake_tilt_deg':            (0.5, 15.0),
         'control_latency_s':         (0.0, 0.5),
         'kd_v_tau_s':                (0.0, 1.0),
+        'stiction_ramp_start_deg':       (0.0, 10.0),
+        'stiction_ramp_max_deg':         (0.5, 15.0),
+        'stiction_ramp_rate_deg_per_s':  (0.05, 10.0),
     }
     _BALL_TRACK_STR_KEYS = ('algorithm',)
     _BALL_TRACK_ALGORITHMS = ('pid', 'bangbang')
@@ -4517,30 +4534,51 @@ class StewartControlNode(Node):
                         g.get('stiction_v_threshold_mm_s', 20.0))
                     stiction_break_s_pid = float(
                         g.get('stiction_break_s', 0.6))
+                    # Stiction RAMP gains — replaces the prior
+                    # slam-to-max behavior. Starts the tilt at the
+                    # measured stiction breakaway angle (from STEP_ID)
+                    # plus a small overshoot, then ramps up slowly so
+                    # the ball breaks loose at near-zero velocity
+                    # rather than getting kicked into a fast trajectory.
+                    # Once the ball is moving (handled by the outer
+                    # `if vel_mag < stiction_v_pid` gate flipping false),
+                    # PID takes over with full authority.
+                    ramp_start = float(
+                        g.get('stiction_ramp_start_deg', 2.5))
+                    ramp_max = float(
+                        g.get('stiction_ramp_max_deg', 5.5))
+                    ramp_rate = float(
+                        g.get('stiction_ramp_rate_deg_per_s', 0.5))
                     if (vel_mag < stiction_v_pid
                             and err_mag > err_tol_pid):
                         if stiction_started_t is None:
                             stiction_started_t = now
                         elif (now - stiction_started_t
                               > stiction_break_s_pid):
-                            # Stiction relief active — boost magnitude
-                            # to max_tilt, preserve direction.
+                            # Time spent in the ramp itself, after
+                            # the initial dwell.
+                            t_in_ramp = ((now - stiction_started_t)
+                                         - stiction_break_s_pid)
+                            target_mag = min(
+                                ramp_start + ramp_rate * t_in_ramp,
+                                min(ramp_max, max_tilt))
                             pid_mag = math.hypot(tilt_pitch, tilt_roll)
                             if pid_mag > 1e-3:
-                                scale = max_tilt / pid_mag
+                                # Use PID's chosen direction (carries
+                                # lookahead + integrator info), scale
+                                # magnitude to the ramp value.
+                                scale = target_mag / pid_mag
                                 tilt_pitch *= scale
                                 tilt_roll *= scale
                             else:
-                                # PID is essentially zero (e.g., Kd
-                                # exactly cancelled Kp on noise) —
-                                # use the unit-error direction
-                                # straight toward the target.
-                                tilt_pitch = ps * ux * max_tilt
-                                tilt_roll = rs * uy * max_tilt
-                            phase_code = 4   # STICTION_BREAK
+                                # PID is essentially zero — fall back
+                                # to unit-error direction.
+                                tilt_pitch = ps * ux * target_mag
+                                tilt_roll = rs * uy * target_mag
+                            phase_code = 4   # STICTION_RAMP
                     else:
                         # Ball is moving (vel ≥ threshold) or close
-                        # enough to target (err ≤ tol): no relief
+                        # enough to target (err ≤ tol): no ramp
                         # needed; reset the timer so a future stuck
                         # event has to re-accumulate the dwell.
                         stiction_started_t = None
