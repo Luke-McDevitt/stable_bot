@@ -2742,8 +2742,19 @@ class StewartControlNode(Node):
         self._save_persisted_pose()
         if self.level_enabled:
             return True, "pose set (level loop will track)"
+        # Use empirical IK when available so BALL_TRACK direct-tilt commands
+        # see the same per-leg-corrected mapping the level loop uses. The
+        # geometric IK assumes ideal leg-mount geometry; the empirical
+        # Jacobian (measured per-leg-perturbation → IMU response) captures
+        # the real platform-to-IMU frame rotation. Without this, BALL_TRACK
+        # commands an rpy in IMU frame but the legs move as if the rpy is
+        # in geometric-IK frame — physical tilt is rotated from intended.
+        use_emp = bool(self.level_gains.get('use_empirical_ik', 0)) and \
+            self.empirical_ik is not None and \
+            self.empirical_ik.is_loaded()
+        ik = self.empirical_ik if use_emp else None
         targets, any_clamped = _compute_motor_targets(
-            (x, y, z), (r, p, yw), self.geom, self.limits)
+            (x, y, z), (r, p, yw), self.geom, self.limits, empirical_ik=ik)
         # _compute_motor_targets already clamps to per-leg [lo, hi] from
         # leg_limits.yaml. Trust the soft limits — no per-step delta cap.
         self.feeder.set_pos_targets(targets)
