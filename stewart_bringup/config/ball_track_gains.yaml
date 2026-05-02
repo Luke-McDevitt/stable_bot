@@ -11,7 +11,7 @@ kp: 0.0165
 max_tilt_deg: 1.5
 pitch_sign: -1.0
 roll_sign: 1.0
-stiction_break_s: 0.35
+stiction_break_s: 0.95
 stiction_ramp_max_deg: 6.0
 stiction_ramp_rate_deg_per_s: 2.05
 stiction_ramp_start_deg: 0.0
