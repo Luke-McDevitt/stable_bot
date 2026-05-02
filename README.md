@@ -4,7 +4,8 @@ Stewart-platform ball-balancing system: ROS 2 Kilted nodes + browser GUI
 + vision pipeline. Ships closed-loop click-to-goto control of a ball on
 a 6-DOF platform with sub-mm tracking accuracy.
 
-![demo](stewart_bringup/docs/demo_placeholder.png)
+Links to more youtube videos coming soon!
+https://youtu.be/bEEpE1CrJFA?si=kh_AgsYBSKObmkfR
 
 ## What's here
 
