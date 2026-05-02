@@ -26,12 +26,13 @@ Environment=OAK_ENABLE_DEPTH=0
 # Myriad X SHAVE budget. V0.5c was a dead end (NaN output, wrong
 # detection ceiling); kept in code for git-history fallback only.
 Environment=OAK_DISABLE_V0_NN=1
-# Boot-time default detector. v1_yolo (on-device YOLO trained on the
-# foam ball) is the cleanest path under motion blur, per operator
-# A/B test 2026-05-01 (v1 ~20% cleaner than cv2 HSV). Runtime-
-# switchable via /oak/cmd_v0_backend topic + STEP_ID GUI panel
-# selector; this just sets what's running at boot.
-Environment=OAK_V0_BACKEND=v1_yolo
+# Boot-time default detector. cv2 (HSV+contour, host-side) is the
+# operator's preferred default for closed-loop demos as of
+# 2026-05-02 — it's empirically more reliable for the demo's motion
+# profile despite v1_yolo's edge in static benchmarks. Runtime-
+# switchable via /oak/cmd_v0_backend topic + GUI selector; this
+# just sets what's running at boot.
+Environment=OAK_V0_BACKEND=cv2
 # Pipeline performance knobs.
 #   OAK_ENABLE_MONO=0  — mono unused (ArUco runs on RGB), saves USB.
 #   OAK_DISABLE_JPEG=0 — keep JPEG ON; the encoder ate Myriad X

@@ -393,6 +393,12 @@ def _load_ball_track_gains():
         'stiction_ramp_start_deg':       2.5,   # ~θ_s + 0.4° margin
         'stiction_ramp_max_deg':         5.5,   # well below max_tilt
         'stiction_ramp_rate_deg_per_s':  0.5,   # slow climb
+        # Slew-rate limit on tilt magnitude growth (PID-only). Caps how
+        # fast Kp·err can ramp the commanded magnitude — keeps a
+        # long-distance click from slamming straight to max_tilt and
+        # kicking the ball into a fast trajectory. Default 100 = OFF
+        # (effectively unlimited). Try 3-5 °/s for soft startup.
+        'tilt_slew_up_deg_per_s':       100.0,
     }
     defaults_str = {
         'algorithm': 'pid',     # 'pid' | 'bangbang'
@@ -2090,7 +2096,8 @@ class StewartControlNode(Node):
                             'kd_v_tau_s',
                             'stiction_ramp_start_deg',
                             'stiction_ramp_max_deg',
-                            'stiction_ramp_rate_deg_per_s')},
+                            'stiction_ramp_rate_deg_per_s',
+                            'tilt_slew_up_deg_per_s')},
                 'algorithm': str(
                     self.ball_track_gains.get('algorithm', 'pid')),
             },
@@ -3645,6 +3652,7 @@ class StewartControlNode(Node):
         'stiction_ramp_start_deg':       (0.0, 10.0),
         'stiction_ramp_max_deg':         (0.5, 15.0),
         'stiction_ramp_rate_deg_per_s':  (0.05, 10.0),
+        'tilt_slew_up_deg_per_s':        (0.5, 100.0),
     }
     _BALL_TRACK_STR_KEYS = ('algorithm',)
     _BALL_TRACK_ALGORITHMS = ('pid', 'bangbang')
@@ -4210,6 +4218,14 @@ class StewartControlNode(Node):
         # so it can be A/B'd live; tau=0 disables the filter.
         edot_lpf_x = 0.0
         edot_lpf_y = 0.0
+        # Tilt-magnitude slew-rate state. Limits how fast the commanded
+        # tilt magnitude can GROW between ticks. Decreases (braking
+        # response, return to zero) are unconstrained. Default rate is
+        # effectively-unlimited so this ships with no behavior change;
+        # set tilt_slew_up_deg_per_s in the gain panel to e.g. 3-5°/s
+        # for a soft startup that prevents the ball from getting kicked
+        # into a fast trajectory on long-distance Demo 2 clicks.
+        last_tilt_mag = 0.0
         z_hold = float(self.current_xyz[2]) if self.current_xyz else 50.0
         # Stiction-break tracker. Bang-bang's ACCELERATE phase commands
         # accel_tilt (typ. 3°), but on a foam-on-vinyl deck that's
@@ -4582,6 +4598,23 @@ class StewartControlNode(Node):
                         # needed; reset the timer so a future stuck
                         # event has to re-accumulate the dwell.
                         stiction_started_t = None
+
+                # Slew-rate limit on tilt magnitude growth. Caps how
+                # quickly the commanded tilt magnitude can climb so a
+                # large Kp·err on a long-distance click can't slam to
+                # max_tilt instantly. Decreases (braking, zero command)
+                # are unconstrained — we only limit the growth side.
+                # Direction within the magnitude is preserved.
+                slew_up = float(g.get('tilt_slew_up_deg_per_s', 100.0))
+                req_mag = math.hypot(tilt_pitch, tilt_roll)
+                if slew_up > 0 and slew_up < 100.0 and req_mag > 1e-6:
+                    cap_mag = last_tilt_mag + slew_up * period
+                    if req_mag > cap_mag:
+                        scale = cap_mag / req_mag
+                        tilt_pitch *= scale
+                        tilt_roll *= scale
+                        req_mag = cap_mag
+                last_tilt_mag = req_mag
 
                 # Saturate.
                 tilt_pitch = max(-max_tilt, min(max_tilt, tilt_pitch))
