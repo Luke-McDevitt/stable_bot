@@ -16,7 +16,7 @@ stiction_pos_delta_mm: 30.0
 stiction_ramp_max_deg: 6.0
 stiction_ramp_rate_deg_per_s: 0.35
 stiction_ramp_start_deg: 0.0
-stiction_ramp_timeout_s: 8.0
+stiction_ramp_timeout_s: 12.0
 stiction_v_threshold_mm_s: 51.0
 v_brake_mm_s: 80.0
 v_coast_mm_s: 30.0
