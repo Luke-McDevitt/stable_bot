@@ -393,6 +393,11 @@ def _load_ball_track_gains():
         'stiction_ramp_start_deg':       2.5,   # ~θ_s + 0.4° margin
         'stiction_ramp_max_deg':         5.5,   # well below max_tilt
         'stiction_ramp_rate_deg_per_s':  0.5,   # slow climb
+        # Safety timeout for the ramp. If the ball hasn't moved above
+        # stiction_v_threshold_mm_s after this much time in the ramp,
+        # reset and try again (creates a "pulse → coast → pulse" kick
+        # pattern). 0 = no timeout, ramp holds at ramp_max indefinitely.
+        'stiction_ramp_timeout_s':       0.0,
         # Slew-rate limit on tilt magnitude growth (PID-only). Caps how
         # fast Kp·err can ramp the commanded magnitude — keeps a
         # long-distance click from slamming straight to max_tilt and
@@ -2097,6 +2102,7 @@ class StewartControlNode(Node):
                             'stiction_ramp_start_deg',
                             'stiction_ramp_max_deg',
                             'stiction_ramp_rate_deg_per_s',
+                            'stiction_ramp_timeout_s',
                             'tilt_slew_up_deg_per_s')},
                 'algorithm': str(
                     self.ball_track_gains.get('algorithm', 'pid')),
@@ -3652,6 +3658,7 @@ class StewartControlNode(Node):
         'stiction_ramp_start_deg':       (0.0, 10.0),
         'stiction_ramp_max_deg':         (0.5, 15.0),
         'stiction_ramp_rate_deg_per_s':  (0.05, 10.0),
+        'stiction_ramp_timeout_s':       (0.0, 30.0),
         'tilt_slew_up_deg_per_s':        (0.5, 100.0),
     }
     _BALL_TRACK_STR_KEYS = ('algorithm',)
@@ -4565,6 +4572,15 @@ class StewartControlNode(Node):
                         g.get('stiction_ramp_max_deg', 5.5))
                     ramp_rate = float(
                         g.get('stiction_ramp_rate_deg_per_s', 0.5))
+                    # Safety timeout. If the ramp has been climbing
+                    # for this long and the ball still hasn't moved
+                    # above stiction_v_threshold_mm_s, reset the
+                    # state machine — the dwell + ramp will retry
+                    # automatically on the next tick if the ball is
+                    # still stuck. 0 = no timeout (ramp holds at
+                    # ramp_max indefinitely, prior behavior).
+                    ramp_timeout = float(
+                        g.get('stiction_ramp_timeout_s', 0.0))
                     if (vel_mag < stiction_v_pid
                             and err_mag > err_tol_pid):
                         if stiction_started_t is None:
@@ -4575,30 +4591,52 @@ class StewartControlNode(Node):
                             # the initial dwell.
                             t_in_ramp = ((now - stiction_started_t)
                                          - stiction_break_s_pid)
-                            # Ramp is bounded by stiction_ramp_max_deg
-                            # only — NOT by max_tilt. max_tilt is the
-                            # in-flight damping cap; the ramp may need
-                            # to exceed it briefly to break stuck
-                            # stiction. The final per-axis saturation
-                            # below uses ramp_max as the cap when this
-                            # phase is active.
-                            target_mag = min(
-                                ramp_start + ramp_rate * t_in_ramp,
-                                ramp_max)
-                            pid_mag = math.hypot(tilt_pitch, tilt_roll)
-                            if pid_mag > 1e-3:
-                                # Use PID's chosen direction (carries
-                                # lookahead + integrator info), scale
-                                # magnitude to the ramp value.
-                                scale = target_mag / pid_mag
-                                tilt_pitch *= scale
-                                tilt_roll *= scale
+                            # If the ramp has timed out without the
+                            # ball moving, drop out — the next tick
+                            # will see the ball still stuck and
+                            # start a fresh dwell + ramp from
+                            # ramp_start. Produces a "pulsing" kick
+                            # pattern: ramp up, hold at max,
+                            # release, dwell, ramp up again...
+                            if (ramp_timeout > 0.0
+                                    and t_in_ramp > ramp_timeout):
+                                # Timeout — reset and let PID's
+                                # normal output (already in
+                                # tilt_pitch/tilt_roll above) pass
+                                # through unchanged. Next tick will
+                                # see the ball still stuck and
+                                # start a fresh dwell + ramp.
+                                stiction_started_t = None
+                                phase_code = 5   # back to PID
                             else:
-                                # PID is essentially zero — fall back
-                                # to unit-error direction.
-                                tilt_pitch = ps * ux * target_mag
-                                tilt_roll = rs * uy * target_mag
-                            phase_code = 4   # STICTION_RAMP
+                                # Ramp magnitude is bounded by
+                                # stiction_ramp_max_deg only — NOT
+                                # by max_tilt. max_tilt is the
+                                # in-flight damping cap; the ramp
+                                # may need to exceed it briefly to
+                                # break stuck stiction. The final
+                                # per-axis saturation below uses
+                                # ramp_max as the cap when this
+                                # phase is active.
+                                target_mag = min(
+                                    ramp_start + ramp_rate * t_in_ramp,
+                                    ramp_max)
+                                pid_mag = math.hypot(tilt_pitch, tilt_roll)
+                                if pid_mag > 1e-3:
+                                    # Use PID's chosen direction
+                                    # (carries lookahead +
+                                    # integrator info), scale
+                                    # magnitude to the ramp value.
+                                    scale = target_mag / pid_mag
+                                    tilt_pitch *= scale
+                                    tilt_roll *= scale
+                                else:
+                                    # PID is essentially zero —
+                                    # fall back to unit-error
+                                    # direction.
+                                    tilt_pitch = ps * ux * target_mag
+                                    tilt_roll = rs * uy * target_mag
+                                phase_code = 4   # STICTION_RAMP
                     else:
                         # Ball is moving (vel ≥ threshold) or close
                         # enough to target (err ≤ tol): no ramp

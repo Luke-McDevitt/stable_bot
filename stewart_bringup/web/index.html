@@ -896,6 +896,11 @@
             <input id="bt-g-tilt_slew_up_deg_per_s" type="number" step="0.5" min="0.5" max="100" value="100"
                    class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
           </label>
+          <label class="flex flex-col" title="Stiction RAMP — safety timeout in seconds. If the ball hasn't moved above stiction_v_threshold after this much time in the ramp, reset and try again from ramp_start. Creates a 'pulse → coast → pulse' pattern useful for tuning small-step movements. 0 = no timeout (ramp holds at ramp_max indefinitely).">
+            <span class="text-slate-400">Stiction ramp timeout [s]</span>
+            <input id="bt-g-stiction_ramp_timeout_s" type="number" step="0.25" min="0" max="30" value="0"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right">
+          </label>
         </div>
       </div>
       <div class="grid grid-cols-3 gap-2 mt-3">
@@ -6240,7 +6245,7 @@ const BT_GAIN_KEYS = [
   'kd_v_tau_s',
   // Stiction RAMP — soft-start magnitudes when the ball is stuck (PID-only)
   'stiction_ramp_start_deg', 'stiction_ramp_max_deg',
-  'stiction_ramp_rate_deg_per_s',
+  'stiction_ramp_rate_deg_per_s', 'stiction_ramp_timeout_s',
   // Slew-rate limit on tilt magnitude growth (PID-only)
   'tilt_slew_up_deg_per_s',
 ];
