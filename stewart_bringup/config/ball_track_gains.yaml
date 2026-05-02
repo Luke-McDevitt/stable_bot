@@ -12,8 +12,8 @@ max_tilt_deg: 1.1
 pitch_sign: -1.0
 roll_sign: 1.0
 stiction_break_s: 0.35
-stiction_pos_delta_mm: 20.0
-stiction_ramp_max_deg: 5.0
+stiction_pos_delta_mm: 30.0
+stiction_ramp_max_deg: 6.0
 stiction_ramp_rate_deg_per_s: 0.35
 stiction_ramp_start_deg: 0.0
 stiction_ramp_timeout_s: 8.0
