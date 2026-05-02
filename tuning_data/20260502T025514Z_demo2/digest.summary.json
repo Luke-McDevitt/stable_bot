@@ -1,0 +1,232 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260502T025514Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": "BALL_TRACK_GOTO",
+  "demo_params": {
+    "x_mm": 103.17243194580078,
+    "y_mm": -45.517242431640625
+  },
+  "duration_s": 53.12550176800001,
+  "topic_counts": {
+    "/ball_ref": 3019,
+    "/ball_state": 3958,
+    "/ball_track/diagnostic": 2279,
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 2943,
+    "/control_cmd": 13,
+    "/control_result": 0,
+    "/leg_currents": 988,
+    "/leg_encoders": 988,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/v0/diagnostic": 666,
+    "/oak/ball/v0/rgb_pixel": 665,
+    "/oak/config": 11,
+    "/oak/health": 11,
+    "/oak/latency_ms": 448,
+    "/odrive_errors": 106,
+    "/platform/imu/data": 14766,
+    "/platform_pose": 452,
+    "/platform_pose/markers_visible": 451,
+    "/platform_rpy": 986,
+    "/status": 106
+  },
+  "gains_at_record": {
+    "kp": 0.016,
+    "kd": 0.02,
+    "ki": 0.0,
+    "max_tilt_deg": 1.2,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 100.0,
+    "stiction_v_threshold_mm_s": 61.0,
+    "stiction_break_s": 0.3,
+    "brake_tilt_deg": 9.0,
+    "control_latency_s": 0.2,
+    "kd_v_tau_s": 0.35,
+    "stiction_ramp_start_deg": 0.0,
+    "stiction_ramp_max_deg": 6.0,
+    "stiction_ramp_rate_deg_per_s": 0.3,
+    "stiction_ramp_timeout_s": 25.0,
+    "stiction_moving_hyst_ticks": 3.0,
+    "stiction_pos_delta_mm": 12.0,
+    "tilt_slew_up_deg_per_s": 100.0,
+    "algorithm": "pid"
+  },
+  "next_step": {
+    "suggestion": "Kp +30% (\u21920.021) \u2014 ball got near target but didn't settle within tolerance.",
+    "suggested_gains": {
+      "kp": 0.0208
+    },
+    "rationale": [
+      "final-5s err=147mm > 1.5\u00d7err_tol=22mm but no clear failure mode; nudge Kp up."
+    ],
+    "metrics": {
+      "settled": false,
+      "median_tail_err_mm": 147.08300993445064,
+      "p95_err_mm": 289.58258383196033,
+      "peak_speed_mm_s": 171.68002559172905,
+      "saturation_fraction": 0.6612549363756033,
+      "cmd_jitter_deg_per_tick": 0.04634360936885098
+    }
+  },
+  "ball_state_n": 3958,
+  "ball_ref_n": 3019,
+  "mono_n": 2943,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 3928,
+    "mean": 152.62438347885828,
+    "std": 87.89447340051397,
+    "rms": 176.1239361547863,
+    "p50": 119.84737388393138,
+    "p95": 289.58258383196033,
+    "min": 2.339703616465331,
+    "max": 290.86500670163514
+  },
+  "error_x_mm": {
+    "n": 3928,
+    "mean": 23.54560285267136,
+    "std": 60.75639153585614,
+    "rms": 65.15930114844677,
+    "p50": 9.157613866341457,
+    "p95": 115.65003714815202,
+    "min": -89.73745152610928,
+    "max": 116.64691132496631
+  },
+  "error_y_mm": {
+    "n": 3928,
+    "mean": 59.06166664368394,
+    "std": 152.5962840103638,
+    "rms": 163.62733989312807,
+    "p50": 61.52843953042938,
+    "p95": 265.5715374899257,
+    "min": -175.78548437780324,
+    "max": 266.9978070374038
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 452,
+    "mean": 875.4560538366237,
+    "std": 3.596555518802894,
+    "rms": 875.4634415044374,
+    "p50": 874.5267249289286,
+    "p95": 882.9813578944664,
+    "min": 865.2922537384868,
+    "max": 887.3380319727344
+  },
+  "oak_latency_ms": {
+    "n": 448,
+    "mean": 110.7817925129618,
+    "std": 30.65438426186008,
+    "rms": 114.94475554308119,
+    "p50": 108.94599914550781,
+    "p95": 161.00964584350587,
+    "min": 42.11800003051758,
+    "max": 202.97000122070312
+  },
+  "oak_health": {
+    "n": 11,
+    "v0_arr_hz": {
+      "n": 11,
+      "mean": 26.66533626209606,
+      "std": 2.779970052436587,
+      "rms": 26.809856237270264,
+      "p50": 27.143341064453125,
+      "p95": 29.225879669189453,
+      "min": 18.564992904663086,
+      "max": 29.522703170776367
+    },
+    "v0_pub_hz": {
+      "n": 11,
+      "mean": 12.31503980809992,
+      "std": 1.2003756139332538,
+      "rms": 12.373403213732727,
+      "p50": 12.558858871459961,
+      "p95": 13.50641918182373,
+      "min": 8.887495994567871,
+      "max": 13.84512996673584
+    },
+    "jpeg_hz": {
+      "n": 11,
+      "mean": 8.382408445531672,
+      "std": 0.55384604620016,
+      "rms": 8.400685495280266,
+      "p50": 8.440401077270508,
+      "p95": 9.00892972946167,
+      "min": 6.912497043609619,
+      "max": 9.115301132202148
+    },
+    "pose_hz": {
+      "n": 11,
+      "mean": 8.401999777013605,
+      "std": 0.5284432763354515,
+      "rms": 8.418601579195967,
+      "p50": 8.385093688964844,
+      "p95": 9.11021089553833,
+      "min": 7.109997272491455,
+      "max": 9.317863464355469
+    },
+    "jpeg_lat_ms": {
+      "n": 11,
+      "mean": 105.62836386940695,
+      "std": 39.77315584538101,
+      "rms": 112.86830901377412,
+      "p50": 83.99600219726562,
+      "p95": 169.57699584960938,
+      "min": 64.51100158691406,
+      "max": 199.30099487304688
+    },
+    "v0_lat_ms": {
+      "n": 11,
+      "mean": 55.62763630260121,
+      "std": 9.461785422755861,
+      "rms": 56.42658330964893,
+      "p50": 54.808998107910156,
+      "p95": 70.36999893188477,
+      "min": 43.53300094604492,
+      "max": 72.6510009765625
+    }
+  },
+  "oak_config": {
+    "rgb_fps": 60,
+    "mono_fps": 15,
+    "jpeg_quality": 50,
+    "focus_mode": "auto",
+    "focus_pos": 145,
+    "exp_us": 8000,
+    "iso": 1600,
+    "v0_backend": "cv2",
+    "v0_blob": null,
+    "v1_blob": "v1_yolov8n_320.blob",
+    "v1_arch": "v8",
+    "nn_conf_min": 0.00430000014603138,
+    "v1_yolo_conf_min": 0.3,
+    "jpeg_fps": 10,
+    "hsv_lo": [
+      5,
+      100,
+      60
+    ],
+    "hsv_hi": [
+      22,
+      255,
+      255
+    ],
+    "enable_depth": false,
+    "mask_v0_to_platform": true,
+    "usb_speed": "super",
+    "rgb_w": 960,
+    "rgb_h": 540
+  },
+  "markers_visible": {
+    "n": 451,
+    "mean": 7.9201773835920175,
+    "min": 7,
+    "max": 9
+  }
+}
