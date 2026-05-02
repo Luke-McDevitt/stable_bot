@@ -1,4 +1,4 @@
-# Stable-Bot
+# Stable-Bot (https://github.com/Luke-McDevitt/stable_bot)
 
 Stewart-platform ball-balancing system: ROS 2 Kilted nodes + browser GUI
 + vision pipeline. Ships closed-loop click-to-goto control of a ball on
