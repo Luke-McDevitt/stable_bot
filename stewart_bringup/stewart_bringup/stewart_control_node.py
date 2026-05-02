@@ -398,6 +398,12 @@ def _load_ball_track_gains():
         # reset and try again (creates a "pulse → coast → pulse" kick
         # pattern). 0 = no timeout, ramp holds at ramp_max indefinitely.
         'stiction_ramp_timeout_s':       0.0,
+        # Number of consecutive ticks vel_mag must exceed
+        # stiction_v_threshold_mm_s before the controller declares the
+        # ball "moving" and resets the stiction dwell timer. Filters
+        # vision-noise spikes that briefly read above threshold on a
+        # physically stationary ball. At 50 Hz, 3 ticks = 60 ms.
+        'stiction_moving_hyst_ticks':    3.0,
         # Slew-rate limit on tilt magnitude growth (PID-only). Caps how
         # fast Kp·err can ramp the commanded magnitude — keeps a
         # long-distance click from slamming straight to max_tilt and
@@ -2103,6 +2109,7 @@ class StewartControlNode(Node):
                             'stiction_ramp_max_deg',
                             'stiction_ramp_rate_deg_per_s',
                             'stiction_ramp_timeout_s',
+                            'stiction_moving_hyst_ticks',
                             'tilt_slew_up_deg_per_s')},
                 'algorithm': str(
                     self.ball_track_gains.get('algorithm', 'pid')),
@@ -3659,6 +3666,7 @@ class StewartControlNode(Node):
         'stiction_ramp_max_deg':         (0.5, 15.0),
         'stiction_ramp_rate_deg_per_s':  (0.05, 10.0),
         'stiction_ramp_timeout_s':       (0.0, 30.0),
+        'stiction_moving_hyst_ticks':    (1.0, 20.0),
         'tilt_slew_up_deg_per_s':        (0.5, 100.0),
     }
     _BALL_TRACK_STR_KEYS = ('algorithm',)
@@ -4241,6 +4249,15 @@ class StewartControlNode(Node):
         # stiction_break_s, override to max_tilt to break the ball
         # loose. Reset whenever ball moves or phase changes.
         stiction_started_t = None
+        # Hysteresis on the "ball is moving" detection. KF velocity
+        # contains vision-noise spikes that briefly read 100+ mm/s on
+        # a physically stationary ball; without hysteresis, every
+        # such spike reset stiction_started_t and the dwell timer
+        # never accumulated enough for the ramp to fire. Require
+        # vel_mag to exceed stiction_v_threshold for N consecutive
+        # ticks before declaring the ball "moving". At 50 Hz, N=3 =
+        # 60 ms of sustained motion required.
+        moving_count = 0
         # Time origin for the diagnostic topic.
         diag_t0 = time.monotonic()
         # Ball-fall recovery state. The loop normally goes flat (zero
@@ -4395,6 +4412,23 @@ class StewartControlNode(Node):
                 ux = ex / err_mag if err_mag > 1e-6 else 0.0
                 uy = ey / err_mag if err_mag > 1e-6 else 0.0
                 v_toward = -(vx * ux + vy * uy)
+
+                # Hysteresis on "ball is moving" — vision-noise spikes
+                # in KF velocity briefly read above stiction_v_threshold
+                # on a physically stationary ball. Without this filter,
+                # each spike reset the stiction dwell timer and the
+                # ramp never fired. Require N consecutive ticks above
+                # threshold before declaring the ball moving; reset
+                # the counter on any tick where vel is below.
+                _stict_v_thr = float(
+                    g.get('stiction_v_threshold_mm_s', 20.0))
+                _stict_hyst = int(g.get(
+                    'stiction_moving_hyst_ticks', 3))
+                if vel_mag >= _stict_v_thr:
+                    moving_count += 1
+                else:
+                    moving_count = 0
+                ball_moving = (moving_count >= _stict_hyst)
 
                 if algo == 'bangbang':
                     # Finite-state-machine controller. Discrete phases:
@@ -4581,7 +4615,7 @@ class StewartControlNode(Node):
                     # ramp_max indefinitely, prior behavior).
                     ramp_timeout = float(
                         g.get('stiction_ramp_timeout_s', 0.0))
-                    if (vel_mag < stiction_v_pid
+                    if (not ball_moving
                             and err_mag > err_tol_pid):
                         if stiction_started_t is None:
                             stiction_started_t = now
