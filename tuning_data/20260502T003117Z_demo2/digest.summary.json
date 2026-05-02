@@ -1,0 +1,221 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260502T003117Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 7.040244636000001,
+  "topic_counts": {
+    "/ball_ref": 311,
+    "/ball_state": 464,
+    "/ball_track/diagnostic": 243,
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 350,
+    "/control_cmd": 1,
+    "/control_result": 0,
+    "/leg_currents": 105,
+    "/leg_encoders": 104,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/v0/diagnostic": 84,
+    "/oak/ball/v0/rgb_pixel": 92,
+    "/oak/config": 1,
+    "/oak/health": 1,
+    "/oak/latency_ms": 52,
+    "/odrive_errors": 12,
+    "/platform/imu/data": 1410,
+    "/platform_pose": 56,
+    "/platform_pose/markers_visible": 48,
+    "/platform_rpy": 101,
+    "/status": 12
+  },
+  "gains_at_record": {
+    "kp": 0.025,
+    "kd": 0.01,
+    "ki": 0.001,
+    "max_tilt_deg": 6.0,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 100.0,
+    "stiction_v_threshold_mm_s": 20.0,
+    "stiction_break_s": 0.6,
+    "brake_tilt_deg": 9.0,
+    "control_latency_s": 0.1,
+    "algorithm": "bangbang"
+  },
+  "next_step": {
+    "suggestion": "Kd -40% (\u21920.006) \u2014 Kd is feeding vision noise back as tilt command. With less Kd the controller will be slower but smoother.",
+    "suggested_gains": {
+      "kd": 0.006
+    },
+    "rationale": [
+      "cmd tilt jitter std=0.89\u00b0/tick suggests Kd is amplifying vision noise into the tilt command."
+    ],
+    "metrics": {
+      "settled": false,
+      "median_tail_err_mm": 245.1263792689444,
+      "p95_err_mm": 288.82691824386916,
+      "peak_speed_mm_s": 1887.3524512993679,
+      "saturation_fraction": 0.0,
+      "cmd_jitter_deg_per_tick": 0.8914985280903722
+    }
+  },
+  "ball_state_n": 464,
+  "ball_ref_n": 311,
+  "mono_n": 350,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 421,
+    "mean": 196.41698592149396,
+    "std": 68.7962901372346,
+    "rms": 208.1167025856669,
+    "p50": 199.094681932855,
+    "p95": 288.82691824386916,
+    "min": 80.58225880111112,
+    "max": 300.7466215716897
+  },
+  "error_x_mm": {
+    "n": 421,
+    "mean": -31.39537752811767,
+    "std": 129.13144519460766,
+    "rms": 132.89318969827238,
+    "p50": -28.225409384680294,
+    "p95": 152.53223580739603,
+    "min": -225.309789778509,
+    "max": 159.83127221305097
+  },
+  "error_y_mm": {
+    "n": 421,
+    "mean": -92.58407953341481,
+    "std": 130.6910488285263,
+    "rms": 160.1622990186827,
+    "p50": -86.16796591437205,
+    "p95": 84.91940968071651,
+    "min": -291.3192209807822,
+    "max": 96.54621345756311
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 56,
+    "mean": 880.3892501080479,
+    "std": 2.5238975389688125,
+    "rms": 880.3928678519596,
+    "p50": 881.2417657781225,
+    "p95": 883.6104063184089,
+    "min": 874.7236390870605,
+    "max": 884.5342022387191
+  },
+  "oak_latency_ms": {
+    "n": 52,
+    "mean": 114.34055775862474,
+    "std": 33.22220199695633,
+    "rms": 119.06921455220893,
+    "p50": 113.96399688720703,
+    "p95": 169.61420288085932,
+    "min": 51.268001556396484,
+    "max": 200.49600219726562
+  },
+  "oak_health": {
+    "n": 1,
+    "v0_arr_hz": {
+      "n": 1,
+      "mean": 12.352840423583984,
+      "std": 0.0,
+      "rms": 12.352840423583984,
+      "p50": 12.352840423583984,
+      "p95": 12.352840423583984,
+      "min": 12.352840423583984,
+      "max": 12.352840423583984
+    },
+    "v0_pub_hz": {
+      "n": 1,
+      "mean": 12.352840423583984,
+      "std": 0.0,
+      "rms": 12.352840423583984,
+      "p50": 12.352840423583984,
+      "p95": 12.352840423583984,
+      "min": 12.352840423583984,
+      "max": 12.352840423583984
+    },
+    "jpeg_hz": {
+      "n": 1,
+      "mean": 6.973377704620361,
+      "std": 0.0,
+      "rms": 6.973377704620361,
+      "p50": 6.973377704620361,
+      "p95": 6.973377704620361,
+      "min": 6.973377704620361,
+      "max": 6.973377704620361
+    },
+    "pose_hz": {
+      "n": 1,
+      "mean": 7.371856689453125,
+      "std": 0.0,
+      "rms": 7.371856689453125,
+      "p50": 7.371856689453125,
+      "p95": 7.371856689453125,
+      "min": 7.371856689453125,
+      "max": 7.371856689453125
+    },
+    "jpeg_lat_ms": {
+      "n": 1,
+      "mean": 89.17500305175781,
+      "std": 0.0,
+      "rms": 89.17500305175781,
+      "p50": 89.17500305175781,
+      "p95": 89.17500305175781,
+      "min": 89.17500305175781,
+      "max": 89.17500305175781
+    },
+    "v0_lat_ms": {
+      "n": 1,
+      "mean": 62.02000045776367,
+      "std": 0.0,
+      "rms": 62.02000045776367,
+      "p50": 62.02000045776367,
+      "p95": 62.02000045776367,
+      "min": 62.02000045776367,
+      "max": 62.02000045776367
+    }
+  },
+  "oak_config": {
+    "rgb_fps": 60,
+    "mono_fps": 15,
+    "jpeg_quality": 50,
+    "focus_mode": "auto",
+    "focus_pos": 145,
+    "exp_us": 8000,
+    "iso": 1600,
+    "v0_backend": "v1_yolo",
+    "v0_blob": null,
+    "v1_blob": "v1_yolov8n_320.blob",
+    "v1_arch": "v8",
+    "nn_conf_min": 0.00430000014603138,
+    "v1_yolo_conf_min": 0.3,
+    "jpeg_fps": 10,
+    "hsv_lo": [
+      5,
+      100,
+      60
+    ],
+    "hsv_hi": [
+      22,
+      255,
+      255
+    ],
+    "enable_depth": false,
+    "mask_v0_to_platform": true,
+    "usb_speed": "super",
+    "rgb_w": 960,
+    "rgb_h": 540
+  },
+  "markers_visible": {
+    "n": 48,
+    "mean": 8.0625,
+    "min": 8,
+    "max": 9
+  }
+}
