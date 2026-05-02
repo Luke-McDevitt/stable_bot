@@ -4413,18 +4413,28 @@ class StewartControlNode(Node):
                 uy = ey / err_mag if err_mag > 1e-6 else 0.0
                 v_toward = -(vx * ux + vy * uy)
 
-                # Hysteresis on "ball is moving" — vision-noise spikes
-                # in KF velocity briefly read above stiction_v_threshold
-                # on a physically stationary ball. Without this filter,
-                # each spike reset the stiction dwell timer and the
-                # ramp never fired. Require N consecutive ticks above
-                # threshold before declaring the ball moving; reset
-                # the counter on any tick where vel is below.
+                # Hysteresis on "ball is moving". Vision-noise spikes in
+                # KF velocity briefly read above stiction_v_threshold on
+                # a physically stationary ball; without this filter,
+                # each spike reset the stiction dwell timer and the ramp
+                # never fired.
+                #
+                # Two-stage filter:
+                #   1. Use LPF'd velocity (edot_x/y, smoothed by
+                #      kd_v_tau_s) for the threshold check. With
+                #      kd_v_tau_s ≥ 0.2 s, single-tick noise spikes barely
+                #      move the smoothed value. When kd_v_tau_s = 0,
+                #      this reverts to raw vel — and only the consecutive-
+                #      tick counter filters.
+                #   2. Consecutive-tick counter
+                #      (stiction_moving_hyst_ticks): require N ticks
+                #      of sustained motion before declaring "moving".
                 _stict_v_thr = float(
                     g.get('stiction_v_threshold_mm_s', 20.0))
                 _stict_hyst = int(g.get(
                     'stiction_moving_hyst_ticks', 3))
-                if vel_mag >= _stict_v_thr:
+                vel_mag_for_stiction = math.hypot(edot_x, edot_y)
+                if vel_mag_for_stiction >= _stict_v_thr:
                     moving_count += 1
                 else:
                     moving_count = 0
