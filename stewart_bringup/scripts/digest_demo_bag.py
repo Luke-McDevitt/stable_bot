@@ -598,11 +598,12 @@ def digest(bag_dir: str):
                                   ref_xy)
         err_xy = state_xy - ref_at_state
         err_mag = np.sqrt(err_xy[:, 0] ** 2 + err_xy[:, 1] ** 2)
-        err_mag = err_mag[np.isfinite(err_mag)]
+        finite_mask = np.isfinite(err_mag)
+        err_mag = err_mag[finite_mask]
+        err_t_s = err_t_s[finite_mask]
+        err_xy = err_xy[finite_mask]
 
-    settling = _settling_time_s(
-        err_t_s[np.isfinite(err_xy[:, 0])] if err_xy.size else np.zeros((0,)),
-        err_mag) if err_mag.size else None
+    settling = _settling_time_s(err_t_s, err_mag) if err_mag.size else None
 
     label = _demo_label_from_dir(bag_dir)
     gains_at_record = _gains_at_record(status_d)
