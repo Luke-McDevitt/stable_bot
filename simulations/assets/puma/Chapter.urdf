@@ -1,0 +1,174 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="Chapter">
+    <link name="Revolute-to-right-angle-revolute-v1_Revolute-to-right-angle-revolute">
+        <inertial>
+            <origin xyz="6.261948856349923e-19 0.046489243677971075 2.303928612288049e-21" rpy="0.0 0.0 0.0" />
+            <mass value="0.08639778695369857" />
+            <inertia ixx="8.663211338429465e-05" iyy="1.956134786807576e-06" izz="8.673098748845714e-05" ixy="2.191999764062828e-20" iyz="8.062691399541227e-23" ixz="-1.2705494208814505e-21" />
+        </inertial>
+        <visual name="Revolute-to-right-angle-revolute-v1_Revolute-to-right-angle-revolute_visual">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Revolute-to-right-angle-revolute-v1_Revolute-to-right-angle-revolute.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="Revolute-to-right-angle-revolute-v1_Revolute-to-right-angle-revolute_collision">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Revolute-to-right-angle-revolute-v1_Revolute-to-right-angle-revolute.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="Right-angle-revolute-to-middle-acting-revolute-v1_right-angle-revolute-to-middle-acting-revolute">
+        <inertial>
+            <origin xyz="0.029979542226560095 1.5265566588595902e-16 0.05712841655809005" rpy="0.0 0.0 0.0" />
+            <mass value="0.1379892560903595" />
+            <inertia ixx="0.000276387580482469" iyy="0.00029344322126568297" izz="1.9893534854181355e-05" ixy="-2.358478538334874e-17" iyz="1.3173056395698879e-17" ixz="-3.95809907795903e-05" />
+        </inertial>
+        <visual name="Right-angle-revolute-to-middle-acting-revolute-v1_right-angle-revolute-to-middle-acting-revolute_visual">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Right-angle-revolute-to-middle-acting-revolute-v1_right-angle-revolute-to-middle-acting-revolute.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="Right-angle-revolute-to-middle-acting-revolute-v1_right-angle-revolute-to-middle-acting-revolute_collision">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Right-angle-revolute-to-middle-acting-revolute-v1_right-angle-revolute-to-middle-acting-revolute.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="Base-with-revolute-v1_Base-with-revolute-on-it">
+        <inertial>
+            <origin xyz="0.012145617090068126 0.010632082163354617 0.026489300642834303" rpy="0.0 0.0 0.0" />
+            <mass value="0.8620671947833745" />
+            <inertia ixx="0.0010115624911934428" iyy="0.0013097301762387808" izz="0.0010115624911934424" ixy="-1.8973538018496328e-19" iyz="-1.3552527156068805e-19" ixz="8.131516293641283e-19" />
+        </inertial>
+        <visual name="Base-with-revolute-v1_Base-with-revolute-on-it_visual">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Base-with-revolute-v1_Base-with-revolute-on-it.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="Base-with-revolute-v1_Base-with-revolute-on-it_collision">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Base-with-revolute-v1_Base-with-revolute-on-it.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="Right-Angle-middle-acting-revolute-to-revolute-v1_Right-angle-middle-acting-revolute-to-revolute">
+        <inertial>
+            <origin xyz="0.041047168655963556 0.010465048118174473 0.01250000000000471" rpy="0.0 0.0 0.0" />
+            <mass value="0.11840470364111966" />
+            <inertia ixx="9.212483638137425e-06" iyy="0.00018108508764710007" izz="0.00018520616650501509" ixy="-2.2044851052866734e-05" iyz="5.545736463910718e-18" ixz="1.0594602077473083e-17" />
+        </inertial>
+        <visual name="Right-Angle-middle-acting-revolute-to-revolute-v1_Right-angle-middle-acting-revolute-to-revolute_visual">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Right-Angle-middle-acting-revolute-to-revolute-v1_Right-angle-middle-acting-revolute-to-revolute.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="Right-Angle-middle-acting-revolute-to-revolute-v1_Right-angle-middle-acting-revolute-to-revolute_collision">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Right-Angle-middle-acting-revolute-to-revolute-v1_Right-angle-middle-acting-revolute-to-revolute.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="Middle-acting-revolute-to-revolute-v1_Middle-acting-revolute-to-revolute">
+        <inertial>
+            <origin xyz="2.2452595360190897e-08 0.01389283522724914 0.012499993025155445" rpy="0.0 0.0 0.0" />
+            <mass value="0.06809250514511168" />
+            <inertia ixx="1.9603198245357808e-05" iyy="3.037906026800841e-06" izz="1.8286976564782125e-05" ixy="1.1190813157969124e-11" iyz="-3.484848871629658e-12" ixz="-2.6502865928344083e-12" />
+        </inertial>
+        <visual name="Middle-acting-revolute-to-revolute-v1_Middle-acting-revolute-to-revolute_visual">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Middle-acting-revolute-to-revolute-v1_Middle-acting-revolute-to-revolute.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="Middle-acting-revolute-to-revolute-v1_Middle-acting-revolute-to-revolute_collision">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Middle-acting-revolute-to-revolute-v1_Middle-acting-revolute-to-revolute.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="Revolute-to-middle-acting-revolute-v1_Revolute-to-middle-acting-revolute">
+        <inertial>
+            <origin xyz="0.021020834207110026 -1.736458199452784e-15 5.0133508455729725e-16" rpy="0.0 0.0 0.0" />
+            <mass value="0.07226389748005418" />
+            <inertia ixx="5.260006166297684e-06" iyy="1.1828769259970488e-05" izz="8.69346590217256e-06" ixy="-4.007101115223281e-18" iyz="-5.700531735021441e-19" ixz="5.13130441864287e-17" />
+        </inertial>
+        <visual name="Revolute-to-middle-acting-revolute-v1_Revolute-to-middle-acting-revolute_visual">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Revolute-to-middle-acting-revolute-v1_Revolute-to-middle-acting-revolute.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="Revolute-to-middle-acting-revolute-v1_Revolute-to-middle-acting-revolute_collision">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Revolute-to-middle-acting-revolute-v1_Revolute-to-middle-acting-revolute.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="Revolute-to-end-effector-v1_Revolute-to-end-effector">
+        <inertial>
+            <origin xyz="-2.0132724968483645e-13 0.022676889315266124 7.298849025172416e-16" rpy="0.0 0.0 0.0" />
+            <mass value="0.05712737965985806" />
+            <inertia ixx="1.0688551812614655e-05" iyy="4.063745148642084e-06" izz="1.224672222311584e-05" ixy="-2.903527166885173e-16" iyz="1.5429896274319157e-18" ixz="-1.2241743670192776e-18" />
+        </inertial>
+        <visual name="Revolute-to-end-effector-v1_Revolute-to-end-effector_visual">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Revolute-to-end-effector-v1_Revolute-to-end-effector.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="Revolute-to-end-effector-v1_Revolute-to-end-effector_collision">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="meshes/Revolute-to-end-effector-v1_Revolute-to-end-effector.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="Base-with-revolute-v1_Base-with-revolute-on-it_Revolute-1" type="continuous">
+        <origin xyz="0.01214562 0.11 0.0264893" rpy="-1.5707963267948966 -0.0 0.0" />
+        <parent link="Base-with-revolute-v1_Base-with-revolute-on-it" />
+        <child link="Revolute-to-right-angle-revolute-v1_Revolute-to-right-angle-revolute" />
+        <axis xyz="0.0 0.0 1.0" />
+    </joint>
+    <joint name="Revolute-to-right-angle-revolute-v1_Revolute-to-right-angle-revolute_Revolute-2" type="continuous">
+        <origin xyz="0.00750000365964836 0.08750000000000001 3.571816113989712e-09" rpy="-6.123233995710782e-17 -1.5671170916725328 3.141592653589793" />
+        <parent link="Revolute-to-right-angle-revolute-v1_Revolute-to-right-angle-revolute" />
+        <child link="Right-angle-revolute-to-middle-acting-revolute-v1_right-angle-revolute-to-middle-acting-revolute" />
+        <axis xyz="-0.003679 1.2312517577372591e-32 0.999993" />
+    </joint>
+    <joint name="Right-angle-revolute-to-middle-acting-revolute-v1_right-angle-revolute-to-middle-acting-revolute_Revolute-3" type="revolute">
+        <origin xyz="0.022499996781836656 1.1736162797149063e-09 0.11249999796721688" rpy="-1.564423805269457 -1.0471858281412112 -1.5781546974323617" />
+        <parent link="Right-angle-revolute-to-middle-acting-revolute-v1_right-angle-revolute-to-middle-acting-revolute" />
+        <child link="Right-Angle-middle-acting-revolute-to-revolute-v1_Right-angle-middle-acting-revolute-to-revolute" />
+        <axis xyz="-0.003679 -4.336778332281188e-19 0.999993" />
+        <limit lower="0.0" upper="3.141593" effort="1000000" velocity="1000000" />
+    </joint>
+    <joint name="Right-Angle-middle-acting-revolute-to-revolute-v1_Right-angle-middle-acting-revolute-to-revolute_Revolute-4" type="continuous">
+        <origin xyz="0.10499999720750319 0.014999998020509046 0.012499999333170714" rpy="-3.1415926535897776 -0.003679235122342751 1.012290966156807" />
+        <parent link="Right-Angle-middle-acting-revolute-to-revolute-v1_Right-angle-middle-acting-revolute-to-revolute" />
+        <child link="Revolute-to-middle-acting-revolute-v1_Revolute-to-middle-acting-revolute" />
+        <axis xyz="0.5299159999999999 0.8480479999999998 0.0019500000000000936" />
+    </joint>
+    <joint name="Revolute-to-middle-acting-revolute-v1_Revolute-to-middle-acting-revolute_Revolute-5" type="revolute">
+        <origin xyz="0.032499995346262446 1.3477801985573023e-10 -0.012499996754991685" rpy="0.5610261306533012 -0.913036541090983 1.5676071379089398" />
+        <parent link="Revolute-to-middle-acting-revolute-v1_Revolute-to-middle-acting-revolute" />
+        <child link="Middle-acting-revolute-to-revolute-v1_Middle-acting-revolute-to-revolute" />
+        <axis xyz="0.791364 0.32527000000000006 0.517632" />
+        <limit lower="0.0" upper="3.141593" effort="1000000" velocity="1000000" />
+    </joint>
+    <joint name="Middle-acting-revolute-to-revolute-v1_Middle-acting-revolute-to-revolute_Revolute-6" type="continuous">
+        <origin xyz="1.0291060270617437e-09 0.04250000550666402 0.0124999973023807" rpy="2.131822457448252 0.9130365410910117 0.6987424699700375" />
+        <parent link="Middle-acting-revolute-to-revolute-v1_Middle-acting-revolute-to-revolute" />
+        <child link="Revolute-to-end-effector-v1_Revolute-to-end-effector" />
+        <axis xyz="0.3932509999999999 0.023648000000000047 -0.919127" />
+    </joint>
+</robot>
