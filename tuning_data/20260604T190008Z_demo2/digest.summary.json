@@ -54,6 +54,26 @@
     "tilt_slew_up_deg_per_s": 100.0,
     "algorithm": "pid"
   },
+  "run_config": {
+    "soft_max_vel_tps": 1.5,
+    "hard_max_vel_tps": 4.0,
+    "leg_current_cap_a": 6.0
+  },
+  "leg_current": {
+    "measured_peak_a": 6.31,
+    "measured_p95_a": 4.55,
+    "per_leg_peak_a": [
+      3.17,
+      6.1,
+      4.89,
+      5.67,
+      5.01,
+      6.31
+    ],
+    "cap_a": 6.0,
+    "headroom_a": -0.31,
+    "saturation_fraction": 0.046
+  },
   "next_step": {
     "suggestion": "Kp +30% (\u21920.021) \u2014 ball got near target but didn't settle within tolerance.",
     "suggested_gains": {
@@ -126,7 +146,9 @@
       "roll_lag_ms": 315.0,
       "roll_corr": 0.985,
       "n_overlap": 12828,
-      "actuation_ms": 315.0
+      "actuation_ms": 315.0,
+      "cmd_period_s": null,
+      "ambiguous": false
     },
     "see_to_move_est_ms": 381.3,
     "note": "vision = windowed detector latency; actuation = cmd-tilt->IMU-tilt cross-correlation (effective command->motion delay incl. feeder ZOH + leg slew + mechanical rise). Localizer/KF tick (~25 ms) is between them, not yet separately instrumented (see control_path_latency.md)."
