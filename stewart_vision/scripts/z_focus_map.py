@@ -11,12 +11,12 @@ Spec: ../../stewart_bringup/docs/oak_focus_exposure_autocal.md.
 
 SAFETY (this command MOVES the platform autonomously):
   - Z is hard-clamped to [Z_SAFE_MIN, Z_SAFE_MAX] = [0, 80] mm (the
-    validated ball-demo range). The control node's set_pose ALSO clamps to
-    leg limits and reports `any_clamped`, which we log/flag.
-  - Moves only via the BLOCKING set_pose service (waits for arrival before
-    measuring), then an extra settle for vibration.
-  - `finally`: returns the platform to rest (Z=0) and restores the original
-    focus, even on Ctrl-C / error.
+    validated ball-demo range); the control node + level loop also clamp to
+    leg limits.
+  - Reuses the proven 'hold level at Z' path: enables the PI level loop and
+    sets Z via set_pose (the loop tracks to it, IMU-leveled), then settles.
+  - `finally`: returns to rest (Z=0), restores the prior level state, and
+    restores the original focus — even on Ctrl-C / error.
   - Record-only: writes the map + data; does NOT switch the live camera off
     autofocus. Adopting the map (promoting it to config/ + wiring
     Z-scheduled focus into oak_driver) is a separate, deliberate step.
@@ -62,7 +62,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
-from jugglebot_interfaces.srv import SetPose
+from jugglebot_interfaces.srv import SetPose, ActivateOrDeactivate
 
 try:
     from stewart_vision._image_quality import image_quality_report, METRIC_KEYS
@@ -107,12 +107,15 @@ class ZFocusMapNode(Node):
         super().__init__('z_focus_map')
         self.frames = []
         self.config = None
+        self.status = None
         self.pub_focus = self.create_publisher(String, '/oak/cmd_focus', 1)
         self.cli_pose = self.create_client(SetPose, 'set_pose')
+        self.cli_level = self.create_client(ActivateOrDeactivate, 'enable_level')
         self.create_subscription(
             CompressedImage, '/oak/rgb/image_compressed', self._on_img,
             qos_profile_sensor_data)
         self.create_subscription(String, '/oak/config', self._on_config, 5)
+        self.create_subscription(String, '/status', self._on_status, 5)
 
     def _on_img(self, msg):
         arr = np.frombuffer(msg.data, dtype=np.uint8)
@@ -128,19 +131,48 @@ class ZFocusMapNode(Node):
         except Exception:
             pass
 
+    def _on_status(self, msg):
+        try:
+            self.status = json.loads(msg.data)
+        except Exception:
+            pass
+
     def wait_config(self, timeout=12.0):
         t = time.monotonic() + timeout
         while rclpy.ok() and self.config is None and time.monotonic() < t:
             rclpy.spin_once(self, timeout_sec=0.2)
         return self.config
 
+    def wait_status(self, timeout=8.0):
+        t = time.monotonic() + timeout
+        while rclpy.ok() and self.status is None and time.monotonic() < t:
+            rclpy.spin_once(self, timeout_sec=0.2)
+        return self.status
+
     def set_focus(self, payload):
         self.pub_focus.publish(String(data=str(payload)))
 
-    def move_to_z(self, z, timeout=25.0):
-        """Blocking move to (0,0,z,0,0,0). Returns (ok, any_clamped, msg)."""
-        if not self.cli_pose.wait_for_service(timeout_sec=5.0):
-            return False, False, "set_pose service unavailable"
+    def _call(self, client, req, timeout):
+        if not client.wait_for_service(timeout_sec=5.0):
+            return None
+        fut = client.call_async(req)
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=timeout)
+        return fut.result() if fut.done() else None
+
+    def set_level(self, activate, timeout=15.0):
+        """Enable/disable the PI level loop — the proven 'hold level at Z'
+        path. Returns (ok, msg)."""
+        req = ActivateOrDeactivate.Request()
+        req.command = 'activate' if activate else 'deactivate'
+        r = self._call(self.cli_level, req, timeout)
+        if r is None:
+            return False, 'enable_level service unavailable/timed out'
+        return bool(r.success), str(r.message)
+
+    def set_z(self, z, timeout=10.0):
+        """Set the platform target to (0,0,z,0,0,0). With the level loop ON
+        this returns immediately and the loop tracks to Z (hold-level), so
+        the caller MUST settle-wait. Returns (ok, msg)."""
         req = SetPose.Request()
         req.x = 0.0
         req.y = 0.0
@@ -148,13 +180,11 @@ class ZFocusMapNode(Node):
         req.roll = 0.0
         req.pitch = 0.0
         req.yaw = 0.0
-        req.blocking = True
-        fut = self.cli_pose.call_async(req)
-        rclpy.spin_until_future_complete(self, fut, timeout_sec=timeout)
-        if not fut.done():
-            return False, False, "set_pose timed out (platform armed/homed?)"
-        r = fut.result()
-        return bool(r.success), bool(r.any_clamped), str(r.message)
+        req.blocking = False
+        r = self._call(self.cli_pose, req, timeout)
+        if r is None:
+            return False, 'set_pose service unavailable/timed out'
+        return bool(r.success), str(r.message)
 
     def spin_for(self, seconds):
         t = time.monotonic() + seconds
@@ -197,8 +227,9 @@ def main():
     ap.add_argument('--z-start', type=float, default=0.0)
     ap.add_argument('--z-stop', type=float, default=80.0)
     ap.add_argument('--z-step', type=float, default=20.0)
-    ap.add_argument('--settle-z', type=float, default=1.0,
-                    help='extra settle (s) after the blocking move, for vibration')
+    ap.add_argument('--settle-z', type=float, default=2.0,
+                    help='settle (s) after setting Z, for the level loop to '
+                         'converge + vibration to die')
     ap.add_argument('--focus-min', type=int, default=0)
     ap.add_argument('--focus-max', type=int, default=255)
     ap.add_argument('--focus-step', type=int, default=5)
@@ -234,58 +265,84 @@ def main():
         node.destroy_node(); rclpy.shutdown(); sys.exit(2)
     orig_mode = cfg.get('focus_mode', 'auto')
     orig_pos = int(cfg.get('focus_pos', 145))
+
+    # Read armed + current level state (to restore it afterwards).
+    st = node.wait_status()
+    orig_level = bool(st.get('level_enabled', False)) if st else False
+    armed = st.get('armed') if st else None
+    if armed is False:
+        node.get_logger().error(
+            "platform NOT armed — arm + home + capture level in the GUI first. "
+            "Aborting (nothing moved).")
+        node.destroy_node(); rclpy.shutdown(); sys.exit(2)
+
+    # Reuse the proven 'hold level at Z' path: enable the PI level loop, then
+    # set Z (the loop tracks to it, IMU-leveled). Requires armed + a saved
+    # level calibration (platform_level.yaml).
+    ok, msg = node.set_level(True)
+    if not ok:
+        node.get_logger().error(
+            f"could not enable level loop: {msg}. Fix in the GUI (arm + "
+            "'Level ON' must work), then retry. Aborting (nothing moved).")
+        node.destroy_node(); rclpy.shutdown(); sys.exit(2)
     node.get_logger().info(
+        f"level loop ON ({msg}); was {'ON' if orig_level else 'OFF'} before. "
         f"Z ladder {z_ladder} mm; focus {args.focus_min}-{args.focus_max} "
-        f"step {args.focus_step}. Original focus {orig_pos} ({orig_mode}).")
+        f"step {args.focus_step}; original focus {orig_pos} ({orig_mode}).")
 
     results = []      # dict per Z
     aborted = False
     try:
         for i, z in enumerate(z_ladder):
-            node.get_logger().info(f"[{i+1}/{len(z_ladder)}] moving to Z={z:.0f} mm…")
-            ok, clamped, msg = node.move_to_z(z)
+            node.get_logger().info(
+                f"[{i+1}/{len(z_ladder)}] set Z={z:.0f} mm (level loop holding)…")
+            ok, msg = node.set_z(z)
             if not ok:
                 node.get_logger().error(f"  set_pose failed: {msg}")
                 if i == 0:
                     node.get_logger().error(
-                        "  first move failed — is the platform armed + homed? "
-                        "Aborting (returning to rest in finally).")
+                        "  first move failed — aborting (rest + restore in finally).")
                     aborted = True
                     break
                 node.get_logger().warn("  skipping this Z.")
                 continue
-            if clamped:
-                node.get_logger().warn(
-                    f"  Z={z:.0f} was clamped by leg limits — flagging it.")
-            node.spin_for(args.settle_z)   # let vibration die down
+            node.spin_for(args.settle_z)   # let the level loop converge + vibration die
             rows, keyframes, (peak_pos, peak_val) = sweep_focus(
                 node, focus_positions, args.frames, args.settle,
                 args.roi_frac, args.metric)
             if peak_pos is None:
                 node.get_logger().warn(f"  Z={z:.0f}: no usable sharpness data")
                 continue
-            results.append({'z_mm': float(z), 'clamped': bool(clamped),
+            results.append({'z_mm': float(z), 'clamped': False,
                             'peak_focus_pos': int(peak_pos),
                             'peak_value': float(peak_val),
                             'rows': rows, 'keyframe': keyframes.get(peak_pos)})
             node.get_logger().info(
                 f"  Z={z:.0f}: peak focus {peak_pos} ({args.metric}={peak_val:.0f})")
     except KeyboardInterrupt:
-        node.get_logger().warn("interrupted — returning to rest + restoring focus.")
+        node.get_logger().warn("interrupted — returning to rest + restoring state.")
         aborted = True
     finally:
-        # --- SAFETY: always return to rest and restore focus ---
+        # --- SAFETY: rest, restore level state, restore focus ---
         try:
-            node.get_logger().info("returning platform to rest (Z=0)…")
-            node.move_to_z(0.0)
+            node.get_logger().info("returning to rest (Z=0)…")
+            node.set_z(0.0)
+            node.spin_for(args.settle_z)
         except Exception as e:
             node.get_logger().error(f"  rest move error: {e}")
+        if not orig_level:
+            try:
+                node.set_level(False)
+            except Exception as e:
+                node.get_logger().error(f"  level-restore error: {e}")
         if orig_mode == 'manual':
             node.set_focus(orig_pos)
         else:
             node.set_focus('auto' if orig_mode == 'auto' else 'auto_one_shot')
         node.spin_for(0.5)
-        node.get_logger().info(f"focus restored to {orig_pos} ({orig_mode}).")
+        node.get_logger().info(
+            f"focus restored to {orig_pos} ({orig_mode}); "
+            f"level restored to {'ON' if orig_level else 'OFF'}.")
 
     if not results:
         node.get_logger().error("no Z points captured.")
