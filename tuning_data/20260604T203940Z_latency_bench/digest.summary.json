@@ -1,0 +1,32 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260604T203940Z_latency_bench",
+  "run_type": "latency_bench",
+  "driven_axis": "pitch",
+  "topic_counts": {
+    "/ball_state": 281,
+    "/ball_xy_mono": 220,
+    "/control_cmd": 1,
+    "/latency_bench/diag": 40,
+    "/leg_currents": 67,
+    "/leg_encoders": 65,
+    "/oak/ball/v0/diagnostic": 49,
+    "/oak/ball/v0/rgb_pixel": 49,
+    "/oak/latency_ms": 29,
+    "/odrive_errors": 7,
+    "/platform/imu/data": 1051,
+    "/platform_pose": 33,
+    "/platform_pose/markers_visible": 33,
+    "/platform_rpy": 64,
+    "/status": 6
+  },
+  "step_metrics": {
+    "pitch": null,
+    "roll": null,
+    "leg": null
+  },
+  "actuation_stages": null,
+  "run_config": {
+    "soft_max_vel_tps": 1.0,
+    "leg_current_soft_max_a": 6.0
+  }
+}
