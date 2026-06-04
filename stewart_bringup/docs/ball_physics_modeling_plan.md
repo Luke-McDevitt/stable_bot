@@ -693,6 +693,13 @@ So "closing the gap" is **not** removing a rate cap. It means:
    under fast motion (cv2 is robust but USB-capped; YOLO is fast but loses
    the ball — the `step_id_tuning_lessons.md` §3 tradeoff).
 
+> **Deeper:** the root cause is that we detect on the rolling-shutter RGB
+> with an 8 ms exposure while the global-shutter mono cameras (built for
+> ping-pong-ball tracking) sit disabled. Full sensor-level analysis,
+> what's been tried, and the high-speed-vision recipe (global shutter +
+> sub-ms exposure + IR) are in
+> [`oak_highspeed_detection_analysis.md`](oak_highspeed_detection_analysis.md).
+
 Downstream of a higher ball-publish rate — all additive, no breakage:
 
 | Consumer | Effect |
