@@ -144,9 +144,20 @@ def main():
         f"listening for {args.frames} frames on /oak/rgb/image_compressed "
         "(observe-only; no commands sent)…")
 
+    # Wait for BOTH enough frames AND the /oak/config snapshot. Config +
+    # health publish on a 5 s timer (oak_driver _log_pipeline_health), so a
+    # frames-only exit at ~2 s (20 frames @ 10 fps JPEG) misses them and
+    # logs oak_config/oak_health: null. Keep spinning until config arrives
+    # or we hit the timeout (then proceed with whatever we have).
     deadline = time.monotonic() + args.timeout
-    while rclpy.ok() and len(node.frames) < args.frames and time.monotonic() < deadline:
+    while rclpy.ok() and time.monotonic() < deadline:
+        if len(node.frames) >= args.frames and node.config is not None:
+            break
         rclpy.spin_once(node, timeout_sec=0.2)
+    if node.config is None:
+        node.get_logger().warn(
+            "no /oak/config received within timeout — config snapshot will "
+            "be null (raise --timeout above the 5 s health-tick cadence).")
 
     frames = list(node.frames)
     if not frames:
