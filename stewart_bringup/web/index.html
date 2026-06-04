@@ -145,6 +145,9 @@
                class="absolute top-1 right-1 text-xs mono bg-slate-800/80 px-2 py-0.5 rounded">— fps</div>
         </div>
         <div class="grid grid-cols-2 gap-1 text-xs mt-2 text-slate-400">
+          <label class="flex items-center gap-2"
+                 title="Stop the browser from receiving the OAK live feed. The camera keeps the JPEG flowing for ArUco platform-pose, but this drops the rosbridge→browser serialization — the host-CPU cost that competes with cv2 detection. Turn OFF during latency-sensitive runs, then re-digest to see if detect→state shrank.">
+            <input id="vis-live-video" type="checkbox" checked> <b>live video</b></label>
           <label class="flex items-center gap-2"><input id="vis-show-stereo" type="checkbox"> stereo pair</label>
           <label class="flex items-center gap-2"><input id="vis-show-disparity" type="checkbox"> disparity</label>
           <label class="flex items-center gap-2"
@@ -2662,7 +2665,12 @@ function setupROSInterface() {
     throttle_rate: 100,
     queue_length: 1,
   });
-  topic.rgb_feed.subscribe(onRgbFrame);
+  // Respect the "live video" toggle: only stream the OAK feed to the
+  // browser when it's on, so an operator can drop the rosbridge image load
+  // (the host-CPU competitor to cv2) during latency-sensitive runs.
+  if (!$('vis-live-video') || $('vis-live-video').checked) {
+    topic.rgb_feed.subscribe(onRgbFrame);
+  }
 
   // V0 backend toggle (Phase 2B). Subscribe to /oak/config for the
   // live state, publish to /oak/cmd_v0_backend to switch.
@@ -4175,6 +4183,19 @@ window.addEventListener('DOMContentLoaded', () => {
   wireDeadManSlider();
 
   $('connect-btn').addEventListener('click', connect);
+  // Live-video toggle: subscribe/unsubscribe the OAK feed so the browser
+  // stops pulling JPEG over rosbridge (the camera keeps publishing for
+  // ArUco platform-pose; this only stops the browser-side serialization).
+  $('vis-live-video').addEventListener('change', (e) => {
+    if (!topic.rgb_feed) return;
+    if (e.target.checked) {
+      topic.rgb_feed.subscribe(onRgbFrame);
+    } else {
+      try { topic.rgb_feed.unsubscribe(); } catch (err) {}
+      const fps = $('vision-feed-fps');
+      if (fps) fps.textContent = 'paused';
+    }
+  });
   $('estop-btn').addEventListener('click', () => publishCmd({ cmd: 'e_stop' }));
   $('arm-btn').addEventListener('click', () => publishCmd({ cmd: 'activate' }));
   $('disarm-btn').addEventListener('click', () => publishCmd({ cmd: 'deactivate' }));
