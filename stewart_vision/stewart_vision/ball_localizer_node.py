@@ -474,7 +474,15 @@ class BallLocalizerNode(Node):
         x_m, y_m, z_m = result
 
         out = PointStamped()
-        out.header.stamp = self.get_clock().now().to_msg()
+        # Carry the detector's CAPTURE stamp through (was now()) so the
+        # downstream KF can report true photon→state latency. The KF
+        # consumes /ball_xy_mono by value only — it ignores this stamp and
+        # times itself off its own clock — so this is behaviour-neutral for
+        # control; it is purely latency instrumentation. src tells us which
+        # cached detection won the pixel selection.
+        src_msg = self.last_v1 if src == 'v1' else self.last_v0
+        out.header.stamp = (src_msg.header.stamp if src_msg is not None
+                            else self.get_clock().now().to_msg())
         out.header.frame_id = 'platform'
         out.point.x = x_m * 1000.0   # report in mm
         out.point.y = y_m * 1000.0

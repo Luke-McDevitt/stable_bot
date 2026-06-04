@@ -118,11 +118,19 @@ to assume it equals `v0_lat_ms`.
 - **Still estimated:** the split *within* actuation (feeder ZOH vs leg
   slew vs mechanical rise) — `actuation_ms` is their sum. Separating them
   needs the Tier-2 capture-stamp propagation (see below).
-- **The remaining missing piece:** per-stage **vision** sub-latency
-  (capture→detect→localize→KF). The localizer/KF re-stamp with `now()`
-  (ball_localizer_node L477), destroying the capture time before the
-  controller sees it. Fix = propagate the capture stamp + log freshest-
-  sighting age in `/ball_track/diagnostic` (backward-compatible append).
+- **Per-stage vision sub-latency — DONE (Part 2, 2026-06-04):** the
+  localizer now **preserves** the OAK capture stamp on `/ball_xy_mono`
+  (was `now()`), and `ball_kf` carries the photon→state age in the spare
+  `/ball_state.orientation.z` (verified: every downstream consumer reads
+  only `.x/.y`, so this is behaviour-neutral — the KF also ignores the
+  mono stamp for its own timing). The digest splits the vision half into
+  **capture→detect** (host, `v0_lat`) vs **detect→state** (localizer+KF),
+  and separates **fresh** pipeline latency (p10 troughs of the age) from
+  **inter-detection staleness** (p50/p90). `see_to_move` now uses the full
+  fresh capture→state instead of `v0_lat` alone. Splitting localize vs KF
+  individually, and the *actuation* sub-stages (feeder ZOH vs slew vs
+  mechanical), is the job of the dedicated **Latency Bench** tilt-step
+  panel.
 
 ## 7. Doc-accuracy fixes made / flagged
 - `ARCHITECTURE.md` L181 comment says "Set_Input_Pos × 6 @ 200 Hz"; the

@@ -84,6 +84,11 @@ class BallKFNode(Node):
         # reacts to a phantom ball indefinitely until the operator
         # presses Stop.
         self._last_meas_t = None
+        # Capture stamp (OAK photon time) of the last accepted measurement,
+        # propagated from the localizer via /ball_xy_mono.header.stamp. Used
+        # ONLY to report photon→state latency in /ball_state.orientation.z;
+        # never used for filter timing (that stays on the local clock).
+        self._last_meas_cap_stamp = None
         # Ball is "lost" if no measurement received in this many
         # seconds. Tuned to be longer than the typical V0 detection
         # interval (~70 ms at 14 fps) plus a generous margin, but
@@ -115,6 +120,9 @@ class BallKFNode(Node):
 
     def _on_meas(self, msg: PointStamped):
         z = np.array([msg.point.x, msg.point.y])  # mm in platform frame
+        # Record the photon capture stamp carried on the measurement (see
+        # _publish). Behaviour-neutral: not used in the update below.
+        self._last_meas_cap_stamp = msg.header.stamp
         # Update
         y = z - self.H @ self.x
         S = self.H @ self.P @ self.H.T + self.R
@@ -135,7 +143,21 @@ class BallKFNode(Node):
         # see TODO at top of file for the proper BallState.msg path.
         msg.pose.orientation.x = float(self.x[2])
         msg.pose.orientation.y = float(self.x[3])
-        msg.pose.orientation.z = 0.0
+        # orientation.z carries the photon→state latency in SECONDS: the
+        # age of the last measurement's capture time at publish. Right
+        # after an update this is the fresh vision-pipeline latency
+        # (capture→localize→KF→publish); between updates it grows, so the
+        # digest reads the per-cycle troughs as latency and the rest as
+        # staleness. Spare field — verified nothing downstream reads
+        # /ball_state.orientation.z/.w (control + digests use only x/y), so
+        # this adds a per-stage latency probe with no new topic or msg.
+        if self._last_meas_cap_stamp is not None:
+            cap_s = (self._last_meas_cap_stamp.sec
+                     + self._last_meas_cap_stamp.nanosec * 1e-9)
+            now_s = self.get_clock().now().nanoseconds * 1e-9
+            msg.pose.orientation.z = float(max(0.0, now_s - cap_s))
+        else:
+            msg.pose.orientation.z = 0.0
         msg.pose.orientation.w = 1.0
         self.pub_state.publish(msg)
 

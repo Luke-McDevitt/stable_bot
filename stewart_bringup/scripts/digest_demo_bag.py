@@ -198,6 +198,7 @@ def _read_bag(bag_dir: str):
     counts = {n: 0 for n in topic_types}
 
     state_t, state_xy, state_v = [], [], []  # KF: pos + vel
+    state_age = []                  # orientation.z = photon→state latency (s)
     ref_t,   ref_xy   = [], []
     mono_t,  mono_xy  = [], []
     depth_t, depth_xy = [], []
@@ -236,6 +237,9 @@ def _read_bag(bag_dir: str):
             # Convention: vx, vy bagged in orientation.x, orientation.y
             state_v.append([float(msg.pose.orientation.x),
                             float(msg.pose.orientation.y)])
+            # orientation.z = photon→state latency (s), 0.0 on pre-Part-2
+            # bags. ball_kf_node carries the last measurement's capture age.
+            state_age.append(float(msg.pose.orientation.z))
         elif topic == '/ball_ref':
             ref_t.append(t_ns)
             ref_xy.append([float(msg.point.x), float(msg.point.y)])
@@ -331,6 +335,8 @@ def _read_bag(bag_dir: str):
     return {
         'topic_types': topic_types,
         'counts': counts,
+        'state_age': (np.array(state_age, dtype=np.float64)
+                      if state_age else np.zeros((0,))),
         'state': (np.array(state_t, dtype=np.int64),
                   np.array(state_xy) if state_xy else np.zeros((0, 2)),
                   np.array(state_v)  if state_v  else np.zeros((0, 2))),
@@ -641,6 +647,7 @@ def digest(bag_dir: str):
     data = _read_bag(bag_dir)
 
     state_t, state_xy, state_v = data['state']
+    state_age = data['state_age']      # photon→state latency (s) per /ball_state
     ref_t, ref_xy = data['ref']
     mono_t, mono_xy = data['mono']
     depth_t, depth_xy = data['depth']
@@ -722,20 +729,53 @@ def digest(bag_dir: str):
     v0_lat_mean = (float(np.nanmean(health[:, 7]))
                    if health.size else None)
     act_ms = actuation.get('actuation_ms') if actuation else None
+    # Per-stage VISION latency (Part 2): /ball_state.orientation.z carries
+    # the photon→state age (s). The low percentile = the per-measurement
+    # troughs = fresh pipeline latency; higher percentiles = inter-
+    # detection staleness. Splits the lumped vision number into
+    # capture→detect (host) vs detect→state (localizer+KF). None on
+    # pre-Part-2 bags (orientation.z == 0).
+    vision_pipeline = None
+    if state_age.size and float(np.nanmax(state_age)) > 1e-3:
+        age_ms = state_age[np.isfinite(state_age)] * 1e3
+        age_ms = age_ms[age_ms > 0.0]
+        if age_ms.size:
+            fresh = float(np.percentile(age_ms, 10))
+            vision_pipeline = {
+                'capture_to_state_fresh_ms': round(fresh, 1),
+                'capture_to_state_p50_ms':
+                    round(float(np.percentile(age_ms, 50)), 1),
+                'capture_to_state_p90_ms':
+                    round(float(np.percentile(age_ms, 90)), 1),
+                'capture_to_detect_ms': (round(v0_lat_mean, 1)
+                                         if v0_lat_mean is not None else None),
+                'detect_to_state_ms': (round(fresh - v0_lat_mean, 1)
+                                       if v0_lat_mean is not None else None),
+                'n': int(age_ms.size),
+                'note': ('capture→state from /ball_state.orientation.z; '
+                         'p10=fresh pipeline, p50/p90=staleness; '
+                         'detect→state = localizer+KF = fresh − v0_lat.'),
+            }
+    # Vision half of see→move: the full fresh capture→state when Part 2
+    # data is present, else the detector latency alone (older bags).
+    vision_half_ms = (vision_pipeline['capture_to_state_fresh_ms']
+                      if vision_pipeline is not None
+                      else (round(v0_lat_mean, 1)
+                            if v0_lat_mean is not None else None))
     latency_breakdown = {
         'vision_detector_ms': (round(v0_lat_mean, 1)
                                if v0_lat_mean is not None else None),
         'vision_source': '/oak/health.v0_lat_ms (windowed detector latency)',
+        'vision_pipeline': vision_pipeline,
         'actuation': actuation,
-        'see_to_move_est_ms': (round(v0_lat_mean + act_ms, 1)
-                               if (v0_lat_mean is not None
+        'see_to_move_est_ms': (round(vision_half_ms + act_ms, 1)
+                               if (vision_half_ms is not None
                                    and act_ms is not None) else None),
-        'note': ('vision = windowed detector latency; actuation = '
-                 'cmd-tilt->IMU-tilt cross-correlation (effective '
-                 'command->motion delay incl. feeder ZOH + leg slew + '
-                 'mechanical rise). Localizer/KF tick (~25 ms) is '
-                 'between them, not yet separately instrumented '
-                 '(see control_path_latency.md).'),
+        'note': ('vision_detector = capture→detect (host); vision_pipeline '
+                 'splits capture→state (Part-2 orientation.z) into '
+                 'detect→state = localizer+KF; actuation = cmd-tilt→IMU '
+                 'cross-correlation (feeder ZOH + leg slew + mechanical); '
+                 'see_to_move = capture→state fresh + actuation.'),
     }
 
     # Demo-side params (radius, n_waypoints, arrival_tol_mm, dwell_s,
@@ -863,14 +903,24 @@ def digest(bag_dir: str):
     # actually move there, and the see->move total.
     lb = summary.get('latency_breakdown') or {}
     act = lb.get('actuation') or {}
+    vp = lb.get('vision_pipeline') or {}
+    if vp.get('capture_to_state_fresh_ms') is not None:
+        print(f"  vision pipeline: capture→detect "
+              f"{vp.get('capture_to_detect_ms')}ms + detect→state "
+              f"{vp.get('detect_to_state_ms')}ms = capture→state "
+              f"{vp['capture_to_state_fresh_ms']}ms fresh "
+              f"(p50={vp.get('capture_to_state_p50_ms')} "
+              f"p90={vp.get('capture_to_state_p90_ms')} = staleness)")
     if act.get('actuation_ms') is not None:
         print(f"  actuation_ms: {act['actuation_ms']:.0f}  "
               f"(pitch={act.get('pitch_lag_ms')}ms/corr {act.get('pitch_corr')}, "
               f"roll={act.get('roll_lag_ms')}ms/corr {act.get('roll_corr')}, "
               f"src={act.get('source')})")
         if lb.get('see_to_move_est_ms') is not None:
-            print(f"  see->move budget: vision "
-                  f"{lb.get('vision_detector_ms'):.0f}ms + actuation "
+            _vh = (vp.get('capture_to_state_fresh_ms')
+                   if vp.get('capture_to_state_fresh_ms') is not None
+                   else lb.get('vision_detector_ms'))
+            print(f"  see->move budget: vision {_vh}ms + actuation "
                   f"{act['actuation_ms']:.0f}ms ≈ "
                   f"{lb['see_to_move_est_ms']:.0f}ms")
     cfg = summary.get('oak_config')
