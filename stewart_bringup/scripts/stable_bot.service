@@ -33,6 +33,15 @@ Environment=OAK_DISABLE_V0_NN=1
 # switchable via /oak/cmd_v0_backend topic + GUI selector; this
 # just sets what's running at boot.
 Environment=OAK_V0_BACKEND=cv2
+# Fixed manual focus instead of autofocus. The empirical Z->focus map
+# (tuning_data/20260604T163850Z_zfocusmap) showed the sharpness peak is
+# essentially flat at focus_pos ~130 across the whole demo Z range (125 at
+# Z=0, 130 at Z=20-80 mm) — depth of field covers it. Locking manual focus
+# 130 gives peak sharpness with NO autofocus hunting (CONTINUOUS_VIDEO AF
+# pauses the sensor to refocus — a documented FPS/latency killer).
+# Runtime-overridable from the GUI focus controls (/oak/cmd_focus).
+Environment=OAK_FOCUS_MODE=manual
+Environment=OAK_FOCUS_POS=130
 # Pipeline performance knobs.
 #   OAK_ENABLE_MONO=0  — mono unused (ArUco runs on RGB), saves USB.
 #   OAK_DISABLE_JPEG=0 — keep JPEG ON; the encoder ate Myriad X
