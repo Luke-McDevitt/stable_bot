@@ -222,6 +222,61 @@ def sweep_focus(node, positions, frames, settle, roi_frac, metric):
     return rows, keyframes, peak
 
 
+def _write_z_data(out_dir, r):
+    """Persist one Z's sweep CSV + peak keyframe immediately, so an SSH
+    drop / SIGHUP mid-run can't erase already-collected data."""
+    ztag = f"z{int(round(r['z_mm'])):03d}"
+    with open(os.path.join(out_dir, f'focus_sweep_{ztag}.csv'), 'w') as f:
+        f.write('focus_pos,' + ','.join(METRIC_KEYS) + '\n')
+        for pos, a in r['rows']:
+            f.write(f'{pos},' + ','.join(f'{a.get(k, ""):}' for k in METRIC_KEYS) + '\n')
+    if r['keyframe'] is not None:
+        cv2.imwrite(
+            os.path.join(out_dir, f'frame_{ztag}_peak_{r["peak_focus_pos"]}.jpg'),
+            r['keyframe'])
+
+
+def _write_map(out_dir, ts, results, cfg, orig_pos, orig_mode, aborted, args):
+    """(Re)write the combined Z->focus plot + map yaml from the Z points
+    completed so far. Called after every Z so the map always reflects disk."""
+    if not results:
+        return
+    zs = [r['z_mm'] for r in results]
+    foci = [r['peak_focus_pos'] for r in results]
+    vals = [r['peak_value'] for r in results]
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 7), sharex=True)
+    ax1.plot(zs, foci, 'o-', color='tab:blue')
+    ax1.set_ylabel('peak focus_pos'); ax1.grid(True, alpha=0.3)
+    ax1.set_title(f'Z -> focus map ({args.metric} peak)')
+    ax2.plot(zs, vals, 's-', color='tab:green')
+    ax2.set_xlabel('platform Z (mm)'); ax2.set_ylabel(f'peak {args.metric}')
+    ax2.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, 'z_focus_map.png'), dpi=110)
+    plt.close(fig)
+    map_doc = {
+        'kind': 'z_focus_map',
+        'utc': ts,
+        'metric': args.metric,
+        'z_safe_range_mm': [Z_SAFE_MIN, Z_SAFE_MAX],
+        'oak_config_at_start': cfg,
+        'original_focus_pos': orig_pos,
+        'original_focus_mode': orig_mode,
+        'aborted': aborted,
+        # focus_pos to use at each Z. Record-only — promote to
+        # stewart_vision/config/z_focus_map.yaml + wire Z-scheduled focus
+        # into oak_driver to adopt.
+        'map': [{'z_mm': r['z_mm'], 'focus_pos': r['peak_focus_pos'],
+                 'peak_value': r['peak_value']} for r in results],
+        'notes': 'Record-only; written incrementally per Z (SSH-drop safe).',
+    }
+    with open(os.path.join(out_dir, 'z_focus_map.yaml'), 'w') as f:
+        if yaml is not None:
+            yaml.safe_dump(map_doc, f, sort_keys=False)
+        else:
+            json.dump(map_doc, f, indent=2)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--z-start', type=float, default=0.0)
@@ -290,6 +345,11 @@ def main():
         f"Z ladder {z_ladder} mm; focus {args.focus_min}-{args.focus_max} "
         f"step {args.focus_step}; original focus {orig_pos} ({orig_mode}).")
 
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    out_dir = args.out_dir or os.path.join(_tuning_data_dir(), f'{ts}_zfocusmap')
+    os.makedirs(out_dir, exist_ok=True)
+    node.get_logger().info(f"writing to {out_dir} (incrementally, per Z).")
+
     results = []      # dict per Z
     aborted = False
     try:
@@ -313,12 +373,14 @@ def main():
             if peak_pos is None:
                 node.get_logger().warn(f"  Z={z:.0f}: no usable sharpness data")
                 continue
-            results.append({'z_mm': float(z), 'clamped': False,
+            results.append({'z_mm': float(z),
                             'peak_focus_pos': int(peak_pos),
                             'peak_value': float(peak_val),
                             'rows': rows, 'keyframe': keyframes.get(peak_pos)})
+            _write_z_data(out_dir, results[-1])    # persist this Z now
+            _write_map(out_dir, ts, results, cfg, orig_pos, orig_mode, aborted, args)
             node.get_logger().info(
-                f"  Z={z:.0f}: peak focus {peak_pos} ({args.metric}={peak_val:.0f})")
+                f"  Z={z:.0f}: peak focus {peak_pos} ({args.metric}={peak_val:.0f}) [saved]")
     except KeyboardInterrupt:
         node.get_logger().warn("interrupted — returning to rest + restoring state.")
         aborted = True
@@ -348,71 +410,13 @@ def main():
         node.get_logger().error("no Z points captured.")
         node.destroy_node(); rclpy.shutdown(); sys.exit(3)
 
-    # ---- write outputs ----
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    out_dir = args.out_dir or os.path.join(_tuning_data_dir(), f'{ts}_zfocusmap')
-    os.makedirs(out_dir, exist_ok=True)
-
-    # per-Z sweep CSVs + the peak keyframe at each Z
-    for r in results:
-        ztag = f"z{int(round(r['z_mm'])):03d}"
-        with open(os.path.join(out_dir, f'focus_sweep_{ztag}.csv'), 'w') as f:
-            f.write('focus_pos,' + ','.join(METRIC_KEYS) + '\n')
-            for pos, a in r['rows']:
-                f.write(f'{pos},' + ','.join(f'{a.get(k, ""):}' for k in METRIC_KEYS) + '\n')
-        if r['keyframe'] is not None:
-            cv2.imwrite(os.path.join(out_dir, f'frame_{ztag}_peak_{r["peak_focus_pos"]}.jpg'),
-                        r['keyframe'])
-
-    # the map itself
-    zs = [r['z_mm'] for r in results]
-    foci = [r['peak_focus_pos'] for r in results]
-    vals = [r['peak_value'] for r in results]
-
-    # combined plot: peak focus_pos vs Z (+ sharpness vs Z)
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 7), sharex=True)
-    ax1.plot(zs, foci, 'o-', color='tab:blue')
-    for r in results:
-        if r['clamped']:
-            ax1.plot(r['z_mm'], r['peak_focus_pos'], 'rx', markersize=11)
-    ax1.set_ylabel('peak focus_pos'); ax1.grid(True, alpha=0.3)
-    ax1.set_title(f'Z -> focus map ({args.metric} peak; red x = leg-limit clamped)')
-    ax2.plot(zs, vals, 's-', color='tab:green')
-    ax2.set_xlabel('platform Z (mm)'); ax2.set_ylabel(f'peak {args.metric}')
-    ax2.grid(True, alpha=0.3)
-    fig.tight_layout(); fig.savefig(os.path.join(out_dir, 'z_focus_map.png'), dpi=110)
-    plt.close(fig)
-
-    map_doc = {
-        'kind': 'z_focus_map',
-        'utc': ts,
-        'metric': args.metric,
-        'z_safe_range_mm': [Z_SAFE_MIN, Z_SAFE_MAX],
-        'oak_config_at_start': cfg,
-        'original_focus_pos': orig_pos,
-        'original_focus_mode': orig_mode,
-        'aborted': aborted,
-        # The map: focus_pos to use at each Z. NOT yet adopted by the live
-        # camera — promote to stewart_vision/config/z_focus_map.yaml + wire
-        # Z-scheduled focus into oak_driver as a separate step.
-        'map': [{'z_mm': r['z_mm'], 'focus_pos': r['peak_focus_pos'],
-                 'peak_value': r['peak_value'], 'clamped': r['clamped']}
-                for r in results],
-        'notes': ('Record-only. Platform returned to rest and focus restored. '
-                  'Repeat / refine before adopting. Red-x points were clamped '
-                  'by leg limits (Z not fully reached).'),
-    }
-    with open(os.path.join(out_dir, 'z_focus_map.yaml'), 'w') as f:
-        if yaml is not None:
-            yaml.safe_dump(map_doc, f, sort_keys=False)
-        else:
-            json.dump(map_doc, f, indent=2)
-
+    # Outputs (per-Z CSVs/keyframes + z_focus_map.{png,yaml}) were written
+    # incrementally inside the loop, so they're already on disk even if an
+    # SSH drop / SIGHUP killed us mid-run. Just summarize.
     print("\n=== Z -> FOCUS MAP ===")
     for r in results:
-        flag = '  (CLAMPED)' if r['clamped'] else ''
         print(f"  Z={r['z_mm']:5.1f} mm  ->  focus {r['peak_focus_pos']:3d}  "
-              f"({args.metric}={r['peak_value']:.0f}){flag}")
+              f"({args.metric}={r['peak_value']:.0f})")
     print(f"  written -> {out_dir}")
     print("  commit/push: git add tuning_data && git commit -m 'z-focus map' "
           "&& git pull --rebase && git push\n")
