@@ -68,6 +68,19 @@ except ImportError as e:
     print(f"ERROR: ROS message types missing: {e}", file=sys.stderr)
     sys.exit(2)
 
+# Shared latency math (pure NumPy, no ROS) — single source of truth,
+# also used by compare_demo_bags.py. Importable from the installed
+# package or, as a fallback, from the source tree (this script runs
+# from scripts/ which may precede a colcon install).
+try:
+    from stewart_bringup._latency import (
+        actuation_latency, quat_to_roll_pitch_deg)
+except ImportError:
+    sys.path.insert(
+        0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from stewart_bringup._latency import (
+        actuation_latency, quat_to_roll_pitch_deg)
+
 
 def _parse_control_cmd(raw: str) -> dict:
     """The /control_cmd topic carries two interleaved formats from
@@ -200,6 +213,7 @@ def _read_bag(bag_dir: str):
     lat_t,   lat_ms   = [], []     # /oak/latency_ms (capture→Pi)
     health_t, health  = [], []     # /oak/health Float32MultiArray
     config_d          = []         # /oak/config String (JSON snapshots)
+    imu_t, imu_quat   = [], []     # /platform/imu/data fused orientation
 
     while reader.has_next():
         topic, raw, t_ns = reader.read_next()
@@ -296,6 +310,23 @@ def _read_bag(bag_dir: str):
             if len(d) >= 11:
                 bt_diag_t.append(t_ns)
                 bt_diag.append([float(x) for x in d[:11]])
+        elif topic == '/platform/imu/data' and Imu is not None:
+            # sensor_msgs/Imu: fused orientation quaternion (x,y,z,w),
+            # ~240 Hz — the high-rate actual platform tilt used for the
+            # command->motion actuation-latency cross-correlation.
+            try:
+                o = msg.orientation
+                imu_t.append(t_ns)
+                imu_quat.append([float(o.x), float(o.y),
+                                 float(o.z), float(o.w)])
+            except Exception:
+                pass
+
+    if imu_quat:
+        _imu_roll, _imu_pitch = quat_to_roll_pitch_deg(np.array(imu_quat))
+        imu_rp = np.stack([_imu_roll, _imu_pitch], axis=1)
+    else:
+        imu_rp = np.zeros((0, 2))
 
     return {
         'topic_types': topic_types,
@@ -331,6 +362,7 @@ def _read_bag(bag_dir: str):
         'health': (np.array(health_t, dtype=np.int64),
                    np.array(health) if health
                    else np.zeros((0, 8))),
+        'imu':   (np.array(imu_t, dtype=np.int64), imu_rp),
         'oak_config': config_d,
     }
 
@@ -619,6 +651,38 @@ def digest(bag_dir: str):
     cmd_roll_arr = (bt_diag_local[:, 3]
                     if bt_diag_local.size else np.zeros((0,)))
 
+    # Actuation latency: command -> actual platform motion, measured by
+    # cross-correlating commanded tilt (/ball_track/diagnostic) against
+    # the platform IMU tilt (~240 Hz). This is the under-counted half of
+    # the loop the vision-only map could never measure — see
+    # control_path_latency.md §3. Runs on existing bags (no new
+    # instrumentation): the IMU + cmd tilt are already recorded.
+    imu_t_local, imu_rp_local = data['imu']
+    actuation = actuation_latency(
+        bt_diag_t_local, cmd_pitch_arr, cmd_roll_arr,
+        imu_t_local, imu_rp_local, rpy_t, rpy_data)
+    # End-to-end budget = detector latency (vision) + actuation. The
+    # localizer/KF tick (~25 ms) + feeder ZOH sit between and aren't
+    # separately instrumented yet (Tier-2 capture-stamp propagation).
+    v0_lat_mean = (float(np.nanmean(health[:, 7]))
+                   if health.size else None)
+    act_ms = actuation.get('actuation_ms') if actuation else None
+    latency_breakdown = {
+        'vision_detector_ms': (round(v0_lat_mean, 1)
+                               if v0_lat_mean is not None else None),
+        'vision_source': '/oak/health.v0_lat_ms (windowed detector latency)',
+        'actuation': actuation,
+        'see_to_move_est_ms': (round(v0_lat_mean + act_ms, 1)
+                               if (v0_lat_mean is not None
+                                   and act_ms is not None) else None),
+        'note': ('vision = windowed detector latency; actuation = '
+                 'cmd-tilt->IMU-tilt cross-correlation (effective '
+                 'command->motion delay incl. feeder ZOH + leg slew + '
+                 'mechanical rise). Localizer/KF tick (~25 ms) is '
+                 'between them, not yet separately instrumented '
+                 '(see control_path_latency.md).'),
+    }
+
     # Demo-side params (radius, n_waypoints, arrival_tol_mm, dwell_s,
     # max_wait_s, dir, mode='waypoint'/'continuous', period_s, ...)
     # extracted from the latest mode:BALL_TRACK_* /control_cmd in the
@@ -665,6 +729,7 @@ def digest(bag_dir: str):
         'error_y_mm': _stats(err_xy[:, 1]) if err_xy.size else {'n': 0},
         'settling_time_s': settling,
         'platform_pose_z_mm': _stats(pose_z),
+        'latency_breakdown': latency_breakdown,
         'oak_latency_ms': _stats(lat_ms),
         # /oak/health field summary so the digest captures whether
         # the camera was actually hitting the rates the config asked
@@ -736,6 +801,21 @@ def digest(bag_dir: str):
         if jpl.get('n'):
             print(f"  jpeg_lat_ms: p50={jpl.get('p50','—'):.0f} "
                   f"p95={jpl.get('p95','—'):.0f}")
+    # Actuation + end-to-end latency budget — the new headline number:
+    # how long after the controller commands a tilt does the platform
+    # actually move there, and the see->move total.
+    lb = summary.get('latency_breakdown') or {}
+    act = lb.get('actuation') or {}
+    if act.get('actuation_ms') is not None:
+        print(f"  actuation_ms: {act['actuation_ms']:.0f}  "
+              f"(pitch={act.get('pitch_lag_ms')}ms/corr {act.get('pitch_corr')}, "
+              f"roll={act.get('roll_lag_ms')}ms/corr {act.get('roll_corr')}, "
+              f"src={act.get('source')})")
+        if lb.get('see_to_move_est_ms') is not None:
+            print(f"  see->move budget: vision "
+                  f"{lb.get('vision_detector_ms'):.0f}ms + actuation "
+                  f"{act['actuation_ms']:.0f}ms ≈ "
+                  f"{lb['see_to_move_est_ms']:.0f}ms")
     cfg = summary.get('oak_config')
     if cfg:
         print(f"  oak_config: focus={cfg.get('focus_pos')} "
@@ -935,13 +1015,28 @@ def digest(bag_dir: str):
                     label='cmd pitch [deg]')
             ax.plot(t_rel, bt_diag[:, 3], color='#7c3aed', lw=0.6,
                     label='cmd roll [deg]')
+            # Overlay measured platform pitch so the command->motion lag
+            # is visible against the command that drove it.
+            imu_t_p, imu_rp_p = data['imu']
+            if imu_rp_p.size and float(np.nanstd(imu_rp_p)) > 1e-4:
+                ax.plot((imu_t_p - t0) * 1e-9, imu_rp_p[:, 1],
+                        color='#64748b', lw=0.5, alpha=0.7,
+                        label='IMU pitch (actual)')
+            elif rpy_data.size:
+                ax.plot((rpy_t - t0) * 1e-9, rpy_data[:, 1],
+                        color='#64748b', lw=0.5, alpha=0.7,
+                        label='rpy pitch (actual)')
             ax.set_ylabel('phase / cmd tilt')
             ax.set_xlabel('time [s]')
             ax.set_ylim(-10, 8)
             ax.grid(alpha=0.3)
             ax.legend(fontsize=7, loc='upper right', ncol=4)
+            _act = (summary.get('latency_breakdown', {})
+                    .get('actuation') or {})
+            _act_str = (f" — actuation {_act['actuation_ms']:.0f} ms"
+                        if _act.get('actuation_ms') is not None else "")
             ax.set_title(
-                'BALL_TRACK FSM phase + commanded tilts',
+                'BALL_TRACK FSM phase + commanded tilts' + _act_str,
                 fontsize=10)
 
         # Suptitle — three lines: name+mode, error/settling, params.

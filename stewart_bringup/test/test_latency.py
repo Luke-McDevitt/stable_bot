@@ -1,0 +1,164 @@
+"""Unit tests for stewart_bringup._latency — the command->motion
+actuation-latency math used by the demo digest. Pure NumPy, no ROS,
+no hardware.
+
+If these pass, the cross-correlation recovers a known delay exactly,
+a mechanical rise shows up only as a constant offset (so the reported
+number is the true effective command->motion delay), the IMU-vs-rpy
+source selection is correct, and the quaternion->tilt conversion is
+right. That is what the digest's `latency_breakdown` relies on.
+"""
+import numpy as np
+import pytest
+
+from stewart_bringup._latency import (
+    actuation_latency,
+    quat_to_roll_pitch_deg,
+    resample_uniform,
+    xcorr_lag_s,
+)
+
+
+# --- synthetic signal generator -------------------------------------------
+
+def _make_signals(true_lag_s, sign, fs=240.0, dur=20.0, noise=0.05,
+                  cmd_rate=55.0, resp_rate=240.0, tau_s=0.02, seed=0):
+    """Command = ~2 Hz square wave (the saturated orbital cmd tilt).
+    Response = command delayed by true_lag_s, first-order-smoothed
+    (mechanical rise, time-constant tau_s), sign-flipped by `sign`,
+    decimated to resp_rate, + noise. Command decimated to cmd_rate.
+    Returns (cmd_t_s, cmd_y, resp_t_s, resp_y) — emulating two ROS
+    topics at different rates."""
+    rng = np.random.default_rng(seed)
+    n = int(dur * fs)
+    t = np.arange(n) / fs
+    cmd = 1.2 * np.sign(np.sin(2 * np.pi * 2.0 * t))
+    cmd = cmd + 0.1 * rng.standard_normal(n)
+    lag_n = int(round(true_lag_s * fs))
+    delayed = np.concatenate([np.zeros(lag_n), cmd])[:n]
+    resp = np.zeros(n)
+    alpha = 1.0 - np.exp(-1.0 / (tau_s * fs))
+    for i in range(1, n):
+        resp[i] = resp[i - 1] + alpha * (delayed[i] - resp[i - 1])
+    resp = sign * resp + noise * rng.standard_normal(n)
+    ci = np.unique((np.arange(0, dur, 1.0 / cmd_rate) * fs).astype(int))
+    ci = ci[ci < n]
+    ri = np.unique((np.arange(0, dur, 1.0 / resp_rate) * fs).astype(int))
+    ri = ri[ri < n]
+    return t[ci], cmd[ci], t[ri], resp[ri]
+
+
+def _ns(t_s, base=1_700_000_000_000_000_000):
+    """Seconds -> int64 ROS-bag-style nanosecond timestamps."""
+    return (base + np.asarray(t_s) * 1e9).astype(np.int64)
+
+
+# --- (A) pure transport delay must be recovered EXACTLY -------------------
+
+@pytest.mark.parametrize("true_lag", [0.040, 0.080, 0.120, 0.200])
+@pytest.mark.parametrize("sign", [+1.0, -1.0])
+def test_pure_delay_recovered_exactly(true_lag, sign):
+    ct, cy, rt, ry = _make_signals(true_lag, sign, tau_s=1e-4,
+                                   seed=int(true_lag * 1e3) + int(sign))
+    lag, corr, n = xcorr_lag_s(ct, cy, rt, ry, fs_hz=200.0)
+    assert lag is not None
+    assert abs(lag - true_lag) * 1000 <= 5.0       # within one 200 Hz bin
+    assert abs(corr) > 0.9                          # strong, sign either way
+    assert n > 100
+
+
+# --- (B) a mechanical rise adds only a CONSTANT offset --------------------
+
+def test_mechanical_rise_is_constant_offset():
+    offsets = []
+    for true_lag in (0.040, 0.080, 0.120, 0.200):
+        ct, cy, rt, ry = _make_signals(true_lag, +1.0, tau_s=0.020,
+                                       seed=int(true_lag * 1e3))
+        lag, corr, _ = xcorr_lag_s(ct, cy, rt, ry, fs_hz=200.0)
+        assert lag is not None
+        offsets.append((lag - true_lag) * 1000.0)
+    # The rise contributes the same group delay regardless of transport
+    # delay, so the offset must be ~constant (not lag-dependent).
+    assert max(offsets) - min(offsets) <= 6.0
+    assert all(o > 0 for o in offsets)              # rise only adds delay
+
+
+# --- (C) the actuation_latency wrapper ------------------------------------
+
+def test_actuation_prefers_imu_and_recovers_lag():
+    true_lag = 0.090
+    ct, cy, rt, ry = _make_signals(true_lag, -1.0, tau_s=0.020, seed=7)
+    _, cy_roll, _, ry_roll = _make_signals(true_lag, +1.0, tau_s=0.020,
+                                           seed=8)
+    imu_rp = np.stack([ry_roll, ry], axis=1)        # [roll, pitch]
+    out = actuation_latency(_ns(ct), cy, cy_roll, _ns(rt), imu_rp,
+                            None, None)
+    assert out is not None
+    assert out['source'] == 'platform_imu'
+    # 90 ms transport + ~15 ms rise group delay.
+    assert out['actuation_ms'] is not None
+    assert abs(out['actuation_ms'] - 105.0) < 15.0
+
+
+def test_actuation_falls_back_to_rpy_when_imu_degenerate():
+    true_lag = 0.090
+    ct, cy, rt, ry = _make_signals(true_lag, -1.0, tau_s=0.020, seed=7)
+    _, cy_roll, _, ry_roll = _make_signals(true_lag, +1.0, tau_s=0.020,
+                                           seed=8)
+    imu_zero = np.zeros((rt.size, 2))               # unpopulated orientation
+    rpy_data = np.stack([ry_roll, ry, np.zeros_like(ry)], axis=1)
+    out = actuation_latency(_ns(ct), cy, cy_roll, _ns(rt), imu_zero,
+                            _ns(rt), rpy_data)
+    assert out is not None
+    assert out['source'] == 'platform_rpy'
+    assert out['actuation_ms'] is not None
+
+
+def test_actuation_returns_none_without_tilt_source():
+    ct, cy, _, _ = _make_signals(0.09, +1.0, seed=1)
+    assert actuation_latency(_ns(ct), cy, cy, None, None, None, None) is None
+
+
+def test_actuation_returns_none_with_too_few_commands():
+    # < 8 command samples -> not enough to trust a lag estimate.
+    bt = _ns(np.linspace(0, 0.1, 4))
+    cy = np.array([0.0, 1.0, 0.0, 1.0])
+    imu = np.stack([np.zeros(50), np.ones(50)], axis=1)
+    assert actuation_latency(bt, cy, cy, _ns(np.linspace(0, 0.1, 50)),
+                             imu, None, None) is None
+
+
+# --- (D) quaternion -> roll/pitch -----------------------------------------
+
+def test_quat_to_roll_pitch_known_angles():
+    import math
+    r, p, y = math.radians(10), math.radians(5), math.radians(0)
+    cy_, sy_ = math.cos(y / 2), math.sin(y / 2)
+    cp_, sp_ = math.cos(p / 2), math.sin(p / 2)
+    cr_, sr_ = math.cos(r / 2), math.sin(r / 2)
+    qw = cr_ * cp_ * cy_ + sr_ * sp_ * sy_
+    qx = sr_ * cp_ * cy_ - cr_ * sp_ * sy_
+    qy = cr_ * sp_ * cy_ + sr_ * cp_ * sy_
+    qz = cr_ * cp_ * sy_ - sr_ * sp_ * cy_
+    roll, pitch = quat_to_roll_pitch_deg([[qx, qy, qz, qw]])
+    assert abs(float(roll[0]) - 10.0) < 0.05
+    assert abs(float(pitch[0]) - 5.0) < 0.05
+
+
+def test_quat_identity_is_level():
+    roll, pitch = quat_to_roll_pitch_deg([[0.0, 0.0, 0.0, 1.0]])
+    assert abs(float(roll[0])) < 1e-6
+    assert abs(float(pitch[0])) < 1e-6
+
+
+# --- (E) resample_uniform NaN-pads outside the source span ----------------
+
+def test_resample_uniform_nan_outside_span():
+    t = np.array([1.0, 1.5, 2.0])
+    y = np.array([0.0, 1.0, 2.0])
+    grid, ys = resample_uniform(t, y, fs_hz=10.0, t0_s=0.0, t1_s=3.0)
+    assert np.isnan(ys[0])           # before span
+    assert np.isnan(ys[-1])          # after span
+    mid = np.isfinite(ys)
+    assert mid.sum() > 0
+    assert np.allclose(ys[mid].min(), 0.0, atol=0.2)

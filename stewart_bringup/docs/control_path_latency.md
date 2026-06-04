@@ -101,15 +101,28 @@ to assume it equals `v0_lat_ms`.
 
 ## 6. Measured vs estimated, and the missing test
 
-- **Measured:** `v0_lat_ms` (~56 ms), `jpeg_lat_ms`, detection rate
-  (`v0_pub_hz` ~12 Hz), loop rates (topic counts in the demo digests).
-- **Estimated:** the actuation slew + mechanical settling (stages 9–10) —
-  bounded by the vel cap but **not directly instrumented.**
-- **The missing piece:** a **"ball-tap" end-to-end analyzer** — time from a
-  step in the ball position to the platform's tilt response (IMU). Listed
-  as a TODO in `vision_control_tuning_lessons.md`; it's the only way to set
-  `control_latency_s` empirically and to attribute the actuation lag. This
-  is the right tool to build next on the latency thread.
+- **Measured (vision):** `v0_lat_ms` (~56 ms), `jpeg_lat_ms`, detection
+  rate (`v0_pub_hz` ~12 Hz), loop rates (topic counts in the demo digests).
+- **Measured (actuation) — NEW 2026-06-04:** the demo digest now reports
+  an `actuation_ms` = the *effective* command→motion delay (stages 7–10),
+  computed by cross-correlating commanded tilt (`/ball_track/diagnostic`)
+  against the platform IMU's fused tilt (`/platform/imu/data`, ~240 Hz).
+  No new instrumentation — both signals were already bagged; the digest
+  just never read the IMU. Lands in `digest.summary.json` →
+  `latency_breakdown` (with `see_to_move_est_ms = vision + actuation`)
+  and is plotted as the IMU-tilt overlay on the commanded-tilt row. The
+  math (`stewart_bringup/stewart_bringup/_latency.py`) is unit-tested:
+  a pure delay is recovered exactly, a mechanical rise adds only a
+  constant offset (`test_latency.py`). **Re-digest the existing demo
+  bags to get this retroactively** — the data is already there.
+- **Still estimated:** the split *within* actuation (feeder ZOH vs leg
+  slew vs mechanical rise) — `actuation_ms` is their sum. Separating them
+  needs the Tier-2 capture-stamp propagation (see below).
+- **The remaining missing piece:** per-stage **vision** sub-latency
+  (capture→detect→localize→KF). The localizer/KF re-stamp with `now()`
+  (ball_localizer_node L477), destroying the capture time before the
+  controller sees it. Fix = propagate the capture stamp + log freshest-
+  sighting age in `/ball_track/diagnostic` (backward-compatible append).
 
 ## 7. Doc-accuracy fixes made / flagged
 - `ARCHITECTURE.md` L181 comment says "Set_Input_Pos × 6 @ 200 Hz"; the
@@ -122,7 +135,7 @@ to assume it equals `v0_lat_ms`.
 - **Vision detection latency ≈ 56 ms** and was never the ~120 ms we feared;
   on-device YOLO doesn't lower it (cv2 already runs on the 320×180 frame).
 - **The under-counted lag is actuation** (feeder 50 Hz + leg-vel-cap slew +
-  mechanical) — comparable to vision, and the natural next instrumentation
-  target (the ball-tap test).
+  mechanical) — comparable to vision. **Now measured** per-run as
+  `actuation_ms` in the demo digest (§6); re-digest the bags to see it.
 - **The demo's actual limiter is the 1.2° tilt cap** (saturation/orbiting),
   which is a gains issue, not latency.
