@@ -1,9 +1,11 @@
-# tuning_data/ holds digests of level-PI tuning bags — small JSON
-# summaries + (optionally downsampled) CSV timeseries + diagnostic
-# PNG plots written by stewart_bringup/scripts/analyze_level_bag.py.
+# tuning_data/ holds digests of tuning + calibration runs: small JSON
+# summaries, CSV timeseries, diagnostic PNG plots, YAML config/summary
+# snapshots, and a few keyframe JPEGs. Written by analyze_level_bag.py,
+# the digest_*_bag.py scripts, and the focus/exposure calibration tools
+# (focus_exposure_baseline.py, focus_sweep.py, …).
 #
-# Block everything by default, then re-allow only the file types we
-# expect. This makes it impossible to accidentally commit a raw
+# Block everything by default, then re-allow only the small artifact
+# types we expect. This makes it impossible to accidentally commit a raw
 # rosbag2 SQLite/MCAP into the repo, no matter what someone runs.
 *
 !*/
@@ -12,3 +14,12 @@
 !*.json
 !*.csv
 !*.png
+# YAML config/summary snapshots + keyframe images from the focus/exposure
+# calibration + baseline tools (baseline.yaml, summary.yaml, frame_*.jpg).
+!*.yaml
+!*.jpg
+!*.jpeg
+# ...but NEVER the rosbag2 metadata sidecar — it pairs with the big .mcap
+# we block (and the pi_deploy.sh deny-list excludes it too). Re-block it
+# AFTER the !*.yaml allow so this line wins.
+metadata.yaml
