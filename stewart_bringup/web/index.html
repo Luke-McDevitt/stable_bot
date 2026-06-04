@@ -2433,6 +2433,60 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
              class="text-xs text-slate-400 mono whitespace-pre-wrap min-h-4">idle</div>
       </div>
     </details>
+
+    <!-- Latency Bench: clean tilt-step actuation latency. Commands a
+         ramped tilt step (no ball / no vision needed), auto-records +
+         digests + pushes like a demo bag. Gives the per-stage actuation
+         breakdown the orbital cross-correlation can't resolve. Reuses the
+         demo recorder via label 'latency_bench'; the digest dispatches by
+         that label to digest_latency_bench.py. -->
+    <details id="latbench-panel"
+             class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <summary class="cursor-pointer font-semibold">Latency Bench (tilt-step)</summary>
+      <div class="mt-3 space-y-2 text-xs">
+        <p class="text-slate-400">
+          Commands a clean tilt step with no ball — measures the actuation
+          chain per-stage (feeder ZOH + dead time, leg slew, mechanical
+          rise). Auto-records, digests, and pushes like a demo run.
+        </p>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="flex flex-col">max tilt (deg)
+            <input id="latbench-tilt" type="number" value="2" min="0.5" max="8"
+                   step="0.5" class="bg-slate-900 rounded px-2 py-1 mono"></label>
+          <label class="flex flex-col">axis
+            <select id="latbench-axis" class="bg-slate-900 rounded px-2 py-1 mono">
+              <option value="pitch">pitch</option>
+              <option value="roll">roll</option>
+            </select></label>
+          <label class="flex flex-col">reps
+            <input id="latbench-reps" type="number" value="3" min="1" max="10"
+                   step="1" class="bg-slate-900 rounded px-2 py-1 mono"></label>
+          <label class="flex flex-col">Z (mm)
+            <input id="latbench-z" type="number" value="30" min="0" max="80"
+                   step="5" class="bg-slate-900 rounded px-2 py-1 mono"></label>
+          <label class="flex flex-col">hold (s)
+            <input id="latbench-hold" type="number" value="0.8" min="0.3" max="3"
+                   step="0.1" class="bg-slate-900 rounded px-2 py-1 mono"></label>
+          <label class="flex flex-col">settle (s)
+            <input id="latbench-settle" type="number" value="1.0" min="0.3" max="3"
+                   step="0.1" class="bg-slate-900 rounded px-2 py-1 mono"></label>
+        </div>
+        <div class="flex gap-2">
+          <button id="latbench-arm-btn"
+                  class="flex-1 bg-emerald-600 hover:bg-emerald-500 rounded py-2">Arm</button>
+          <button id="latbench-disarm-btn"
+                  class="flex-1 bg-amber-600 hover:bg-amber-500 rounded py-2">Disarm</button>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="latbench-armed"
+                class="px-2 py-1 rounded mono text-amber-300">disarmed</span>
+          <button id="latbench-run-btn"
+                  class="flex-1 bg-sky-600 hover:bg-sky-500 rounded py-2 font-semibold">Run latency step</button>
+        </div>
+        <div id="latbench-status"
+             class="text-slate-400 mono whitespace-pre-wrap min-h-4">idle</div>
+      </div>
+    </details>
   </section>
 
 </main>
@@ -6600,6 +6654,74 @@ function dbagPushBag(name) {
     dbagAppendLog('push failed: ' + e, false);
   });
 }
+
+// ----- Latency Bench (tilt-step actuation latency) -----
+// Reuses the demo recorder (label 'latency_bench' → digest dispatches to
+// digest_latency_bench.py) and the global publishCmd/lastStatus/$ so the
+// Arm/Disarm here drive the SAME controller arm state as the other two
+// button sets (activate/deactivate), staying in sync via /status.
+(function () {
+  const runBtn = $('latbench-run-btn');
+  if (!runBtn) return;
+  const stSet = (m) => { const e = $('latbench-status'); if (e) e.textContent = m; };
+  const aBtn = $('latbench-arm-btn'), dBtn = $('latbench-disarm-btn');
+  if (aBtn) aBtn.addEventListener('click', () => publishCmd({ cmd: 'activate' }));
+  if (dBtn) dBtn.addEventListener('click', () => publishCmd({ cmd: 'deactivate' }));
+  // Mirror the shared arm + bench-run state from /status.
+  setInterval(() => {
+    const armed = !!(typeof lastStatus !== 'undefined' && lastStatus && lastStatus.armed);
+    const running = !!(typeof lastStatus !== 'undefined' && lastStatus && lastStatus.latency_step_running);
+    const el = $('latbench-armed');
+    if (el) {
+      el.textContent = running ? 'running…' : (armed ? 'ARMED' : 'disarmed');
+      el.className = 'px-2 py-1 rounded mono ' +
+        (running ? 'text-sky-300' : (armed ? 'text-emerald-300' : 'text-amber-300'));
+    }
+    runBtn.disabled = running;
+  }, 250);
+  const napMs = (ms) => new Promise((r) => setTimeout(r, ms));
+  runBtn.addEventListener('click', async () => {
+    if (!(typeof lastStatus !== 'undefined' && lastStatus && lastStatus.armed)) {
+      stSet('not armed — press Arm first'); return;
+    }
+    const tilt = parseFloat($('latbench-tilt').value) || 2;
+    const axis = $('latbench-axis').value || 'pitch';
+    const reps = parseInt($('latbench-reps').value, 10) || 3;
+    const hold_s = parseFloat($('latbench-hold').value) || 0.8;
+    const settle_s = parseFloat($('latbench-settle').value) || 1.0;
+    const z_mm = parseFloat($('latbench-z').value) || 30;
+    runBtn.disabled = true;
+    try {
+      const s = await fetch('/demo/status').then((r) => r.json());
+      if (s.recording) { stSet('a recording is already active — stop it first'); return; }
+      const r1 = await fetch('/demo/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: 'latency_bench' }) });
+      const j1 = await r1.json();
+      if (!j1.ok) { stSet('record start failed: ' + (j1.message || '')); return; }
+      const name = (j1.path || '').split('/').filter(Boolean).pop();
+      await napMs(400);   // let the recorder subscribe before the step fires
+      publishCmd({ cmd: 'latency_step', max_tilt_deg: tilt, axis: axis,
+        reps: reps, hold_s: hold_s, settle_s: settle_s, z_mm: z_mm });
+      const dur = Math.ceil(settle_s + reps * (hold_s + settle_s) + 2.0);
+      for (let t = dur; t > 0; t--) {
+        stSet(`running ${axis} ${tilt}° ×${reps}… ${t}s`); await napMs(1000);
+      }
+      await fetch('/demo/stop', { method: 'POST' });
+      stSet('stopped; digesting + pushing…');
+      await napMs(1500);   // rosbag2 metadata flush before digest
+      const rp = await fetch('/demo/bags/push', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name }) });
+      const jp = await rp.json();
+      stSet(`${jp.ok ? '✓' : '✗'} ${name}\n${(jp.message || '').slice(-600)}`);
+    } catch (e) {
+      stSet('bench run failed: ' + e);
+    } finally {
+      runBtn.disabled = false;
+    }
+  });
+})();
 
 // Auto-abort on /odrive_errors. The error topic is already
 // subscribed elsewhere — extend the existing JSON-shape detection.

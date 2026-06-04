@@ -106,6 +106,9 @@ DEMO_TOPICS = [
     # tilt, error/velocity quantities). Lets the digest color-code
     # trajectories by which phase the bang-bang controller was in.
     '/ball_track/diagnostic',
+    # Latency Bench commanded-tilt timeline (idle during normal demos;
+    # carries the tilt-step command during a Latency Bench run).
+    '/latency_bench/diag',
     '/oak/ball/v0/rgb_pixel',
     '/oak/ball/v0/diagnostic',
     '/oak/ball/depth/rgb_pixel',
@@ -1207,7 +1210,14 @@ def _digest_demo_bag(name):
     full = _resolve_demo_bag_path(name)
     if full is None:
         return False, "bad name"
-    analyzer = os.path.join(_BRINGUP_DIR, 'scripts/digest_demo_bag.py')
+    # Dispatch by run type: a Latency Bench bag (label 'latency_bench')
+    # gets the tilt-step actuation digest; everything else gets the demo
+    # tracking digest. Both write digest.png + digest.summary.json, so the
+    # push path is identical.
+    script = ('scripts/digest_latency_bench.py'
+              if 'latency_bench' in os.path.basename(full)
+              else 'scripts/digest_demo_bag.py')
+    analyzer = os.path.join(_BRINGUP_DIR, script)
     if not os.path.isfile(analyzer):
         return False, f"analyzer not found at {analyzer}"
     cmd = (

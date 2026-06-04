@@ -16,6 +16,7 @@ from stewart_bringup._latency import (
     dominant_period_s,
     quat_to_roll_pitch_deg,
     resample_uniform,
+    step_response_metrics,
     xcorr_lag_s,
 )
 
@@ -198,6 +199,87 @@ def test_actuation_not_ambiguous_on_slow_orbit():
     out = actuation_latency(_ns(ct), cy, cy_roll, _ns(rt), imu_rp, None, None)
     assert out is not None
     assert out['ambiguous'] is False
+
+
+# --- (D3) step_response_metrics — the Latency Bench tilt-step analysis ----
+
+def _make_step(dead_s=0.04, step_deg=2.0, ramp_s=0.15, tau_s=0.03,
+               dur=4.0, t_step=1.0, fs=400.0, cmd_rate=50.0,
+               resp_rate=400.0, noise=0.01, seed=0):
+    """A ramped tilt-step command + a delayed, first-order-smoothed
+    response (emulates the bench: commanded tilt vs IMU-measured tilt at
+    different topic rates). Returns (cmd_t, cmd_y, resp_t, resp_y)."""
+    rng = np.random.default_rng(seed)
+    n = int(dur * fs)
+    t = np.arange(n) / fs
+    cmd = np.clip((t - t_step) / ramp_s, 0.0, 1.0) * step_deg
+    dead_n = int(round(dead_s * fs))
+    delayed = np.concatenate([np.zeros(dead_n), cmd])[:n]
+    resp = np.zeros(n)
+    alpha = 1.0 - np.exp(-1.0 / (tau_s * fs))
+    for i in range(1, n):
+        resp[i] = resp[i - 1] + alpha * (delayed[i] - resp[i - 1])
+    resp = resp + noise * rng.standard_normal(n)
+    ci = np.unique((np.arange(0, dur, 1.0 / cmd_rate) * fs).astype(int))
+    ci = ci[ci < n]
+    ri = np.unique((np.arange(0, dur, 1.0 / resp_rate) * fs).astype(int))
+    ri = ri[ri < n]
+    return t[ci], cmd[ci], t[ri], resp[ri]
+
+
+def test_step_metrics_gain_and_keys():
+    ct, cy, rt, ry = _make_step(dead_s=0.04, step_deg=2.0, seed=1)
+    m = step_response_metrics(ct, cy, rt, ry, fs_hz=400.0)
+    assert m is not None
+    assert abs(m['gain'] - 1.0) < 0.1            # IMU tracks the command
+    assert abs(m['step_cmd'] - 2.0) < 0.1
+    for k in ('dead_time_ms', 'xcorr_lag_ms', 'rise_10_90_ms',
+              'settle_ms', 'overshoot_pct'):
+        assert k in m
+    assert m['rise_10_90_ms'] is not None and m['rise_10_90_ms'] > 0
+
+
+def test_step_dead_time_small_for_fast_response():
+    # ~40 ms transport with a fast (8 ms) response + short ramp: the
+    # onset→onset dead time should sit just above the true 40 ms.
+    ct, cy, rt, ry = _make_step(dead_s=0.04, tau_s=0.008, ramp_s=0.04, seed=5)
+    m = step_response_metrics(ct, cy, rt, ry, fs_hz=400.0)
+    assert m is not None
+    assert 30.0 <= m['dead_time_ms'] <= 65.0
+
+
+def test_step_dead_time_tracks_true_delay():
+    # Measured dead = true transport + a ~constant rise-to-10% offset,
+    # so across true delays the offset stays roughly constant (and the
+    # measurement is monotonic in the true delay).
+    offs, meas = [], []
+    for dead in (0.02, 0.05, 0.10):
+        ct, cy, rt, ry = _make_step(dead_s=dead, tau_s=0.008, ramp_s=0.04,
+                                    seed=int(dead * 1000))
+        m = step_response_metrics(ct, cy, rt, ry, fs_hz=400.0)
+        assert m is not None and m['dead_time_ms'] is not None
+        offs.append(m['dead_time_ms'] - dead * 1000.0)
+        meas.append(m['dead_time_ms'])
+    assert max(offs) - min(offs) < 12.0          # ~constant offset
+    assert meas[0] < meas[1] < meas[2]           # monotonic in true delay
+
+
+def test_step_metrics_none_without_step():
+    t = np.linspace(0, 3, 300)
+    cy = np.zeros_like(t)                          # no commanded step
+    rt = np.linspace(0, 3, 1200)
+    ry = 0.01 * np.random.default_rng(0).standard_normal(1200)
+    assert step_response_metrics(t, cy, rt, ry) is None
+
+
+def test_step_metrics_handles_negative_step():
+    # A downward tilt step must work too (sign-correct gain ~1).
+    ct, cy, rt, ry = _make_step(dead_s=0.05, step_deg=-2.0, tau_s=0.01,
+                                ramp_s=0.05, seed=3)
+    m = step_response_metrics(ct, cy, rt, ry, fs_hz=400.0)
+    assert m is not None
+    assert abs(m['gain'] - 1.0) < 0.15
+    assert m['dead_time_ms'] is not None and m['dead_time_ms'] > 0
 
 
 # --- (E) resample_uniform NaN-pads outside the source span ----------------

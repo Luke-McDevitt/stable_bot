@@ -1206,6 +1206,16 @@ class StewartControlNode(Node):
         # transitioning cleanly.
         self.pub_ball_track_diag = self.create_publisher(
             Float32MultiArray, 'ball_track/diagnostic', 10)
+        # Latency Bench: commanded-tilt timeline during a tilt-step run,
+        # [t_rel, cmd_pitch_deg, cmd_roll_deg, phase]. Recorded alongside
+        # the IMU + encoders so digest_latency_bench can measure the
+        # actuation step response per-stage. Idle (no publish) except
+        # during a bench run.
+        self.pub_latency_bench = self.create_publisher(
+            Float32MultiArray, 'latency_bench/diag', 10)
+        # Bench run state (mirrors homing_running for /status + re-entrancy).
+        self._latency_bench_thread = None
+        self._latency_bench_running = False
         self.pub_homing_out = self.create_publisher(
             String, 'homing_output', 100)
         # Topic-based command bus. Primary path the GUI uses because
@@ -2088,6 +2098,7 @@ class StewartControlNode(Node):
             'imu_fresh': bool(imu_fresh),
             'level_enabled': bool(self.level_enabled),
             'homing_running': bool(homing_alive),
+            'latency_step_running': bool(self._latency_bench_running),
             'soft_max_vel_turns_per_sec': float(self.soft_max_vel),
             'hard_max_vel_turns_per_sec': float(self.hard_max_vel),
             'leg_current_a': float(self.leg_current_a),
@@ -2396,6 +2407,9 @@ class StewartControlNode(Node):
                 # the two-button capture_rest + activate flow.
                 ok, reply_msg = self._safe_arm_in_place()
             elif cmd == 'deactivate' or cmd == 'e_stop':
+                # Halt any running Latency Bench step first so its thread
+                # stops commanding tilts the instant the operator disarms.
+                self._latency_bench_running = False
                 self._disarm_internal()
                 ok, reply_msg = True, "all 6 disarmed"
             elif cmd == 'arm_leg':
@@ -2487,6 +2501,8 @@ class StewartControlNode(Node):
             elif cmd == 'set_leg_current':
                 ok, reply_msg = self._do_set_leg_current(
                     float(d.get('value', 6.0)))
+            elif cmd == 'latency_step':
+                ok, reply_msg = self._do_latency_step(d)
             elif cmd == 'list_routines':
                 names = self._list_routine_names()
                 ok, reply_msg = True, f"{len(names)} routines"
@@ -2785,6 +2801,94 @@ class StewartControlNode(Node):
             os.replace(tmp, POSE_STATE_FILE)
         except Exception:
             pass
+
+    def _do_latency_step(self, d):
+        """Validate + launch a Latency Bench tilt-step run in a daemon
+        thread (mirrors the homing/sweep pattern so the control_cmd
+        callback never blocks). The step is the clean, aperiodic actuation
+        probe the orbital cross-correlation can't resolve. Safe by design:
+        requires arm, clamps tilt to a ceiling, level-off for raw
+        actuation, and always returns to level + rest on exit."""
+        if self._latency_bench_running:
+            return False, "latency step already running"
+        if not self.armed:
+            return False, "not armed"
+        if self.limits is None:
+            return False, "no leg_limits.yaml"
+        try:
+            tilt = float(d.get('max_tilt_deg', 2.0))
+        except Exception:
+            tilt = 2.0
+        tilt = max(0.5, min(abs(tilt), 8.0))      # safe ceiling regardless of UI
+        axis = str(d.get('axis', 'pitch')).lower()
+        if axis not in ('pitch', 'roll'):
+            axis = 'pitch'
+        reps = int(max(1, min(int(d.get('reps', 3)), 10)))
+        hold_s = float(max(0.3, min(float(d.get('hold_s', 0.8)), 3.0)))
+        settle_s = float(max(0.3, min(float(d.get('settle_s', 1.0)), 3.0)))
+        z_mm = float(max(0.0, min(float(d.get('z_mm', 30.0)), 80.0)))
+        params = dict(tilt=tilt, axis=axis, reps=reps, hold_s=hold_s,
+                      settle_s=settle_s, z_mm=z_mm)
+        self._latency_bench_running = True
+        self._latency_bench_thread = threading.Thread(
+            target=self._latency_step_run, args=(params,), daemon=True)
+        self._latency_bench_thread.start()
+        return True, (f"latency step started: {axis} +{tilt:.1f}deg "
+                      f"x{reps} (hold {hold_s}s, settle {settle_s}s)")
+
+    def _latency_step_run(self, params):
+        """Daemon-thread excitation: tilt steps with the commanded tilt
+        published on /latency_bench/diag throughout so the bench digest
+        can align cmd vs IMU. Direct tilt (level loop off) measures raw
+        actuation; the feeder's velocity cap provides the physical slew.
+        Always restores level + rest on exit, even on error or disarm."""
+        tilt = params['tilt']
+        axis = params['axis']
+        z = params['z_mm']
+        level_was_on = bool(self.level_enabled)
+        try:
+            if level_was_on:
+                self._stop_level_loop()      # don't let it fight the step
+            t_start = time.monotonic()
+
+            def _hold(target_deg, dur_s, phase):
+                # Command the tilt once; publish the (constant) command at
+                # 100 Hz while the platform slews + settles. The bag's IMU
+                # (~240 Hz) captures the response against this timeline.
+                p_cmd = target_deg if axis == 'pitch' else 0.0
+                r_cmd = target_deg if axis == 'roll' else 0.0
+                self._do_set_pose(0.0, 0.0, z, r_cmd, p_cmd, 0.0)
+                t_end = time.monotonic() + dur_s
+                while (time.monotonic() < t_end
+                       and self._latency_bench_running):
+                    m = Float32MultiArray()
+                    m.data = [float(time.monotonic() - t_start),
+                              float(p_cmd), float(r_cmd), float(phase)]
+                    self.pub_latency_bench.publish(m)
+                    time.sleep(0.01)
+
+            _hold(0.0, max(0.5, params['settle_s']), 0)      # baseline first
+            for _ in range(params['reps']):
+                if not self._latency_bench_running:
+                    break
+                _hold(tilt, params['hold_s'], 1)             # step up
+                _hold(0.0, params['settle_s'], 0)            # back to level
+            mend = Float32MultiArray()
+            mend.data = [float(time.monotonic() - t_start), 0.0, 0.0, -1.0]
+            self.pub_latency_bench.publish(mend)
+        except Exception as e:
+            self.get_logger().warn(f"latency_step error: {e}")
+        finally:
+            try:
+                self._do_set_pose(0.0, 0.0, z, 0.0, 0.0, 0.0)
+            except Exception:
+                pass
+            if level_was_on:
+                try:
+                    self._do_enable_level(True)
+                except Exception:
+                    pass
+            self._latency_bench_running = False
 
     def _do_set_pose(self, x, y, z, r, p, yw, allow_large=False):
         if not self.armed:

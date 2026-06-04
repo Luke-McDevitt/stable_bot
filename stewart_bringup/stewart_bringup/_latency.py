@@ -212,3 +212,87 @@ def actuation_latency(bt_t_ns, cmd_pitch, cmd_roll,
             out['ambiguous'] = True
             out['lag_candidates_s'] = cands
     return out
+
+
+def step_response_metrics(cmd_t_s, cmd_y, resp_t_s, resp_y,
+                          fs_hz=400.0, onset_frac=0.1, settle_frac=0.05):
+    """Per-stage metrics for a single aperiodic tilt STEP — the clean,
+    UNAMBIGUOUS actuation measurement an orbital cross-correlation can't
+    give (no period → no aliasing). This is what the Latency Bench panel's
+    tilt-step run feeds. `cmd_y` is commanded tilt (deg) over time; `resp_y`
+    is the measured response (deg for IMU, turns for a leg encoder) — call
+    it once per stage to isolate each leg of the actuation chain
+    (cmd→encoder = transport/feeder; encoder→IMU = leg→platform; IMU rise =
+    mechanical).
+
+    Returns dict or None (no clean step found):
+      step_cmd, step_resp, gain (resp/cmd),
+      dead_time_ms  — cmd-onset → resp-onset (pure transport delay),
+      xcorr_lag_ms  — best cmd→resp shift (unambiguous on a step),
+      rise_10_90_ms — resp 10→90 % of its step,
+      settle_ms     — resp enters & stays within ±settle_frac of final,
+      overshoot_pct.
+    """
+    if (cmd_t_s is None or resp_t_s is None
+            or len(cmd_t_s) < 4 or len(resp_t_s) < 8):
+        return None
+    t0 = max(float(cmd_t_s[0]), float(resp_t_s[0]))
+    t1 = min(float(cmd_t_s[-1]), float(resp_t_s[-1]))
+    if t1 - t0 < 0.2:
+        return None
+    tg, c = resample_uniform(cmd_t_s, cmd_y, fs_hz, t0, t1)
+    _, r = resample_uniform(resp_t_s, resp_y, fs_hz, t0, t1)
+    good = np.isfinite(c) & np.isfinite(r)
+    if good.sum() < 8:
+        return None
+    tg, c, r = tg[good], c[good], r[good]
+    n = c.size
+    nb = max(2, n // 10)               # baseline = first 10 %
+    nf = max(2, n // 5)                # final = last 20 %
+    c_base, c_final = float(np.mean(c[:nb])), float(np.mean(c[-nf:]))
+    r_base, r_final = float(np.mean(r[:nb])), float(np.mean(r[-nf:]))
+    c_step = c_final - c_base
+    r_step = r_final - r_base
+    if abs(c_step) < 1e-3:             # no commanded step → nothing to measure
+        return None
+    sgn = 1.0 if c_step > 0 else -1.0
+
+    def _onset(y, base, step):
+        thr = base + onset_frac * step
+        idx = np.where((y - thr) * np.sign(step) >= 0)[0]
+        return float(tg[idx[0]]) if idx.size else None
+
+    t_cmd_on = _onset(c, c_base, c_step)
+    t_resp_on = _onset(r, r_base, r_step if abs(r_step) > 1e-6 else c_step)
+    dead_ms = (None if (t_cmd_on is None or t_resp_on is None)
+               else round((t_resp_on - t_cmd_on) * 1e3, 1))
+
+    rise_ms = settle_ms = overshoot = None
+    if abs(r_step) > 1e-3:
+        def _cross(frac):
+            thr = r_base + frac * r_step
+            idx = np.where((r - thr) * sgn >= 0)[0]
+            return float(tg[idx[0]]) if idx.size else None
+        t10, t90 = _cross(0.1), _cross(0.9)
+        if t10 is not None and t90 is not None and t90 >= t10:
+            rise_ms = round((t90 - t10) * 1e3, 1)
+        band = settle_frac * abs(r_step)
+        outside = np.where(np.abs(r - r_final) > band)[0]
+        if outside.size and outside[-1] + 1 < n and t_cmd_on is not None:
+            settle_ms = round((tg[outside[-1] + 1] - t_cmd_on) * 1e3, 1)
+        peak = float(np.max(r) if sgn > 0 else np.min(r))
+        overshoot = round(
+            max(0.0, (peak - r_final) * sgn / abs(r_step)) * 100.0, 1)
+
+    lag_s, _corr, _n = xcorr_lag_s(cmd_t_s, cmd_y, resp_t_s, resp_y,
+                                   fs_hz=min(fs_hz, 200.0))
+    return {
+        'step_cmd': round(c_step, 3),
+        'step_resp': round(r_step, 3),
+        'gain': round(r_step / c_step, 3),
+        'dead_time_ms': dead_ms,
+        'xcorr_lag_ms': None if lag_s is None else round(lag_s * 1e3, 1),
+        'rise_10_90_ms': rise_ms,
+        'settle_ms': settle_ms,
+        'overshoot_pct': overshoot,
+    }
