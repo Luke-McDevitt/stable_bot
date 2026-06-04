@@ -74,6 +74,13 @@ METRIC_KEYS = [
     ('settled', '', False),                    # bool, True is better
 ]
 
+# Run-config caps (the live-settable limits that LABEL an A/B — the gap
+# that made the 1.0-vs-1.5 vel run unreadable) + measured latency +
+# whether the legs hit the current cap (torque-limited evidence).
+CONFIG_KEYS = ['soft_max_vel_tps', 'leg_current_cap_a']
+LATENCY_KEYS = ['actuation_ms', 'act_ambiguous', 'see_to_move_ms',
+                'cur_peak_a', 'cur_sat']
+
 
 def load_summary(bag_dir: Path) -> dict | None:
     p = bag_dir / 'digest.summary.json'
@@ -108,6 +115,20 @@ def extract_row(bag_dir: Path, summary: dict) -> dict:
     err = summary.get('error_mm') or {}
     row['err_mean_mm'] = err.get('mean')
     row['err_rms_mm'] = err.get('rms')
+    # Run-config caps (label the A/B) + measured latency + current-cap
+    # saturation. All produced by the upgraded digest; older bags just
+    # show '-'.
+    rc = summary.get('run_config') or {}
+    row['soft_max_vel_tps'] = rc.get('soft_max_vel_tps')
+    row['leg_current_cap_a'] = rc.get('leg_current_cap_a')
+    lb = summary.get('latency_breakdown') or {}
+    act = lb.get('actuation') if isinstance(lb.get('actuation'), dict) else {}
+    row['actuation_ms'] = act.get('actuation_ms')
+    row['act_ambiguous'] = act.get('ambiguous')
+    row['see_to_move_ms'] = lb.get('see_to_move_est_ms')
+    lc = summary.get('leg_current') or {}
+    row['cur_peak_a'] = lc.get('measured_peak_a')
+    row['cur_sat'] = lc.get('saturation_fraction')
     return row
 
 
@@ -166,6 +187,13 @@ def render_table(rows: list[dict], cols: list[str],
         'settled':                        'set',
         'err_mean_mm':                    'errMu',
         'err_rms_mm':                     'errRMS',
+        'soft_max_vel_tps':               'velCap',
+        'leg_current_cap_a':              'curCap',
+        'actuation_ms':                   'actMs',
+        'act_ambiguous':                  'amb?',
+        'see_to_move_ms':                 's2mMs',
+        'cur_peak_a':                     'curPk',
+        'cur_sat':                        'curSat',
     }
     headers = [pretty.get(c, c) for c in cols]
     cells = [[fmt_cell(r.get(c)) for c in cols] for r in rows]
@@ -257,9 +285,9 @@ def main():
                                  r.get(sort_key)
                                  if r.get(sort_key) is not None else 0))
 
-    cols = (['bag'] + GAIN_KEYS_PID
+    cols = (['bag'] + GAIN_KEYS_PID + CONFIG_KEYS
             + [m[0] for m in METRIC_KEYS]
-            + ['err_mean_mm', 'err_rms_mm'])
+            + ['err_mean_mm', 'err_rms_mm'] + LATENCY_KEYS)
 
     if args.diff:
         # Always keep bag column; collapse the rest based on variation.

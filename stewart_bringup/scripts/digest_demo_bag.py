@@ -429,6 +429,55 @@ def _gains_at_record(status_d):
     return None
 
 
+def _run_config(status_d):
+    """Snapshot the control-parameter limits the GUI sets live but that
+    are NOT in ball_track_gains: the leg speed cap and the per-leg motor
+    current cap. Pulled from the LAST /status that carries them. Together
+    with gains_at_record this is the full 'what was this run configured
+    with' record, so two bags are diffable without guessing which knob
+    moved (the labeling gap that made the 1.0-vs-1.5 vel A/B unreadable).
+    Returns dict or None."""
+    out = {}
+    for s in reversed(status_d):
+        if ('soft_max_vel_tps' not in out
+                and 'soft_max_vel_turns_per_sec' in s):
+            out['soft_max_vel_tps'] = float(s['soft_max_vel_turns_per_sec'])
+            out['hard_max_vel_tps'] = float(
+                s.get('hard_max_vel_turns_per_sec', float('nan')))
+        if 'leg_current_cap_a' not in out and 'leg_current_a' in s:
+            out['leg_current_cap_a'] = float(s['leg_current_a'])
+        if 'soft_max_vel_tps' in out and 'leg_current_cap_a' in out:
+            break
+    return out or None
+
+
+def _leg_current_analysis(cur_data, cap_a):
+    """Measured per-leg current (|Iq|, from /leg_currents) vs the
+    configured current cap. If the legs ride near the cap during tilt
+    reversals the actuation is torque/accel-limited — meaning the
+    *current* cap (not the vel cap) is the lever on how fast the platform
+    can move. This is the measurement that tests the A/B hypothesis that
+    the legs weren't velocity-limited at all. Returns dict or None."""
+    if cur_data is None or not getattr(cur_data, 'size', 0):
+        return None
+    mag = np.abs(np.asarray(cur_data, dtype=np.float64))   # (N,6) |Iq|
+    if not np.any(np.isfinite(mag)):
+        return None
+    peak = float(np.nanmax(mag))
+    out = {
+        'measured_peak_a': round(peak, 2),
+        'measured_p95_a': round(float(np.nanpercentile(mag, 95)), 2),
+        'per_leg_peak_a': [round(float(np.nanmax(mag[:, i])), 2)
+                           for i in range(mag.shape[1])],
+    }
+    if cap_a is not None and np.isfinite(cap_a) and cap_a > 0:
+        near_cap = np.any(mag > 0.9 * cap_a, axis=1)       # any leg, per sample
+        out['cap_a'] = round(float(cap_a), 2)
+        out['headroom_a'] = round(float(cap_a) - peak, 2)
+        out['saturation_fraction'] = round(float(np.mean(near_cap)), 3)
+    return out
+
+
 def _demo_label_from_dir(bag_dir):
     name = os.path.basename(bag_dir.rstrip('/'))
     for tag in ('demo1', 'demo2', 'demo3', 'demo_untagged', 'demo_run'):
@@ -639,6 +688,12 @@ def digest(bag_dir: str):
 
     label = _demo_label_from_dir(bag_dir)
     gains_at_record = _gains_at_record(status_d)
+    # Full run-config snapshot (caps the GUI sets live) + measured leg
+    # current vs the cap. Makes runs self-labeling for A/B diffing and
+    # tests whether the legs are torque-limited (current-capped).
+    run_config = _run_config(status_d)
+    cap_a = (run_config or {}).get('leg_current_cap_a')
+    leg_current = _leg_current_analysis(cur_data, cap_a)
 
     # Iteration-actionable gain recommendation. Reads the active
     # gains, the trial outcome, and the controller's actual
@@ -719,6 +774,8 @@ def digest(bag_dir: str):
         'duration_s': duration_s,
         'topic_counts': dict(sorted(data['counts'].items())),
         'gains_at_record': gains_at_record,
+        'run_config': run_config,
+        'leg_current': leg_current,
         'next_step': next_step,
         'ball_state_n': int(state_t.size),
         'ball_ref_n':   int(ref_t.size),
@@ -824,6 +881,20 @@ def digest(bag_dir: str):
               f"depth={cfg.get('enable_depth')}")
     if gains_at_record:
         print(f"  gains: {gains_at_record}")
+    # Caps (the live-settable limits) + measured current vs the current
+    # cap — the run-labeling + torque-limit story.
+    rc = summary.get('run_config') or {}
+    if rc:
+        print(f"  caps: vel={rc.get('soft_max_vel_tps')}t/s "
+              f"(hard {rc.get('hard_max_vel_tps')}) "
+              f"current={rc.get('leg_current_cap_a')}A")
+    lc = summary.get('leg_current') or {}
+    if lc:
+        sat = lc.get('saturation_fraction')
+        print(f"  leg_current: peak={lc.get('measured_peak_a')}A "
+              f"p95={lc.get('measured_p95_a')}A cap={lc.get('cap_a')}A"
+              + (f"  near-cap {sat*100:.0f}% of run"
+                 if sat is not None else ""))
 
     # ----- Iteration-actionable next-step recommendation -----
     # Big banner so the operator can read it at a glance after each

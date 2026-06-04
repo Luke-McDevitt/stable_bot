@@ -95,6 +95,53 @@ def xcorr_lag_s(ref_t_s, ref_y, resp_t_s, resp_y,
     return best[0] / fs_hz, best[1], int(good.sum())
 
 
+def dominant_period_s(t_s, y, fs_hz=200.0,
+                      min_period_s=0.05, max_period_s=2.0):
+    """Estimate the dominant period of a (possibly periodic) signal via
+    autocorrelation. Returns period_s, or None if not clearly periodic.
+
+    Why this matters for latency: a saturated/orbital run is a limit
+    cycle, and a delayed periodic signal correlates *equally* at lag,
+    lag±T, lag±T/2 (with sign flips). So the cross-correlation lag is
+    only unique modulo the period — the absolute actuation number from
+    an orbital run is ambiguous. We detect the period to FLAG that,
+    rather than report false precision. The unambiguous fix is an
+    aperiodic excitation (the tap/step test)."""
+    if t_s is None or len(t_s) < 16:
+        return None
+    t0, t1 = float(t_s[0]), float(t_s[-1])
+    if t1 - t0 < 4.0 * min_period_s:
+        return None
+    _, ys = resample_uniform(t_s, y, fs_hz, t0, t1)
+    good = np.isfinite(ys)
+    if good.sum() < 16:
+        return None
+    ys = ys - np.nanmean(ys[good])
+    ys[~good] = 0.0
+    if np.linalg.norm(ys) == 0.0:
+        return None
+    n = ys.size
+    ac = np.correlate(ys, ys, mode='full')[n - 1:]
+    if ac[0] == 0.0:
+        return None
+    ac = ac / ac[0]
+    lo = max(1, int(min_period_s * fs_hz))
+    hi = min(int(max_period_s * fs_hz), n - 1)
+    if hi <= lo + 2:
+        return None
+    seg = ac[lo:hi]
+    thr = max(0.3, 0.5 * float(np.max(seg)))
+    # First PROMINENT local maximum = the fundamental period. Global
+    # argmax is unreliable here: a long limit cycle has many near-equal
+    # autocorrelation peaks at multiples of T (argmax can land on any),
+    # and a monotonic ramp from an aperiodic step has no interior peak
+    # (so we correctly return None and never call a step "periodic").
+    for i in range(1, seg.size - 1):
+        if seg[i] >= seg[i - 1] and seg[i] > seg[i + 1] and seg[i] >= thr:
+            return (lo + i) / fs_hz
+    return None
+
+
 def actuation_latency(bt_t_ns, cmd_pitch, cmd_roll,
                       imu_t_ns, imu_rp, rpy_t_ns, rpy_data,
                       min_corr=0.3):
@@ -143,4 +190,25 @@ def actuation_latency(bt_t_ns, cmd_pitch, cmd_roll,
     cands = [(c, l) for c, l in cands if l is not None and c > min_corr]
     out['actuation_ms'] = (round(max(cands)[1] * 1e3, 1)
                            if cands else None)
+    # Periodicity / ambiguity flag. If the command is an orbital limit
+    # cycle, the cross-correlation lag is only unique modulo its period
+    # (and ±half-period with a sign flip), so the absolute number can't
+    # be trusted — report the period, mark it ambiguous, and list the
+    # aliased candidate lags. The unambiguous measurement is the tap test.
+    period = dominant_period_s(bt_s, cmd_pitch)
+    out['cmd_period_s'] = round(period, 3) if period else None
+    act_lag_s = (out['actuation_ms'] / 1e3) if out['actuation_ms'] else None
+    out['ambiguous'] = False
+    if period is not None and act_lag_s is not None:
+        # A sign-agnostic correlation aliases every HALF period (the
+        # in-phase peak AND the anti-phase peak), so the candidate lags
+        # are act_lag ± k·(T/2) that land in the search window. >1
+        # candidate => the absolute number can't be trusted.
+        half = period / 2.0
+        cands = sorted({round(act_lag_s + k * half, 3)
+                        for k in range(-6, 7)
+                        if 0.0 <= act_lag_s + k * half <= 0.40})
+        if len(cands) > 1:
+            out['ambiguous'] = True
+            out['lag_candidates_s'] = cands
     return out

@@ -13,6 +13,7 @@ import pytest
 
 from stewart_bringup._latency import (
     actuation_latency,
+    dominant_period_s,
     quat_to_roll_pitch_deg,
     resample_uniform,
     xcorr_lag_s,
@@ -22,8 +23,9 @@ from stewart_bringup._latency import (
 # --- synthetic signal generator -------------------------------------------
 
 def _make_signals(true_lag_s, sign, fs=240.0, dur=20.0, noise=0.05,
-                  cmd_rate=55.0, resp_rate=240.0, tau_s=0.02, seed=0):
-    """Command = ~2 Hz square wave (the saturated orbital cmd tilt).
+                  cmd_rate=55.0, resp_rate=240.0, tau_s=0.02, seed=0,
+                  freq=2.0):
+    """Command = `freq` Hz square wave (the saturated orbital cmd tilt).
     Response = command delayed by true_lag_s, first-order-smoothed
     (mechanical rise, time-constant tau_s), sign-flipped by `sign`,
     decimated to resp_rate, + noise. Command decimated to cmd_rate.
@@ -32,7 +34,7 @@ def _make_signals(true_lag_s, sign, fs=240.0, dur=20.0, noise=0.05,
     rng = np.random.default_rng(seed)
     n = int(dur * fs)
     t = np.arange(n) / fs
-    cmd = 1.2 * np.sign(np.sin(2 * np.pi * 2.0 * t))
+    cmd = 1.2 * np.sign(np.sin(2 * np.pi * freq * t))
     cmd = cmd + 0.1 * rng.standard_normal(n)
     lag_n = int(round(true_lag_s * fs))
     delayed = np.concatenate([np.zeros(lag_n), cmd])[:n]
@@ -149,6 +151,53 @@ def test_quat_identity_is_level():
     roll, pitch = quat_to_roll_pitch_deg([[0.0, 0.0, 0.0, 1.0]])
     assert abs(float(roll[0])) < 1e-6
     assert abs(float(pitch[0])) < 1e-6
+
+
+# --- (D2) periodicity detection + ambiguity flag --------------------------
+
+@pytest.mark.parametrize("freq", [2.0, 3.0, 3.3])
+def test_dominant_period_recovers_known_period(freq):
+    ct, cy, _, _ = _make_signals(0.08, +1.0, freq=freq, seed=3)
+    per = dominant_period_s(ct, cy, fs_hz=200.0)
+    assert per is not None
+    assert abs(per - 1.0 / freq) < 0.02      # within ~one bin
+
+
+def test_dominant_period_none_for_aperiodic():
+    # A single step (the kind of aperiodic excitation a tap test gives)
+    # has no dominant period -> None, so it would NOT be flagged ambiguous.
+    t = np.linspace(0, 10, 2000)
+    y = np.where(t > 5.0, 1.0, 0.0)
+    assert dominant_period_s(t, y, fs_hz=200.0) is None
+
+
+def test_actuation_flags_ambiguous_on_fast_orbit():
+    # 3.3 Hz orbit (period ~0.30 s) with a 0.20 s lag: 0.20 > period/2,
+    # so the absolute lag is period-aliased -> must be flagged ambiguous,
+    # mirroring the real demo2 orbital runs.
+    ct, cy, rt, ry = _make_signals(0.185, -1.0, tau_s=0.02, freq=3.3, seed=5)
+    _, cy_roll, _, ry_roll = _make_signals(0.185, +1.0, tau_s=0.02,
+                                           freq=3.3, seed=6)
+    imu_rp = np.stack([ry_roll, ry], axis=1)
+    out = actuation_latency(_ns(ct), cy, cy_roll, _ns(rt), imu_rp, None, None)
+    assert out is not None
+    assert out['cmd_period_s'] is not None
+    assert abs(out['cmd_period_s'] - 1.0 / 3.3) < 0.03
+    assert out['ambiguous'] is True
+    assert 'lag_candidates_s' in out and len(out['lag_candidates_s']) >= 2
+
+
+def test_actuation_not_ambiguous_on_slow_orbit():
+    # 1 Hz orbit (period 1.0 s) with a ~0.105 s effective lag: no half-
+    # period alias (±0.5 s) lands in the [0, 0.4 s] search window, so the
+    # lag is unambiguous even though the run is periodic.
+    ct, cy, rt, ry = _make_signals(0.09, -1.0, tau_s=0.02, freq=1.0, seed=7)
+    _, cy_roll, _, ry_roll = _make_signals(0.09, +1.0, tau_s=0.02,
+                                           freq=1.0, seed=8)
+    imu_rp = np.stack([ry_roll, ry], axis=1)
+    out = actuation_latency(_ns(ct), cy, cy_roll, _ns(rt), imu_rp, None, None)
+    assert out is not None
+    assert out['ambiguous'] is False
 
 
 # --- (E) resample_uniform NaN-pads outside the source span ----------------
