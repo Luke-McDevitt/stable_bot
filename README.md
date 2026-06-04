@@ -61,6 +61,15 @@ For laptop / dev workflow, see
 
 ## Running on the Pi — SSH & startup
 
+**🌐 Web GUI (open in your browser):** **http://stablebot.local:8080/**
+The control panel — arm, level, run demos. IP fallback:
+`http://10.31.1.98:8080/`. Prefer the `.local` name; on the phone hotspot
+the IP changes each session.
+
+> **Both the laptop and the Pi must be on the same network** (your phone
+> hotspot). If the GUI won't load or SSH times out, that's almost always
+> the cause — reconnect both to the hotspot.
+
 **Pi login:** user `sorak` · hostname `stablebot`
 
 ```bash
@@ -68,9 +77,9 @@ ssh sorak@stablebot.local      # works whenever mDNS/Bonjour is up
 ssh sorak@10.31.1.98         # current Pi IP (see note below)
 ```
 
-**Pi IP:** `10.31.1.98` — if it changes, find the new one with
-`hostname -I` on the Pi (or your router / phone-hotspot client list) and
-update it here. Set a DHCP reservation so it stays put.
+**Pi IP:** `10.31.1.98` (last seen). On the phone hotspot this changes
+each session, so prefer `stablebot.local`. Need the current IP? Run
+`hostname -I` on the Pi, or check the hotspot's connected-clients list.
 
 **Startup is two systemd services** (auto-start on boot — this *is* the
 "startup script"):
