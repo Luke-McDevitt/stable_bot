@@ -201,6 +201,7 @@ def _read_bag(bag_dir: str):
     state_age = []                  # orientation.z = photon→state latency (s)
     ref_t,   ref_xy   = [], []
     mono_t,  mono_xy  = [], []
+    monolat_t, monolat = [], []    # /ball_xy_mono/lat [cap→in ms, cap→out ms]
     depth_t, depth_xy = [], []
     pose_t,  pose_z   = [], []
     rpy_t,   rpy_data = [], []
@@ -246,6 +247,11 @@ def _read_bag(bag_dir: str):
         elif topic == '/ball_xy_mono':
             mono_t.append(t_ns)
             mono_xy.append([float(msg.point.x), float(msg.point.y)])
+        elif topic == '/ball_xy_mono/lat':
+            d = list(msg.data)
+            if len(d) >= 2:
+                monolat_t.append(t_ns)
+                monolat.append([float(d[0]), float(d[1])])
         elif topic == '/ball_xy_depth':
             depth_t.append(t_ns)
             depth_xy.append([float(msg.point.x), float(msg.point.y)])
@@ -337,6 +343,8 @@ def _read_bag(bag_dir: str):
         'counts': counts,
         'state_age': (np.array(state_age, dtype=np.float64)
                       if state_age else np.zeros((0,))),
+        'monolat': (np.array(monolat_t, dtype=np.int64),
+                    np.array(monolat) if monolat else np.zeros((0, 2))),
         'state': (np.array(state_t, dtype=np.int64),
                   np.array(state_xy) if state_xy else np.zeros((0, 2)),
                   np.array(state_v)  if state_v  else np.zeros((0, 2))),
@@ -648,6 +656,7 @@ def digest(bag_dir: str):
 
     state_t, state_xy, state_v = data['state']
     state_age = data['state_age']      # photon→state latency (s) per /ball_state
+    monolat = data['monolat'][1]       # [cap→in ms, cap→out ms] per mono publish
     ref_t, ref_xy = data['ref']
     mono_t, mono_xy = data['mono']
     depth_t, depth_xy = data['depth']
@@ -766,6 +775,21 @@ def digest(bag_dir: str):
                          'p10=fresh pipeline, p50/p90=staleness; '
                          'detect→state = localizer+KF = fresh − v0_lat.'),
             }
+            # Finer split of detect→state when the localizer latency probe
+            # (/ball_xy_mono/lat) is present: transport (capture→in − v0_lat)
+            # vs localizer tick+reproject (out − in) vs KF (state − out).
+            if monolat.shape[0] >= 4:
+                cap_in = float(np.nanmedian(monolat[:, 0]))
+                cap_out = float(np.nanmedian(monolat[:, 1]))
+                vision_pipeline['capture_to_localizer_in_ms'] = round(cap_in, 1)
+                vision_pipeline['capture_to_mono_out_ms'] = round(cap_out, 1)
+                vision_pipeline['stage_split_ms'] = {
+                    'transport_to_localizer':
+                        (round(cap_in - v0_lat_mean, 1)
+                         if v0_lat_mean is not None else None),
+                    'localizer_tick_reproject': round(cap_out - cap_in, 1),
+                    'kf_mono_to_state': round(fresh - cap_out, 1),
+                }
     # Vision half of see→move: the full fresh capture→state when Part 2
     # data is present, else the detector latency alone (older bags).
     vision_half_ms = (vision_pipeline['capture_to_state_fresh_ms']
@@ -921,6 +945,12 @@ def digest(bag_dir: str):
               f"{vp['capture_to_state_fresh_ms']}ms fresh "
               f"(p50={vp.get('capture_to_state_p50_ms')} "
               f"p90={vp.get('capture_to_state_p90_ms')} = staleness)")
+        ss = vp.get('stage_split_ms')
+        if ss:
+            print(f"    detect→state split: transport→loc "
+                  f"{ss.get('transport_to_localizer')}ms + loc tick/reproj "
+                  f"{ss.get('localizer_tick_reproject')}ms + KF "
+                  f"{ss.get('kf_mono_to_state')}ms")
     if act.get('actuation_ms') is not None:
         print(f"  actuation_ms: {act['actuation_ms']:.0f}  "
               f"(pitch={act.get('pitch_lag_ms')}ms/corr {act.get('pitch_corr')}, "

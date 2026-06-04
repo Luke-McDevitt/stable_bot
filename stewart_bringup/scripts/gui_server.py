@@ -101,6 +101,9 @@ DEMO_TOPICS = [
     '/ball_state',
     '/ball_ref',
     '/ball_xy_mono',
+    # Per-stage vision-latency probe from the localizer (capture→in,
+    # capture→out) so the digest can split detect→state.
+    '/ball_xy_mono/lat',
     '/ball_xy_depth',
     # BALL_TRACK loop's per-tick FSM diagnostic (phase, commanded
     # tilt, error/velocity quantities). Lets the digest color-code

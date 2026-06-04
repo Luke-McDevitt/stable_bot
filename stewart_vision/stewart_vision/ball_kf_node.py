@@ -131,6 +131,12 @@ class BallKFNode(Node):
         self.P = (np.eye(4) - K @ self.H) @ self.P
         self.have_meas = True
         self._last_meas_t = self.get_clock().now().nanoseconds * 1e-9
+        # Event-driven publish: emit the fresh posterior immediately instead
+        # of waiting up to one 100 Hz predict tick (cuts ≤10 ms off the
+        # vision→control latency). The timer keeps publishing predictions
+        # between measurements. The single-threaded executor serialises this
+        # with the timer, so there's no re-entrancy.
+        self._publish()
 
     def _publish(self):
         msg = PoseStamped()

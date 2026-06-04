@@ -155,10 +155,22 @@ class BallLocalizerNode(Node):
             PointStamped, '/ball_xy_depth', 10)
         self.pub_diag = self.create_publisher(
             Float32MultiArray, '/oak/ball/diagnostic', 10)
+        # Per-stage VISION latency probe: [capture→localizer-in ms,
+        # capture→mono-out ms], published with each /ball_xy_mono. Lets the
+        # digest split the detect→state gap into transport (capture→in − the
+        # detector's own v0_lat) vs localizer tick+reproject (out − in) vs
+        # KF (state − out). Additive; no existing consumer.
+        self.pub_xy_mono_lat = self.create_publisher(
+            Float32MultiArray, '/ball_xy_mono/lat', 10)
+        self._last_v0_recv_s = 0.0   # ROS-clock receive time of last v0
+        self._last_v1_recv_s = 0.0
+        self._last_pub_t = 0.0       # monotonic time of last mono publish
 
-        # Tick at 60 Hz for the V0-derived /ball_xy_mono path; frames
-        # may not arrive at that rate but it's the ceiling. /ball_xy_oak
-        # is published synchronously on each /oak/ball/spatial message.
+        # Tick at 60 Hz as the steady republish cadence (unchanged). On top
+        # of it we ALSO publish the instant a new detection arrives
+        # (_on_v0/_on_v1 → _tick, debounced) so a fresh sighting doesn't
+        # wait up to a tick period — cutting the localizer's contribution to
+        # the detect→state latency without removing the proven 60 Hz path.
         self.create_timer(1.0 / 60.0, self._tick)
 
     def _load_aruco_imu_alignment(self):
@@ -238,10 +250,23 @@ class BallLocalizerNode(Node):
     def _on_v0(self, msg: PointStamped):
         self.last_v0 = msg
         self._last_v0_t = time.monotonic()
+        self._last_v0_recv_s = self.get_clock().now().nanoseconds * 1e-9
+        self._maybe_publish_event()
 
     def _on_v1(self, msg: PointStamped):
         self.last_v1 = msg
         self._last_v1_t = time.monotonic()
+        self._last_v1_recv_s = self.get_clock().now().nanoseconds * 1e-9
+        self._maybe_publish_event()
+
+    def _maybe_publish_event(self):
+        """Event-driven freshness: republish /ball_xy_mono the instant a new
+        detection lands, instead of waiting up to one 60 Hz tick. Debounced
+        (≥5 ms) so the event and the periodic tick can't double-fire back to
+        back. The single-threaded executor serialises this with the timer,
+        so there's no re-entrancy with _tick."""
+        if time.monotonic() - self._last_pub_t >= 0.005:
+            self._tick()
 
     def _on_pose(self, msg: PoseStamped):
         self.last_pose = msg
@@ -489,6 +514,21 @@ class BallLocalizerNode(Node):
         out.point.z = z_m * 1000.0   # near zero by construction
         self.pub_xy_mono.publish(out)
         self._n_v0_out += 1
+        self._last_pub_t = time.monotonic()
+        # Per-stage latency probe (additive): capture→localizer-in (when we
+        # received the winning detection) and capture→mono-out (now), both vs
+        # the photon capture stamp. The digest differences these against the
+        # detector's v0_lat and the KF's capture→state to localize the gap.
+        if src_msg is not None:
+            cap = src_msg.header.stamp
+            cap_s = cap.sec + cap.nanosec * 1e-9
+            now_s = self.get_clock().now().nanoseconds * 1e-9
+            recv_s = (self._last_v1_recv_s if src == 'v1'
+                      else self._last_v0_recv_s)
+            lat = Float32MultiArray()
+            lat.data = [float((recv_s - cap_s) * 1e3),
+                        float((now_s - cap_s) * 1e3)]
+            self.pub_xy_mono_lat.publish(lat)
 
         # Diagnostic: which detector won.
         d = Float32MultiArray()
