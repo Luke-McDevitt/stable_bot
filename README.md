@@ -59,6 +59,51 @@ demos from the panel.
 For laptop / dev workflow, see
 [`PI_MIGRATION.md`](stewart_bringup/docs/PI_MIGRATION.md).
 
+## Running on the Pi — SSH & startup
+
+**Pi login:** user `sorak` · hostname `stablebot`
+
+```bash
+ssh sorak@stablebot.local      # works whenever mDNS/Bonjour is up
+ssh sorak@<YOUR_PI_IP>         # ← replace with the Pi's IP (see below)
+```
+
+**Pi IP:** `<SET ME — e.g. 192.168.x.x>` — find it by running
+`hostname -I` on the Pi, or from your router / phone-hotspot client list.
+(Set a DHCP reservation so it stops changing, then paste it above.)
+
+**Startup is two systemd services** (auto-start on boot — this *is* the
+"startup script"):
+
+| Service | What it runs |
+|---|---|
+| `stable_bot.service` | the ROS 2 control stack (`stewart_control_node` + vision nodes), via `ros2 launch stewart_bringup stewart_gui_launch.py` |
+| `stable_bot_gui.service` | the web GUI server (`scripts/gui_server.py`) on `:8080` |
+
+Both unit files live in [`stewart_bringup/scripts/`](stewart_bringup/scripts/)
+(`stable_bot.service`, `stable_bot_gui.service`). First-time setup installs
+and enables them; deploys refresh them:
+
+```bash
+# one-time, on a fresh Pi (installs deps, udev, CAN, services):
+bash ~/ros2_ws/src/stable_bot/stewart_bringup/scripts/install_on_pi.sh
+
+# deploy code changes (pull → build → restart both services → verify SHA):
+~/stable_bot_repo/stewart_bringup/scripts/pi_deploy.sh
+```
+
+Day-to-day, over SSH:
+
+```bash
+sudo systemctl status  stable_bot stable_bot_gui     # are they up?
+sudo systemctl restart stable_bot stable_bot_gui     # restart both
+journalctl -u stable_bot.service -f                  # follow control-stack logs
+journalctl -u stable_bot_gui.service -f              # follow GUI logs
+```
+
+Then open `http://stablebot.local:8080/` (or `http://<YOUR_PI_IP>:8080/`)
+in a laptop browser.
+
 ## Documentation
 
 ### How it works
@@ -129,6 +174,14 @@ In `stewart_bringup/scripts/`:
 | `compare_demo_bags.py` | walk every digest.summary.json across a bag glob, sortable table of gains vs outcome metrics. `--diff` collapses to only the columns that varied. |
 | `smooth_demo_bag.py` | offline non-causal Savitzky-Golay smoother on raw vision detections. Outputs cleaner ground-truth velocity than the live causal KF. Suitable as ML training labels. |
 | `calibrate_oak.py` | OAK intrinsic + extrinsic calibration (Stage A / B / C). |
+
+In `stewart_vision/scripts/` (focus/exposure auto-calibration — see
+[`oak_focus_exposure_autocal.md`](stewart_bringup/docs/oak_focus_exposure_autocal.md)):
+
+| script | purpose |
+|---|---|
+| `focus_exposure_baseline.py` | **observe-only** — snapshot the current camera config + sharpness/exposure metrics to `tuning_data/<UTC>_baseline/`. The don't-make-it-worse reference. |
+| `focus_sweep.py` | step the lens through focus, measure sharpness (Tenengrad / Laplacian) per position, find the peak; **restores original focus on exit**. Repeat per `--z-mm` to build the Z→focus map. |
 
 Top-level `repo_loc.py` counts lines of code per language across the
 repo.
