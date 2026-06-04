@@ -1,0 +1,96 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260604T225345Z_latency_bench",
+  "run_type": "latency_bench",
+  "driven_axis": "pitch",
+  "topic_counts": {
+    "/ball_state": 550,
+    "/ball_xy_mono": 279,
+    "/ball_xy_mono/lat": 51,
+    "/control_cmd": 2,
+    "/latency_bench/diag": 100,
+    "/leg_currents": 88,
+    "/leg_encoders": 88,
+    "/oak/ball/v0/diagnostic": 48,
+    "/oak/ball/v0/rgb_pixel": 48,
+    "/oak/config": 1,
+    "/oak/health": 1,
+    "/oak/latency_ms": 34,
+    "/odrive_errors": 9,
+    "/platform/imu/data": 1051,
+    "/platform_pose": 35,
+    "/platform_pose/markers_visible": 35,
+    "/platform_rpy": 88,
+    "/status": 9
+  },
+  "step_metrics": {
+    "imu": {
+      "n_steps": 1,
+      "rise_10_90_ms": 119.0,
+      "overshoot_pct": 199.4,
+      "step_resp_deg": 0.4,
+      "gain": 0.2
+    },
+    "cmd": {
+      "n_steps": 1,
+      "dead_time_ms": 83.2,
+      "rise_10_90_ms": 336.7,
+      "settle_ms": null,
+      "overshoot_pct": 13.3,
+      "gain": 0.5,
+      "step_cmd": 2.0,
+      "step_resp": 1.0
+    },
+    "leg": {
+      "n_steps": 1,
+      "dead_time_ms": 229.6,
+      "rise_10_90_ms": 284.4,
+      "settle_ms": 623.7,
+      "overshoot_pct": 4.0,
+      "gain": -0.1,
+      "step_cmd": 2.0,
+      "step_resp": -0.1,
+      "leg_index": 1
+    },
+    "driven_axis": "pitch",
+    "resp_axis": "pitch"
+  },
+  "actuation_stages": {
+    "n_steps": 1,
+    "driven_axis": "pitch",
+    "resp_axis": "pitch",
+    "cmd_step_deg": 2.0,
+    "gain_imu_per_cmd": 0.2,
+    "imu_step_deg": 0.4,
+    "imu_rise_10_90_ms": 119.0,
+    "overshoot_pct": 199.4,
+    "cmd_to_imu_dead_ms": 83.2,
+    "under_tilting": true,
+    "note": "gain + rise from the IMU directly (robust to the GIL-throttled cmd diag). gain<1 \u21d2 platform under-tilts the command. Dead time needs the cmd edge \u2192 None when the diag dropped it."
+  },
+  "run_config": {
+    "soft_max_vel_tps": 1.0,
+    "leg_current_soft_max_a": 6.0
+  },
+  "host": {
+    "gui_video_on": false,
+    "cpu_pct": {
+      "mean": 99.8,
+      "max": 100.0
+    },
+    "temp_c": {
+      "mean": 57.7,
+      "max": 57.9
+    },
+    "load1": {
+      "mean": 26.5,
+      "max": 26.6
+    },
+    "freq_mhz": {
+      "mean": 2400.0,
+      "max": 2400.0
+    },
+    "throttled_now": true,
+    "throttled_ever": true,
+    "n_samples": 5
+  }
+}
