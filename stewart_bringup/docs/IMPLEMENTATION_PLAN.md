@@ -76,6 +76,15 @@ touch). Do this from whichever environment, commit, push.
 blur → recover detection rate → lower effective latency), and keep focus
 sharp across the platform Z range. See `oak_highspeed_detection_analysis.md`.
 
+> **Do this empirically, not theoretically.** Focus and exposure here are
+> chosen from *measured* sharpness / detection curves on this rig, with
+> image-clarity feedback and a staged rollout that can't regress past the
+> current behavior. The full protocol (focus metric = Tenengrad /
+> variance-of-Laplacian; detector-driven exposure; offline-sweep →
+> open-loop map → observe-only monitor → bounded closed-loop) is in
+> [`oak_focus_exposure_autocal.md`](oak_focus_exposure_autocal.md). The
+> sub-steps below are the wiring; that doc is the method + safety design.
+
 ### 1a. Runtime exposure control + GUI sweep
 - **Code:** `oak_driver_node.py` — add an `/oak/cmd_exposure`
   subscriber (`Float32MultiArray [exp_us, iso]`) that pushes a
