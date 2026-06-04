@@ -51,6 +51,7 @@ import matplotlib.pyplot as plt
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 
@@ -96,7 +97,8 @@ class FocusSweepNode(Node):
         self.config = None
         self.pub = self.create_publisher(String, '/oak/cmd_focus', 1)
         self.create_subscription(
-            CompressedImage, '/oak/rgb/image_compressed', self._on_img, 5)
+            CompressedImage, '/oak/rgb/image_compressed', self._on_img,
+            qos_profile_sensor_data)
         self.create_subscription(String, '/oak/config', self._on_config, 5)
 
     def _on_img(self, msg: CompressedImage):

@@ -42,6 +42,7 @@ except ImportError:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String, Float32, Float32MultiArray
 
@@ -86,7 +87,8 @@ class BaselineNode(Node):
         self.latency_ms = []        # latest /oak/latency_ms samples
         self.health = None          # latest /oak/health array
         self.create_subscription(
-            CompressedImage, '/oak/rgb/image_compressed', self._on_img, 5)
+            CompressedImage, '/oak/rgb/image_compressed', self._on_img,
+            qos_profile_sensor_data)
         self.create_subscription(String, '/oak/config', self._on_config, 5)
         self.create_subscription(Float32, '/oak/latency_ms', self._on_lat, 10)
         self.create_subscription(
