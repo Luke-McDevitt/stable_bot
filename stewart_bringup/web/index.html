@@ -2485,6 +2485,13 @@ sorak ALL=(ALL) NOPASSWD: /usr/sbin/ip link set can0 *</pre>
         </div>
         <div id="latbench-status"
              class="text-slate-400 mono whitespace-pre-wrap min-h-4">idle</div>
+        <div class="flex items-center justify-between mt-2 text-slate-300">
+          <span class="font-semibold">Bench runs</span>
+          <button id="latbench-refresh"
+                  class="bg-slate-600 hover:bg-slate-500 rounded px-2 py-0.5">refresh</button>
+        </div>
+        <div id="latbench-bags-list"
+             class="max-h-64 overflow-y-auto space-y-1 mt-1">…</div>
       </div>
     </details>
   </section>
@@ -6667,6 +6674,9 @@ function dbagPushBag(name) {
   const aBtn = $('latbench-arm-btn'), dBtn = $('latbench-disarm-btn');
   if (aBtn) aBtn.addEventListener('click', () => publishCmd({ cmd: 'activate' }));
   if (dBtn) dBtn.addEventListener('click', () => publishCmd({ cmd: 'deactivate' }));
+  const refBtn = $('latbench-refresh');
+  if (refBtn) refBtn.addEventListener('click', latbenchFetchBags);
+  latbenchFetchBags();   // initial list load
   // Mirror the shared arm + bench-run state from /status.
   setInterval(() => {
     const armed = !!(typeof lastStatus !== 'undefined' && lastStatus && lastStatus.armed);
@@ -6719,9 +6729,87 @@ function dbagPushBag(name) {
       stSet('bench run failed: ' + e);
     } finally {
       runBtn.disabled = false;
+      latbenchFetchBags();   // refresh the list with the new run
     }
   });
 })();
+
+// ----- Latency Bench bag list (mirrors the demo-bag list, filtered to
+// latency_bench runs; reuses the /demo/bags* endpoints by name) -----
+function _latbenchRenderBag(e) {
+  const s = e.summary || {};
+  let info = `${Number(s.duration_s || 0).toFixed(1)}s`;
+  if (s.driven_axis) info += ` | ${s.driven_axis}`;
+  if (s.bench_n_steps != null) info += ` | ${s.bench_n_steps} reps`;
+  if (s.bench_gain != null) info += ` | gain=${Number(s.bench_gain).toFixed(2)}`;
+  if (s.bench_dead_ms != null) info += ` | dead=${s.bench_dead_ms}ms`;
+  if (s.bench_rise_ms != null) info += ` | rise=${s.bench_rise_ms}ms`;
+  if (s.leg_current_soft_max_a != null) info += ` | I=${s.leg_current_soft_max_a}A`;
+  const png = e.has_png
+    ? `<a class="text-cyan-400 underline" target="_blank" href="/demo/bags/png?name=${encodeURIComponent(e.name)}">PNG</a>`
+    : '<span class="text-slate-600">no PNG</span>';
+  return `
+    <div class="border-b border-slate-700 pb-1">
+      <div class="flex items-center gap-2">
+        <span class="flex-1 truncate text-slate-300" title="${e.name}">${e.name}</span>
+        ${png}
+        <button class="bg-emerald-700 hover:bg-emerald-600 px-2 rounded"
+                onclick="latbenchDigest('${e.name}')">digest</button>
+        <button class="bg-blue-700 hover:bg-blue-600 px-2 rounded"
+                onclick="latbenchPush('${e.name}')">push</button>
+        <button class="bg-red-800 hover:bg-red-700 px-2 rounded"
+                onclick="latbenchDelete('${e.name}')">del</button>
+      </div>
+      <div class="text-slate-400 mt-0.5 mono">${info}</div>
+    </div>`;
+}
+function latbenchFetchBags() {
+  const out = document.getElementById('latbench-bags-list');
+  if (!out) return;
+  fetch('/demo/bags').then(r => r.json()).then(j => {
+    const entries = (j.entries || [])
+      .filter(e => (e.name || '').includes('latency_bench'));
+    out.innerHTML = entries.length
+      ? entries.map(_latbenchRenderBag).join('')
+      : '<div class="text-slate-500">no bench runs yet</div>';
+  }).catch(e => { out.innerText = 'failed to fetch /demo/bags: ' + e; });
+}
+function _latbenchStatus(t) {
+  const e = document.getElementById('latbench-status');
+  if (e) e.textContent = t;
+}
+function latbenchDigest(name) {
+  _latbenchStatus(`digesting ${name}…`);
+  fetch('/demo/bags/digest', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }) })
+    .then(r => r.json()).then(j => {
+      _latbenchStatus(`${j.ok ? '✓' : '✗'} digest ${name}\n`
+        + (j.message || '').slice(-700));
+      latbenchFetchBags();
+    }).catch(e => _latbenchStatus('digest failed: ' + e));
+}
+function latbenchPush(name) {
+  _latbenchStatus(`pushing ${name}…`);
+  fetch('/demo/bags/push', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }) })
+    .then(r => r.json()).then(j => {
+      _latbenchStatus(`${j.ok ? '✓' : '✗'} push ${name}\n`
+        + (j.message || '').slice(-500));
+      latbenchFetchBags();
+    }).catch(e => _latbenchStatus('push failed: ' + e));
+}
+function latbenchDelete(name) {
+  if (!confirm(`Delete bench bag "${name}"?`)) return;
+  fetch('/demo/bags/delete', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }) })
+    .then(r => r.json()).then(j => {
+      _latbenchStatus(j.message || (j.ok ? 'deleted' : 'failed'));
+      latbenchFetchBags();
+    }).catch(e => _latbenchStatus('delete failed: ' + e));
+}
 
 // Auto-abort on /odrive_errors. The error topic is already
 // subscribed elsewhere — extend the existing JSON-shape detection.

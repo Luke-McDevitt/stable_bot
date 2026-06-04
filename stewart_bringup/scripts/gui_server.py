@@ -1072,7 +1072,8 @@ def _list_demo_bags():
             continue
         if not ('_demo1' in name or '_demo2' in name
                 or '_demo3' in name or '_demo_run' in name
-                or '_demo_untagged' in name):
+                or '_demo_untagged' in name
+                or '_latency_bench' in name):
             continue
         full = os.path.join(root, name)
         if not os.path.isdir(full):
@@ -1104,7 +1105,24 @@ def _list_demo_bags():
                     'p95_error_mm': (s.get('error_mm') or {}).get('p95'),
                     'rms_error_mm': (s.get('error_mm') or {}).get('rms'),
                     'settling_time_s': s.get('settling_time_s'),
+                    'run_type': s.get('run_type'),
                 }
+                # Latency Bench runs carry a different summary shape — pull
+                # the actuation metrics so the bench panel's list can show
+                # gain / dead time without re-reading the whole JSON.
+                if s.get('run_type') == 'latency_bench':
+                    _im = (s.get('step_metrics') or {}).get('imu') or {}
+                    _stg = s.get('actuation_stages') or {}
+                    _rc = s.get('run_config') or {}
+                    entry['summary'].update({
+                        'driven_axis': s.get('driven_axis'),
+                        'bench_gain': _im.get('gain'),
+                        'bench_n_steps': _im.get('n_steps'),
+                        'bench_dead_ms': _stg.get('cmd_to_imu_onset_ms'),
+                        'bench_rise_ms': _stg.get('imu_rise_10_90_ms'),
+                        'leg_current_soft_max_a':
+                            _rc.get('leg_current_soft_max_a'),
+                    })
             except Exception:
                 pass
         out.append(entry)
