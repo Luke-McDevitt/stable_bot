@@ -53,12 +53,12 @@ except ImportError as e:
 # Shared, unit-tested latency math (same module the demo digest uses).
 try:
     from stewart_bringup._latency import (
-        quat_to_roll_pitch_deg, step_train_metrics)
+        quat_to_roll_pitch_deg, step_train_metrics, imu_step_metrics)
 except ImportError:
     sys.path.insert(
         0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from stewart_bringup._latency import (
-        quat_to_roll_pitch_deg, step_train_metrics)
+        quat_to_roll_pitch_deg, step_train_metrics, imu_step_metrics)
 
 
 _TYPE_CLASS = {
@@ -194,7 +194,15 @@ def digest(bag_dir):
 
     # Per-rep step metrics (multi-rep-robust): cmd → IMU, and cmd → the
     # most-driven leg encoder for the transport/slew split.
-    imu_metrics = step_train_metrics(diag_s, cmd_driven, imu_s, imu_resp)
+    cmd_step = (float(np.nanmax(np.abs(cmd_driven)))
+                if cmd_driven.size else 0.0)
+    # PRIMARY: actuation dynamics measured from the IMU directly — robust to
+    # the GIL-throttled cmd diag (which drops the step edges). gain + rise.
+    imu_metrics = imu_step_metrics(imu_s, imu_resp, cmd_step)
+    # SECONDARY: cmd-edge analysis — only succeeds if the diag captured the
+    # step edges; used solely for the cmd→motion DEAD TIME (needs the cmd
+    # onset). Usually None on a GIL-throttled run.
+    cmd_metrics = step_train_metrics(diag_s, cmd_driven, imu_s, imu_resp)
     leg_metrics = leg_i = None
     if enc.size:
         leg_ranges = [float(np.ptp(enc[:, i])) for i in range(enc.shape[1])]
@@ -204,28 +212,25 @@ def digest(bag_dir):
         if leg_metrics is not None:
             leg_metrics['leg_index'] = leg_i
 
-    # Per-stage decomposition from the per-rep median dead times.
     stages = None
-    if imu_metrics is not None and imu_metrics.get('dead_time_ms') is not None:
-        cmd_to_imu = imu_metrics['dead_time_ms']
-        cmd_to_leg = leg_metrics.get('dead_time_ms') if leg_metrics else None
+    if imu_metrics is not None:
+        dead = cmd_metrics.get('dead_time_ms') if cmd_metrics else None
+        gain = imu_metrics.get('gain')
         stages = {
             'n_steps': imu_metrics.get('n_steps'),
             'driven_axis': driven,
             'resp_axis': resp_axis,
-            'cmd_to_leg_onset_ms': cmd_to_leg,   # feeder ZOH + CAN + ODrive
-            'leg_onset_to_imu_ms': (round(cmd_to_imu - cmd_to_leg, 1)
-                                    if cmd_to_leg is not None else None),
-            'cmd_to_imu_onset_ms': cmd_to_imu,   # total transport (dead time)
+            'cmd_step_deg': round(cmd_step, 2),
+            'gain_imu_per_cmd': gain,
+            'imu_step_deg': imu_metrics.get('step_resp_deg'),
             'imu_rise_10_90_ms': imu_metrics.get('rise_10_90_ms'),
-            'settle_ms': imu_metrics.get('settle_ms'),
             'overshoot_pct': imu_metrics.get('overshoot_pct'),
-            'gain_imu_per_cmd': imu_metrics.get('gain'),
-            'note': ('per-rep medians over n_steps. cmd→leg = feeder ZOH + '
-                     'CAN + ODrive dead time; leg→IMU = leg slew → platform; '
-                     'rise = mechanical. gain<1 ⇒ platform under-tilts the '
-                     'command. Dead time is precise only if the diag captured '
-                     'the step edges (low diag rate → coarse dead time).'),
+            'cmd_to_imu_dead_ms': dead,
+            'under_tilting': bool(gain is not None and gain < 0.8),
+            'note': ('gain + rise from the IMU directly (robust to the '
+                     'GIL-throttled cmd diag). gain<1 ⇒ platform under-tilts '
+                     'the command. Dead time needs the cmd edge → None when '
+                     'the diag dropped it.'),
         }
 
     summary = {
@@ -233,8 +238,9 @@ def digest(bag_dir):
         'run_type': 'latency_bench',
         'driven_axis': driven,
         'topic_counts': dict(sorted(data['counts'].items())),
-        'step_metrics': {'imu': imu_metrics, 'leg': leg_metrics,
-                         'driven_axis': driven, 'resp_axis': resp_axis},
+        'step_metrics': {'imu': imu_metrics, 'cmd': cmd_metrics,
+                         'leg': leg_metrics, 'driven_axis': driven,
+                         'resp_axis': resp_axis},
         'actuation_stages': stages,
         'run_config': _run_config(data['status']),
     }
@@ -242,16 +248,13 @@ def digest(bag_dir):
     print(f"[latency-bench] driven={driven} resp_axis={resp_axis} "
           f"n_steps={imu_metrics.get('n_steps') if imu_metrics else 0}")
     if stages:
-        print(f"  cmd→leg {stages['cmd_to_leg_onset_ms']}ms + leg→IMU "
-              f"{stages['leg_onset_to_imu_ms']}ms = cmd→IMU dead "
-              f"{stages['cmd_to_imu_onset_ms']}ms; rise "
-              f"{stages['imu_rise_10_90_ms']}ms; settle "
-              f"{stages['settle_ms']}ms; overshoot "
-              f"{stages['overshoot_pct']}%")
-    if imu_metrics:
-        g = imu_metrics.get('gain')
-        print(f"  gain={g} (IMU {resp_axis}/cmd {driven}) — "
-              f"{'UNDER-TILTING' if (g is not None and g < 0.8) else 'ok'}")
+        print(f"  cmd_step={stages['cmd_step_deg']}° → IMU "
+              f"{stages['imu_step_deg']}° | gain={stages['gain_imu_per_cmd']} "
+              f"{'UNDER-TILTING' if stages['under_tilting'] else 'ok'} | rise "
+              f"{stages['imu_rise_10_90_ms']}ms | overshoot "
+              f"{stages['overshoot_pct']}% | dead "
+              f"{stages['cmd_to_imu_dead_ms']}ms"
+              f"{' (cmd diag dropped edges)' if stages['cmd_to_imu_dead_ms'] is None else ''}")
 
     # ----- Plot: cmd vs IMU tilt timeline -----
     try:
@@ -278,12 +281,13 @@ def digest(bag_dir):
         axes[1].set_xlabel('time [s]')
         sub = ''
         if stages:
-            sub = (f"dead {stages['cmd_to_imu_onset_ms']}ms "
-                   f"(cmd→leg {stages['cmd_to_leg_onset_ms']} + leg→IMU "
-                   f"{stages['leg_onset_to_imu_ms']})  |  rise "
-                   f"{stages['imu_rise_10_90_ms']}ms  |  settle "
-                   f"{stages['settle_ms']}ms  |  overshoot "
-                   f"{stages['overshoot_pct']}%")
+            sub = (f"cmd {stages['cmd_step_deg']}° → IMU "
+                   f"{stages['imu_step_deg']}°  |  gain "
+                   f"{stages['gain_imu_per_cmd']}"
+                   f"{' UNDER-TILT' if stages['under_tilting'] else ''}  |  "
+                   f"rise {stages['imu_rise_10_90_ms']}ms  |  overshoot "
+                   f"{stages['overshoot_pct']}%  |  dead "
+                   f"{stages['cmd_to_imu_dead_ms']}ms")
         fig.suptitle(f"Latency Bench — {os.path.basename(bag_dir)} "
                      f"(driven: {driven})\n{sub}", fontsize=9)
         png = os.path.join(bag_dir, 'digest.png')

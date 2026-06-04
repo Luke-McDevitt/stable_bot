@@ -14,6 +14,7 @@ import pytest
 from stewart_bringup._latency import (
     actuation_latency,
     dominant_period_s,
+    imu_step_metrics,
     quat_to_roll_pitch_deg,
     resample_uniform,
     step_response_metrics,
@@ -354,6 +355,62 @@ def test_step_train_none_without_edges():
     rt = np.linspace(0, 5, 1000)
     ry = np.zeros_like(rt)
     assert step_train_metrics(t, cy, rt, ry) is None
+
+
+# --- (D5) imu_step_metrics — IMU-only bench analysis (no cmd timeline) -----
+
+def _make_imu_steps(reps=3, resp_deg=2.0, base_deg=-1.0, hold_s=0.8,
+                    settle_s=0.8, tau_s=0.05, fs=240.0, noise=0.05, seed=0):
+    """A synthetic IMU tilt trace: resting tilt `base_deg`, then reps of a
+    first-order rise to `resp_deg` and back. `resp_deg` is the ACHIEVED
+    tilt (so gain = resp_deg / cmd_step)."""
+    rng = np.random.default_rng(seed)
+    segs = [(settle_s, 0.0)]
+    for _ in range(reps):
+        segs += [(hold_s, resp_deg), (settle_s, 0.0)]
+    total = sum(s for s, _ in segs)
+    n = int(total * fs)
+    t = np.arange(n) / fs
+    target = np.zeros(n)
+    acc = 0.0
+    for dur, val in segs:
+        target[(t >= acc) & (t < acc + dur)] = val
+        acc += dur
+    resp = np.zeros(n)
+    a = 1.0 - np.exp(-1.0 / (tau_s * fs))
+    for i in range(1, n):
+        resp[i] = resp[i - 1] + a * (target[i] - resp[i - 1])
+    return t, base_deg + resp + noise * rng.standard_normal(n)
+
+
+def test_imu_step_detects_reps_and_gain():
+    t, imu = _make_imu_steps(reps=3, resp_deg=2.0, base_deg=-1.0, seed=1)
+    m = imu_step_metrics(t, imu, cmd_step=2.0)
+    assert m is not None
+    assert m['n_steps'] == 3
+    assert abs(m['gain'] - 1.0) < 0.15
+    assert m['rise_10_90_ms'] is not None and m['rise_10_90_ms'] > 0
+
+
+def test_imu_step_reports_undertilt():
+    # platform only reaches 0.8° of a 2° command → gain ~0.4, reported.
+    t, imu = _make_imu_steps(reps=3, resp_deg=0.8, base_deg=-1.0, seed=2)
+    m = imu_step_metrics(t, imu, cmd_step=2.0)
+    assert m is not None
+    assert abs(m['gain'] - 0.4) < 0.12
+
+
+def test_imu_step_negative_resting_tilt_ok():
+    # a large resting tilt must not be mistaken for a step.
+    t, imu = _make_imu_steps(reps=2, resp_deg=2.0, base_deg=-1.5, seed=3)
+    m = imu_step_metrics(t, imu, cmd_step=2.0)
+    assert m is not None and m['n_steps'] == 2
+
+
+def test_imu_step_none_when_flat():
+    t = np.linspace(0, 5, 1200)
+    imu = -1.0 + 0.05 * np.random.default_rng(0).standard_normal(1200)
+    assert imu_step_metrics(t, imu, cmd_step=2.0) is None
 
 
 # --- (E) resample_uniform NaN-pads outside the source span ----------------

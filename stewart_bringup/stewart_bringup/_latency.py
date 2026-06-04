@@ -383,3 +383,94 @@ def step_train_metrics(cmd_t_s, cmd_y, resp_t_s, resp_y,
         'step_cmd': _med('cmd'),
         'step_resp': _med('resp'),
     }
+
+
+def imu_step_metrics(resp_t_s, resp_y, cmd_step,
+                     pre_s=0.25, settle_frac=0.1, smooth_n=5):
+    """Per-rep step metrics measured from the RESPONSE alone (the IMU) — for
+    when the commanded-tilt timeline isn't reliably recorded (the Latency
+    Bench diag is GIL-throttled to ~10 Hz, so its edges drop). The IMU is
+    bagged reliably at ~240 Hz, so we detect the platform's tilt steps
+    directly by hysteresis and measure each one's rise / overshoot /
+    magnitude; gain = magnitude / cmd_step (the commanded angle, known from
+    run_config / the diag max). NO dead time here — that needs the cmd edge.
+
+    resp_y: measured tilt on the responding axis (deg). cmd_step: commanded
+    step magnitude (deg). Returns medians + n_steps, or None."""
+    rt = np.asarray(resp_t_s, dtype=np.float64)
+    r = np.asarray(resp_y, dtype=np.float64)
+    if rt.size < 16 or not np.isfinite(cmd_step) or abs(cmd_step) < 0.1:
+        return None
+    if smooth_n > 1 and r.size > smooth_n:
+        rs = np.convolve(r, np.ones(smooth_n) / smooth_n, mode='same')
+    else:
+        rs = r
+    base_mask = rt < float(rt[0]) + pre_s
+    base = (float(np.median(rs[base_mask])) if base_mask.sum() >= 2
+            else float(np.median(rs[:8])))
+    step = abs(cmd_step)
+    sgn = 1.0 if cmd_step >= 0 else -1.0
+    devs = (rs - base) * sgn          # positive while the platform is tilted
+    # Detection threshold keys off the signal's OWN amplitude, not the
+    # commanded step — so an UNDER-tilting platform (response < commanded)
+    # is still detected (and its low gain reported, not missed).
+    amp = float(np.percentile(devs, 90))
+    if amp < 0.2:                      # essentially flat → no real steps
+        return None
+    hi, lo = 0.5 * amp, 0.2 * amp
+    # Hysteresis edge detector → (rise, fall) index pairs, so we window the
+    # HELD tilt only (rise→fall) — not rise→next-rise, which would drag the
+    # plateau back through the return-to-level (step_resp≈0).
+    edges, low, ri = [], True, None
+    for i in range(devs.size):
+        if low and devs[i] >= hi:
+            ri, low = i, False
+        elif (not low) and devs[i] <= lo:
+            if ri is not None:
+                edges.append((ri, i))
+            low, ri = True, None
+    if ri is not None:
+        edges.append((ri, devs.size - 1))
+    if not edges:
+        return None
+    per = []
+    for ri_i, fi in edges:
+        t_r, t_f = float(rt[ri_i]), float(rt[fi])
+        if t_f - t_r < 0.05:
+            continue
+        win = (rt >= t_r - 0.3) & (rt <= t_f)      # onset + held tilt only
+        if win.sum() < 4:
+            continue
+        wt, wv = rt[win], devs[win]
+        hold = wv[wt >= t_r + 0.5 * (t_f - t_r)]    # latter half of the hold
+        plateau = (float(np.median(hold)) if hold.size
+                   else float(np.median(wv)))
+        if plateau < 0.2 * amp:
+            continue
+        rec = {'mag': plateau, 'gain': plateau / step,
+               'rise': None, 'over': None}
+
+        def _cross(frac):
+            idx = np.where(wv >= frac * plateau)[0]
+            return float(wt[idx[0]]) if idx.size else None
+
+        t10, t90 = _cross(0.1), _cross(0.9)
+        if t10 is not None and t90 is not None and t90 >= t10:
+            rec['rise'] = (t90 - t10) * 1e3
+        peak = float(np.max(wv))
+        rec['over'] = round(max(0.0, (peak - plateau) / plateau) * 100.0, 1)
+        per.append(rec)
+    if not per:
+        return None
+
+    def _med(key):
+        vals = [p[key] for p in per if p[key] is not None]
+        return round(float(np.median(vals)), 1) if vals else None
+
+    return {
+        'n_steps': len(per),
+        'rise_10_90_ms': _med('rise'),
+        'overshoot_pct': _med('over'),
+        'step_resp_deg': _med('mag'),
+        'gain': _med('gain'),
+    }
