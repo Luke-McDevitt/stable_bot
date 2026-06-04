@@ -296,3 +296,90 @@ def step_response_metrics(cmd_t_s, cmd_y, resp_t_s, resp_y,
         'settle_ms': settle_ms,
         'overshoot_pct': overshoot,
     }
+
+
+def step_train_metrics(cmd_t_s, cmd_y, resp_t_s, resp_y,
+                       min_step=0.3, pre_s=0.15, settle_frac=0.05):
+    """Per-rep metrics for a TRAIN of tilt steps — what the Latency Bench
+    actually commands (`reps` up/down cycles). Detects each RISING edge in
+    the commanded tilt and measures the response per rep, returning the
+    MEDIAN. Robust where `step_response_metrics` (single step) fails:
+      - multi-rep: a whole-run baseline→final both land at level → step≈0;
+      - sparse diag: the edge time is the transition SAMPLE itself (the
+        first publish after the set_pose), not a resampled onset, so a low
+        steady-state publish rate doesn't smear the edge.
+
+    `cmd_y` is the commanded tilt on the driven axis (signed). `resp_y` is
+    a 1-D response (e.g. the IMU axis with the larger response, or a leg
+    encoder) — the digest picks a frame-robust one. Returns medians +
+    n_steps, or None if no clean rising edge is found."""
+    cmd_t = np.asarray(cmd_t_s, dtype=np.float64)
+    cmd = np.asarray(cmd_y, dtype=np.float64)
+    rt = np.asarray(resp_t_s, dtype=np.float64)
+    r = np.asarray(resp_y, dtype=np.float64)
+    if cmd_t.size < 3 or rt.size < 8:
+        return None
+    rises = np.where(np.diff(cmd) >= min_step)[0] + 1   # rising-edge indices
+    falls = np.where(np.diff(cmd) <= -min_step)[0] + 1  # falling-edge indices
+    if rises.size == 0:
+        return None
+    per = []
+    for ei in rises:
+        t_e = float(cmd_t[ei])
+        # End the window at the next FALLING edge so it covers the HELD
+        # tilt only — not the return-to-level that follows (which would
+        # drag the plateau back to baseline and read step_resp≈0).
+        fj = falls[falls > ei]
+        t_fall = (float(cmd_t[fj[0]]) if fj.size
+                  else min(t_e + 1.5, float(rt[-1])))
+        t_fall = min(t_fall, float(rt[-1]))
+        cmd_step = float(cmd[ei] - cmd[ei - 1])
+        if cmd_step < min_step or t_fall - t_e < 0.1:
+            continue
+        pre = r[(rt >= t_e - pre_s) & (rt < t_e)]
+        win_m = (rt >= t_e) & (rt <= t_fall)
+        if pre.size < 1 or win_m.sum() < 4:
+            continue
+        r_base = float(np.median(pre))
+        rw_t, rw = rt[win_m], r[win_m]
+        half_t = rw_t[0] + 0.5 * (rw_t[-1] - rw_t[0])
+        plateau = float(np.median(rw[rw_t >= half_t]))
+        r_step = plateau - r_base
+        rec = {'gain': r_step / cmd_step, 'cmd': cmd_step, 'resp': r_step,
+               'dead': None, 'rise': None, 'settle': None, 'over': None}
+        if abs(r_step) >= 1e-3:
+            sgn = 1.0 if r_step >= 0 else -1.0
+
+            def _cross(frac):
+                idx = np.where((rw - (r_base + frac * r_step)) * sgn >= 0)[0]
+                return float(rw_t[idx[0]]) if idx.size else None
+
+            on = _cross(0.1)
+            rec['dead'] = (on - t_e) * 1e3 if on is not None else None
+            t10, t90 = _cross(0.1), _cross(0.9)
+            if t10 is not None and t90 is not None and t90 >= t10:
+                rec['rise'] = (t90 - t10) * 1e3
+            outside = np.where(np.abs(rw - plateau) > settle_frac
+                               * abs(r_step))[0]
+            if outside.size and outside[-1] + 1 < rw.size:
+                rec['settle'] = (rw_t[outside[-1] + 1] - t_e) * 1e3
+            peak = float(np.max(rw) if sgn > 0 else np.min(rw))
+            rec['over'] = max(0.0, (peak - plateau) * sgn / abs(r_step)) * 100.0
+        per.append(rec)
+    if not per:
+        return None
+
+    def _med(key):
+        vals = [p[key] for p in per if p[key] is not None]
+        return round(float(np.median(vals)), 1) if vals else None
+
+    return {
+        'n_steps': len(per),
+        'dead_time_ms': _med('dead'),
+        'rise_10_90_ms': _med('rise'),
+        'settle_ms': _med('settle'),
+        'overshoot_pct': _med('over'),
+        'gain': _med('gain'),
+        'step_cmd': _med('cmd'),
+        'step_resp': _med('resp'),
+    }

@@ -17,6 +17,7 @@ from stewart_bringup._latency import (
     quat_to_roll_pitch_deg,
     resample_uniform,
     step_response_metrics,
+    step_train_metrics,
     xcorr_lag_s,
 )
 
@@ -280,6 +281,79 @@ def test_step_metrics_handles_negative_step():
     assert m is not None
     assert abs(m['gain'] - 1.0) < 0.15
     assert m['dead_time_ms'] is not None and m['dead_time_ms'] > 0
+
+
+# --- (D4) step_train_metrics — the MULTI-REP bench analysis ---------------
+
+def _make_step_train(reps=3, dead_s=0.04, step_deg=2.0, hold_s=0.8,
+                     settle_s=0.8, tau_s=0.03, fs=400.0, cmd_rate=50.0,
+                     resp_rate=240.0, noise=0.01, seed=0):
+    """A TRAIN of tilt steps: settle, then reps of (hold up, settle down) —
+    exactly what the Latency Bench commands. Response = delayed + smoothed.
+    cmd decimated to cmd_rate (the bench's diag), resp to resp_rate (IMU)."""
+    rng = np.random.default_rng(seed)
+    segs = [(settle_s, 0.0)]
+    for _ in range(reps):
+        segs += [(hold_s, step_deg), (settle_s, 0.0)]
+    total = sum(s for s, _ in segs)
+    n = int(total * fs)
+    t = np.arange(n) / fs
+    cmd = np.zeros(n)
+    acc = 0.0
+    for dur, val in segs:
+        cmd[(t >= acc) & (t < acc + dur)] = val
+        acc += dur
+    dead_n = int(round(dead_s * fs))
+    delayed = np.concatenate([np.zeros(dead_n), cmd])[:n]
+    resp = np.zeros(n)
+    alpha = 1.0 - np.exp(-1.0 / (tau_s * fs))
+    for i in range(1, n):
+        resp[i] = resp[i - 1] + alpha * (delayed[i] - resp[i - 1])
+    resp = resp + noise * rng.standard_normal(n)
+    ci = np.unique((np.arange(0, total, 1.0 / cmd_rate) * fs).astype(int))
+    ci = ci[ci < n]
+    ri = np.unique((np.arange(0, total, 1.0 / resp_rate) * fs).astype(int))
+    ri = ri[ri < n]
+    return t[ci], cmd[ci], t[ri], resp[ri]
+
+
+def test_step_train_detects_all_reps_and_gain():
+    ct, cy, rt, ry = _make_step_train(reps=3, dead_s=0.04, cmd_rate=100.0,
+                                      tau_s=0.008, seed=1)
+    m = step_train_metrics(ct, cy, rt, ry)
+    assert m is not None
+    assert m['n_steps'] == 3                       # each rep found
+    assert abs(m['gain'] - 1.0) < 0.12
+    assert m['dead_time_ms'] is not None and 25 <= m['dead_time_ms'] <= 75
+    assert m['rise_10_90_ms'] is not None and m['rise_10_90_ms'] > 0
+
+
+def test_step_train_reports_real_undertilt():
+    # The bench symptom: platform reaches only ~40% of commanded. The
+    # per-rep gain must REPORT ~0.4, not mask it as ~1 or garbage.
+    ct, cy, rt, ry = _make_step_train(reps=3, step_deg=2.0, cmd_rate=100.0,
+                                      tau_s=0.01, seed=4)
+    m = step_train_metrics(ct, cy, rt, ry * 0.4)
+    assert m is not None
+    assert abs(m['gain'] - 0.4) < 0.1
+
+
+def test_step_train_sparse_cmd_still_finds_reps():
+    # 10 Hz cmd (the bench's observed diag rate) — the reps + gain are
+    # still recovered from the edges (dead time is coarse but present).
+    ct, cy, rt, ry = _make_step_train(reps=3, dead_s=0.05, cmd_rate=10.0,
+                                      tau_s=0.01, seed=2)
+    m = step_train_metrics(ct, cy, rt, ry)
+    assert m is not None and m['n_steps'] == 3
+    assert abs(m['gain'] - 1.0) < 0.15
+
+
+def test_step_train_none_without_edges():
+    t = np.linspace(0, 5, 50)
+    cy = np.zeros_like(t)                           # flat — no rising edge
+    rt = np.linspace(0, 5, 1000)
+    ry = np.zeros_like(rt)
+    assert step_train_metrics(t, cy, rt, ry) is None
 
 
 # --- (E) resample_uniform NaN-pads outside the source span ----------------

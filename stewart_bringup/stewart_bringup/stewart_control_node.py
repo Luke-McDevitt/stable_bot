@@ -54,7 +54,8 @@ except ImportError:
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (qos_profile_sensor_data, QoSProfile,
+                       ReliabilityPolicy, HistoryPolicy)
 
 from std_msgs.msg import Float32, Float64MultiArray, Float32MultiArray, String
 from std_srvs.srv import Trigger
@@ -1210,9 +1211,14 @@ class StewartControlNode(Node):
         # [t_rel, cmd_pitch_deg, cmd_roll_deg, phase]. Recorded alongside
         # the IMU + encoders so digest_latency_bench can measure the
         # actuation step response per-stage. Idle (no publish) except
-        # during a bench run.
+        # during a bench run. BEST_EFFORT so publish() NEVER blocks the
+        # excitation thread on a slow recorder (a RELIABLE publisher
+        # throttled the diag to ~10 Hz and smeared the step edges); depth
+        # 50 so the recorder still captures the timeline at the loop rate.
         self.pub_latency_bench = self.create_publisher(
-            Float32MultiArray, 'latency_bench/diag', 10)
+            Float32MultiArray, 'latency_bench/diag',
+            QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                       history=HistoryPolicy.KEEP_LAST, depth=50))
         # Bench run state (mirrors homing_running for /status + re-entrancy).
         self._latency_bench_thread = None
         self._latency_bench_running = False
@@ -2851,20 +2857,28 @@ class StewartControlNode(Node):
                 self._stop_level_loop()      # don't let it fight the step
             t_start = time.monotonic()
 
+            def _pub(p_cmd, r_cmd, phase):
+                m = Float32MultiArray()
+                m.data = [float(time.monotonic() - t_start),
+                          float(p_cmd), float(r_cmd), float(phase)]
+                self.pub_latency_bench.publish(m)
+
             def _hold(target_deg, dur_s, phase):
                 # Command the tilt once; publish the (constant) command at
-                # 100 Hz while the platform slews + settles. The bag's IMU
+                # ~100 Hz while the platform slews + settles. The bag's IMU
                 # (~240 Hz) captures the response against this timeline.
                 p_cmd = target_deg if axis == 'pitch' else 0.0
                 r_cmd = target_deg if axis == 'roll' else 0.0
                 self._do_set_pose(0.0, 0.0, z, r_cmd, p_cmd, 0.0)
+                # Burst the transition so the step EDGE lands at its true
+                # time even if BEST_EFFORT drops a frame — dead time is
+                # measured against this edge.
+                for _ in range(3):
+                    _pub(p_cmd, r_cmd, phase)
                 t_end = time.monotonic() + dur_s
                 while (time.monotonic() < t_end
                        and self._latency_bench_running):
-                    m = Float32MultiArray()
-                    m.data = [float(time.monotonic() - t_start),
-                              float(p_cmd), float(r_cmd), float(phase)]
-                    self.pub_latency_bench.publish(m)
+                    _pub(p_cmd, r_cmd, phase)
                     time.sleep(0.01)
 
             _hold(0.0, max(0.5, params['settle_s']), 0)      # baseline first

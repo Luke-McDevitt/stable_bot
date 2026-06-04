@@ -740,9 +740,19 @@ def digest(bag_dir: str):
         age_ms = state_age[np.isfinite(state_age)] * 1e3
         age_ms = age_ms[age_ms > 0.0]
         if age_ms.size:
-            fresh = float(np.percentile(age_ms, 10))
+            # Fresh pipeline latency = median of the per-cycle TROUGHS of
+            # the age sawtooth (age resets to the pipeline floor when a new
+            # detection propagates, then ramps until the next one). The
+            # troughs are the floor; p10 is the fallback if too few.
+            inner = age_ms[1:-1]
+            troughs = (inner[(inner <= age_ms[:-2]) & (inner < age_ms[2:])]
+                       if inner.size else inner)
+            fresh = (float(np.median(troughs)) if troughs.size >= 3
+                     else float(np.percentile(age_ms, 10)))
             vision_pipeline = {
                 'capture_to_state_fresh_ms': round(fresh, 1),
+                'capture_to_state_min_ms':
+                    round(float(np.percentile(age_ms, 2)), 1),
                 'capture_to_state_p50_ms':
                     round(float(np.percentile(age_ms, 50)), 1),
                 'capture_to_state_p90_ms':

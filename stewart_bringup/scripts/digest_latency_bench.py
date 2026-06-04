@@ -53,12 +53,12 @@ except ImportError as e:
 # Shared, unit-tested latency math (same module the demo digest uses).
 try:
     from stewart_bringup._latency import (
-        quat_to_roll_pitch_deg, step_response_metrics)
+        quat_to_roll_pitch_deg, step_train_metrics)
 except ImportError:
     sys.path.insert(
         0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from stewart_bringup._latency import (
-        quat_to_roll_pitch_deg, step_response_metrics)
+        quat_to_roll_pitch_deg, step_train_metrics)
 
 
 _TYPE_CLASS = {
@@ -177,45 +177,55 @@ def digest(bag_dir):
     imu_roll = imu_rp[:, 0] if imu_rp.size else np.zeros((0,))
     imu_pitch = imu_rp[:, 1] if imu_rp.size else np.zeros((0,))
 
-    # Pick the driven axis = the one with the larger commanded range.
+    # Driven axis = the commanded axis with the larger range.
     pitch_range = float(np.ptp(cmd_pitch)) if cmd_pitch.size else 0.0
     roll_range = float(np.ptp(cmd_roll)) if cmd_roll.size else 0.0
     driven = 'pitch' if pitch_range >= roll_range else 'roll'
+    cmd_driven = cmd_pitch if driven == 'pitch' else cmd_roll
 
-    # Whole-run metrics per axis (cmd → IMU). For multi-rep runs this
-    # captures the first/dominant step; per-rep splitting is a later add.
-    metrics_pitch = step_response_metrics(diag_s, cmd_pitch, imu_s, imu_pitch)
-    metrics_roll = step_response_metrics(diag_s, cmd_roll, imu_s, imu_roll)
+    # Response axis: the IMU axis that actually MOVES. The empirical IK
+    # rotates the commanded axis, so a commanded 'pitch' can appear largely
+    # in IMU roll — picking the larger-range IMU axis keeps the gain honest
+    # instead of reading low because we compared mismatched axes.
+    imu_p_rng = float(np.ptp(imu_pitch)) if imu_pitch.size else 0.0
+    imu_r_rng = float(np.ptp(imu_roll)) if imu_roll.size else 0.0
+    resp_axis = 'pitch' if imu_p_rng >= imu_r_rng else 'roll'
+    imu_resp = imu_pitch if resp_axis == 'pitch' else imu_roll
 
-    # Leg-slew split: cmd (driven axis) → the most-driven leg encoder.
-    leg_metrics = None
+    # Per-rep step metrics (multi-rep-robust): cmd → IMU, and cmd → the
+    # most-driven leg encoder for the transport/slew split.
+    imu_metrics = step_train_metrics(diag_s, cmd_driven, imu_s, imu_resp)
+    leg_metrics = leg_i = None
     if enc.size:
-        cmd_driven = cmd_pitch if driven == 'pitch' else cmd_roll
         leg_ranges = [float(np.ptp(enc[:, i])) for i in range(enc.shape[1])]
         leg_i = int(np.argmax(leg_ranges))
-        leg_metrics = step_response_metrics(
-            diag_s, cmd_driven, enc_s, enc[:, leg_i])
+        leg_metrics = step_train_metrics(diag_s, cmd_driven, enc_s,
+                                         enc[:, leg_i])
         if leg_metrics is not None:
             leg_metrics['leg_index'] = leg_i
 
-    driven_m = metrics_pitch if driven == 'pitch' else metrics_roll
-    # Per-stage decomposition from the dead times.
+    # Per-stage decomposition from the per-rep median dead times.
     stages = None
-    if driven_m is not None and driven_m.get('dead_time_ms') is not None:
-        cmd_to_imu = driven_m['dead_time_ms']
-        cmd_to_leg = (leg_metrics.get('dead_time_ms')
-                      if leg_metrics else None)
+    if imu_metrics is not None and imu_metrics.get('dead_time_ms') is not None:
+        cmd_to_imu = imu_metrics['dead_time_ms']
+        cmd_to_leg = leg_metrics.get('dead_time_ms') if leg_metrics else None
         stages = {
+            'n_steps': imu_metrics.get('n_steps'),
+            'driven_axis': driven,
+            'resp_axis': resp_axis,
             'cmd_to_leg_onset_ms': cmd_to_leg,   # feeder ZOH + CAN + ODrive
             'leg_onset_to_imu_ms': (round(cmd_to_imu - cmd_to_leg, 1)
                                     if cmd_to_leg is not None else None),
             'cmd_to_imu_onset_ms': cmd_to_imu,   # total transport (dead time)
-            'imu_rise_10_90_ms': driven_m.get('rise_10_90_ms'),
-            'settle_ms': driven_m.get('settle_ms'),
-            'overshoot_pct': driven_m.get('overshoot_pct'),
-            'note': ('cmd→leg = feeder ZOH + CAN + ODrive dead time; '
-                     'leg→IMU = leg slew → platform; rise = mechanical. '
-                     'Unambiguous (aperiodic step) — unlike orbital runs.'),
+            'imu_rise_10_90_ms': imu_metrics.get('rise_10_90_ms'),
+            'settle_ms': imu_metrics.get('settle_ms'),
+            'overshoot_pct': imu_metrics.get('overshoot_pct'),
+            'gain_imu_per_cmd': imu_metrics.get('gain'),
+            'note': ('per-rep medians over n_steps. cmd→leg = feeder ZOH + '
+                     'CAN + ODrive dead time; leg→IMU = leg slew → platform; '
+                     'rise = mechanical. gain<1 ⇒ platform under-tilts the '
+                     'command. Dead time is precise only if the diag captured '
+                     'the step edges (low diag rate → coarse dead time).'),
         }
 
     summary = {
@@ -223,13 +233,14 @@ def digest(bag_dir):
         'run_type': 'latency_bench',
         'driven_axis': driven,
         'topic_counts': dict(sorted(data['counts'].items())),
-        'step_metrics': {'pitch': metrics_pitch, 'roll': metrics_roll,
-                         'leg': leg_metrics},
+        'step_metrics': {'imu': imu_metrics, 'leg': leg_metrics,
+                         'driven_axis': driven, 'resp_axis': resp_axis},
         'actuation_stages': stages,
         'run_config': _run_config(data['status']),
     }
 
-    print(f"[latency-bench] driven={driven}")
+    print(f"[latency-bench] driven={driven} resp_axis={resp_axis} "
+          f"n_steps={imu_metrics.get('n_steps') if imu_metrics else 0}")
     if stages:
         print(f"  cmd→leg {stages['cmd_to_leg_onset_ms']}ms + leg→IMU "
               f"{stages['leg_onset_to_imu_ms']}ms = cmd→IMU dead "
@@ -237,9 +248,10 @@ def digest(bag_dir):
               f"{stages['imu_rise_10_90_ms']}ms; settle "
               f"{stages['settle_ms']}ms; overshoot "
               f"{stages['overshoot_pct']}%")
-    if driven_m:
-        print(f"  gain={driven_m.get('gain')} (IMU/cmd) "
-              f"xcorr_lag={driven_m.get('xcorr_lag_ms')}ms")
+    if imu_metrics:
+        g = imu_metrics.get('gain')
+        print(f"  gain={g} (IMU {resp_axis}/cmd {driven}) — "
+              f"{'UNDER-TILTING' if (g is not None and g < 0.8) else 'ok'}")
 
     # ----- Plot: cmd vs IMU tilt timeline -----
     try:
