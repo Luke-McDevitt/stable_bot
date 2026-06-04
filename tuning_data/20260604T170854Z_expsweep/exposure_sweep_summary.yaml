@@ -1,0 +1,184 @@
+kind: exposure_sweep
+utc: 20260604T170854Z
+iso: 1600
+exposures_us:
+- 8000
+- 6000
+- 4000
+- 3000
+- 2000
+- 1500
+- 1000
+- 750
+- 500
+oak_config_at_start:
+  rgb_fps: 60
+  mono_fps: 15
+  jpeg_quality: 50
+  focus_mode: manual
+  focus_pos: 130
+  exp_us: 8000
+  iso: 1600
+  v0_backend: cv2
+  v0_blob: null
+  v1_blob: v1_yolov8n_320.blob
+  v1_arch: v8
+  nn_conf_min: 0.0001
+  v1_yolo_conf_min: 0.3
+  jpeg_fps: 10
+  hsv_lo:
+  - 5
+  - 100
+  - 60
+  hsv_hi:
+  - 22
+  - 255
+  - 255
+  enable_depth: false
+  mask_v0_to_platform: true
+  usb_speed: super
+  rgb_w: 960
+  rgb_h: 540
+original_exp_us: 8000
+original_iso: 1600
+best_detect_hz: 11.93
+recommended_exp_us: 3000
+recommendation_note: shortest exposure holding detect_hz >= 90% of best (11.9 Hz).
+  Verify saturation stays above the HSV gate and re-test detection under a MOVING
+  ball before adopting.
+rows:
+- exp_us: 8000
+  iso: 1600
+  detect_hz: 10.64
+  frame_hz: 7.18
+  detect_frac: 1.483
+  latency_mean: 122.4
+  latency_std: 39.1
+  latency_p95: 194.6
+  sat_mean: 54.6313
+  sat_p50: 15.149
+  val_mean: 161.5997
+  over_clip_frac: 0.0
+  under_clip_frac: 0.0039
+  mean: 152.5983
+  tenengrad: 34214.3594
+- exp_us: 6000
+  iso: 1600
+  detect_hz: 11.93
+  frame_hz: 8.2
+  detect_frac: 1.455
+  latency_mean: 114.2
+  latency_std: 34.2
+  latency_p95: 169.0
+  sat_mean: 60.7924
+  sat_p50: 16.6762
+  val_mean: 143.5284
+  over_clip_frac: 0.0
+  under_clip_frac: 0.0077
+  mean: 135.1233
+  tenengrad: 28853.1814
+- exp_us: 4000
+  iso: 1600
+  detect_hz: 10.98
+  frame_hz: 7.73
+  detect_frac: 1.419
+  latency_mean: 105.9
+  latency_std: 32.8
+  latency_p95: 161.4
+  sat_mean: 68.0777
+  sat_p50: 19.4598
+  val_mean: 119.6759
+  over_clip_frac: 0.0
+  under_clip_frac: 0.0199
+  mean: 112.2331
+  tenengrad: 21064.6451
+- exp_us: 3000
+  iso: 1600
+  detect_hz: 11.7
+  frame_hz: 8.71
+  detect_frac: 1.343
+  latency_mean: 106.6
+  latency_std: 30.6
+  latency_p95: 156.2
+  sat_mean: 70.4714
+  sat_p50: 21.9167
+  val_mean: 103.2135
+  over_clip_frac: 0.0
+  under_clip_frac: 0.0364
+  mean: 96.5073
+  tenengrad: 15573.3665
+- exp_us: 2000
+  iso: 1600
+  detect_hz: 0.0
+  frame_hz: 9.41
+  detect_frac: 0.0
+  latency_mean: 95.7
+  latency_std: 28.0
+  latency_p95: 151.8
+  sat_mean: 67.1875
+  sat_p50: 15.7007
+  val_mean: 80.7792
+  over_clip_frac: 0.0
+  under_clip_frac: 0.0866
+  mean: 75.5156
+  tenengrad: 9780.6586
+- exp_us: 1500
+  iso: 1600
+  detect_hz: 0.0
+  frame_hz: 8.96
+  detect_frac: 0.0
+  latency_mean: 80.7
+  latency_std: 21.2
+  latency_p95: 113.7
+  sat_mean: 52.6505
+  sat_p50: 13.0322
+  val_mean: 65.4301
+  over_clip_frac: 0.0
+  under_clip_frac: 0.1249
+  mean: 61.725
+  tenengrad: 6577.6373
+- exp_us: 1000
+  iso: 1600
+  detect_hz: 0.0
+  frame_hz: 9.16
+  detect_frac: 0.0
+  latency_mean: 85.8
+  latency_std: 25.4
+  latency_p95: 135.9
+  sat_mean: 39.4029
+  sat_p50: 0.0
+  val_mean: 45.3001
+  over_clip_frac: 0.0
+  under_clip_frac: 0.1876
+  mean: 42.7995
+  tenengrad: 3190.6753
+- exp_us: 750
+  iso: 1600
+  detect_hz: 0.0
+  frame_hz: 9.17
+  detect_frac: 0.0
+  latency_mean: 76.1
+  latency_std: 19.6
+  latency_p95: 103.0
+  sat_mean: 32.5441
+  sat_p50: 0.0
+  val_mean: 34.0056
+  over_clip_frac: 0.0
+  under_clip_frac: 0.2185
+  mean: 32.5379
+  tenengrad: 1770.0737
+- exp_us: 500
+  iso: 1600
+  detect_hz: 0.0
+  frame_hz: 9.24
+  detect_frac: 0.0
+  latency_mean: 69.0
+  latency_std: 18.7
+  latency_p95: 100.5
+  sat_mean: 27.7904
+  sat_p50: 0.0
+  val_mean: 22.416
+  over_clip_frac: 0.0
+  under_clip_frac: 0.2536
+  mean: 21.5018
+  tenengrad: 712.3724
