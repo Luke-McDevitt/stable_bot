@@ -10,6 +10,13 @@ The goal: a simulation accurate enough that (a) the controller's
 forward-prediction is right on transients, and (b) we can develop and
 tune a better-than-PID controller in sim before touching hardware.
 
+> **Part I** (§1–11) is the physics + data-collection theory.
+> **[Part II](#part-ii--execution-gui-run-procedure-data-sufficiency-robust-logging) (§12–18)**
+> is the execution layer added after a deeper repo audit: what telemetry
+> we can actually log, the robust-logging gap, GUI integration, the
+> per-run operator procedure, the "when do we have enough data?"
+> stopping criteria, auto-QA, and the digest error visualizations.
+
 ---
 
 ## 1. Why the current model is not enough
@@ -374,6 +381,199 @@ The fitted model feeds three downstream payoffs, in increasing ambition:
 
 ---
 
+# Part II — Execution: GUI, run procedure, data sufficiency, robust logging
+
+*Added 2026-06-03 after auditing the live telemetry in the repo.* Part I
+says what physics to capture; Part II says how to capture it robustly,
+drive it from the GUI, know when to stop, and see the model approach
+reality.
+
+## 12. Repo telemetry audit — what we can log vs. what we record today
+
+Every signal below is already published by a running node. The auto-bag
+allowlist (`bag_recorder_node.TOPICS_DEFAULT`) records only the ✅ rows —
+the ❌ rows are published but **dropped on the floor**, including several
+that either drive the model or flag a bad run. This is the concrete
+version of "capture everything that could affect the situation."
+
+| Signal | Topic / msg | In bag today? | Why we need it |
+|---|---|---|---|
+| Ball KF state + cov | `/ball_state`, `/ball_state/cov` | ✅ | The observable + uncertainty |
+| Raw detection + per-detector | `/ball_xy_mono`, `/oak/ball/diagnostic` | ✅ | Measurement-noise model (R) |
+| IMU (orient, **ω**, **a_base**) | `/imu/data` (`sensor_msgs/Imu`) | ✅ | Tilt + the Tier-2 coupling terms |
+| Commanded tilt / mode | `/control_cmd`, `/control_result` | ✅ | The identifiable input |
+| Leg encoder positions | `/encoders` | ✅ | FK platform pose (IMU-independent) |
+| **Vision latency** | **`/oak/latency_ms`** | ❌ | **The `Td` we predict over — measure, don't assume** |
+| **Vision health** | **`/oak/health`** `[v0_arr_hz, v0_pub_hz, jpeg_hz, depth_hz,…]` | ❌ | Detection rate + dropout — the dominant noise source |
+| **Controller per-tick** | **`/ball_track/diagnostic`** (FSM phase, commanded tilt, ex/ey, edot, lead) | ❌ | The controller's own view — the input side of the fit |
+| **Level/feeder per-tick** | **`/level_diag`** (`LevelDiag`) | ❌ | `feeder_mode`, `axis_state`, per-leg `active_errors`, `leg_iq/vel/enc`, **`target_xyzrpy` incl. Z**, `dt_actual` |
+| **Motor currents** | **`/leg_currents`** | ❌ | Applied-torque proxy; saturation / backlash signature |
+| **Per-motor full state** | **`RobotState`/`MotorStateSingle`** (`active_errors`, `disarm_reason`, `current_state`, `procedure_result`, `iq_meas/sp`, `fet_temp`, `motor_temp`, `bus_voltage`, `bus_current`) | ❌ | Catches a leg silently in IDLE, **armed in the wrong mode**, thermal/voltage fault, watchdog disarm |
+| **CAN utilization** | **`CanTrafficReportMessage`** (`received_count`, `report_interval`) | ❌ | Bus saturation → dropped frames → silent control gaps |
+
+**On Z and motor mode specifically** (your callout): Z is logged inside
+`LevelDiag.target_xyzrpy`, and the "is a leg accidentally in vel instead
+of pos / not closed-loop" case is exactly `LevelDiag.feeder_mode` +
+`axis_state` + `active_errors`. The data already exists — it just isn't
+in the bag, and `LevelDiag` is only published while the *level* loop runs
+(it's bypassed during BALL_TRACK), so BALL_TRACK runs currently capture
+**none** of the per-leg health. Both are fixed in §13.
+
+## 13. Robust logging — manifest v2
+
+Two code changes, both small:
+
+1. **Expand the allowlist** to add: `/oak/latency_ms`, `/oak/health`,
+   `/ball_track/diagnostic`, `/level_diag`, `/leg_currents`, the
+   per-motor `RobotState`, and the CAN-traffic topic. (Images stay
+   opt-in.) Mirror them for the new data-collect modes (§15).
+2. **Publish per-leg health during BALL_TRACK too.** Either keep
+   `/level_diag` (or a slim `motor_health` topic) flowing while the
+   BALL_TRACK loop owns the bus, so every run — not just level runs —
+   records `axis_state`/`feeder_mode`/`active_errors`/temps.
+
+Plus the discipline from §6: every message carries a usable timestamp;
+add a one-time sync-pulse to align camera/IMU/ODrive clocks; **log raw,
+derive offline**; write the per-bag metadata sidecar (§4).
+
+## 14. Auto-QA — reject bad runs before they poison the fit
+
+Once §13 lands, the digest can automatically mark a bag unusable and drop
+it from the training set — your "identify an issue" ask, for free:
+
+- any `axis_state ≠ 8 (CLOSED_LOOP)` mid-run → a leg dropped out;
+- any `feeder_mode` unexpected (vel where pos was intended) → armed wrong;
+- any `active_errors ≠ 0` (watchdog / vel-limit / current-limit) → fault;
+- `motor_temp` / `fet_temp` over threshold or `bus_voltage` sag → thermal/power;
+- `/oak/health.v0_pub_hz` below floor or a `/oak/latency_ms` spike → vision starvation;
+- `CanTrafficReport.received_count` drop → bus saturation.
+
+Faulty bags get the existing `_fault` suffix and the fitter skips them.
+A clean run is one where none of these fired for its whole duration.
+
+## 15. GUI integration — mirror the STEP_ID pattern
+
+The GUI is an HTTP server (`gui_server.py`, `do_GET`/`do_POST`) +
+`web/index.html`, with the controller driven over the `/control_cmd`
+String bus. STEP_ID is already wired exactly this way — session
+enumeration (`/step_id/bags`), digest (`/step_id/bags/digest`), plot
+serving (`/step_id/bags/png`), push (`/step_id/bags/push`), per-phase Run
+buttons. Clone that pattern for a **Data Collection panel**:
+
+- **Per-campaign Run buttons** (Meas-noise, Breakaway, Coasting, Step-ID*,
+  Sweep, Coupling, Coverage-grid) → publish
+  `data_collect:<campaign>:<json-params>` on `/control_cmd`.
+  (*Step-ID already exists — fold it in rather than duplicate.)
+- **Live coverage map** — heatmap of state-space bins (r × |v| × θ × θ̇ ×
+  Z × direction) with per-bin counts, so the operator fills the *next
+  under-sampled* bin instead of collecting blindly. This is what makes
+  the campaign systematic rather than a pile of random runs.
+- **Run-QA strip** — `axis_state`/`feeder_mode`/`active_errors` lights +
+  latency + detection-rate readouts; auto-abort and `_fault`-tag on
+  disarm / dropout / latency spike (§14, live).
+- **Session list** with digest / PNG / push — direct clones of the
+  step_id endpoints: `/data_collect/bags`, `/.../digest`, `/.../png`,
+  `/.../push`.
+- **Model panel** — after a fit, shows the §18 error visualizations so
+  you literally watch the sim get closer to reality between runs.
+
+## 16. Operator runbook — the steps of one collection run
+
+1. **Pre-flight** (auto-checked, shown in the QA strip): homed + levelled;
+   all six axes `CLOSED_LOOP` in the intended `feeder_mode`; temps/bus
+   nominal; vision backend + exposure chosen; ball type/mass/surface, Z,
+   lighting, ambient temp written to the metadata sidecar; running git SHA
+   logged.
+2. **Pick campaign + params.** The coverage map highlights the next
+   under-filled bin and (via §17.2) can recommend the most informative run.
+3. **System opens the expanded-topic bag** automatically
+   (`data_collect_<UTC>_<campaign>/`) and writes the sidecar.
+4. **Place the ball** as prompted (ArUco markers as fiducials), or let the
+   auto motion run (sweeps / steps / coasting).
+5. **Execute** the campaign motion. QA strip live; auto-abort + fault-tag
+   on disarm / dropout / latency spike.
+6. **Stop** → bag flushed → auto-digest → coverage map, parameter
+   convergence, and learning curve update.
+7. **Repeat** until the §17 stopping criteria go green for every region.
+8. Periodically run a held-out **click-to-goto** set (campaign H) —
+   never fit on it — and watch the model panel close on reality.
+
+## 17. "When do we have enough data?" — the stopping criteria
+
+There is a principled answer, and it is **per-region, not global** — you
+can be saturated at the center and starved at the rim at the same time.
+Four tests; a region is *done* only when all four are green there.
+
+1. **State-space coverage quota** — *answers center-vs-edge, fast-vs-slow,
+   small-vs-large, quick-vs-slow-platform, start→end.* Bin the reachable
+   space on the axes that matter: radius `r` (center→rim), speed `|v|`,
+   tilt `θ`, **tilt-rate `θ̇`** (slow vs quick platform moves), `Z`, and
+   the start→end direction pairing. Require ≥ `N` *post-QA* samples per
+   reachable bin (e.g. `N ≈ 300`). The coverage map turns "is every case
+   covered?" into a visual checklist; empty reachable bins *are* the
+   to-do list.
+2. **Per-parameter convergence via Fisher information** — *the rigorous
+   bound.* The inverse Fisher Information Matrix lower-bounds the
+   parameter covariance (Cramér–Rao). Track each fitted parameter's
+   running estimate ± its CRLB standard deviation as bags accumulate; a
+   parameter is "done" when its relative std drops below target
+   (~10–15 %) **and** the estimate has stopped drifting. This generalizes
+   your existing `CV < 0.30` gate to *every* model parameter, and
+   **D-optimal design** (maximize `det(FIM)`) tells you which campaign
+   adds the most remaining information — the GUI can recommend the next
+   run ([optimal experiment design / FIM](https://link.springer.com/10.1007/978-1-4419-9863-7_1222),
+   [D-optimal for nonlinear dynamics](https://www.hindawi.com/journals/mpe/2012/296701/)).
+3. **Held-out learning-curve plateau** — *the model-agnostic answer.* Plot
+   held-out horizon-error vs training-set size; when more bags stop
+   lowering it, more data won't help
+   ([learning-curve diagnosis](https://scikit-learn.org/stable/auto_examples/model_selection/plot_learning_curve.html)).
+   If it's still falling, keep collecting; if it plateaus *high*, the fix
+   is more physics, not more data → test 4.
+4. **Residual whiteness** — *are we missing data or missing physics?* After
+   fitting, check the prediction residuals: if they're white (no
+   autocorrelation, uncorrelated with `r, v, θ, θ̇, Z`), the remaining
+   error is just noise → done. If they're structured (error grows with
+   speed, or near the rim), that region needs **more data** if its bin is
+   sparse, or a **missing model term** if the bin is dense but still
+   wrong. The §18 residual maps localize exactly which.
+
+Worked example: rolling-resistance-at-high-speed is "enough" only when
+the high-`|v|` bins are filled (test 1), its CRLB std is small (test 2),
+the learning curve has flattened (test 3), and the high-`v` residuals are
+white (test 4). All four, in that region.
+
+> Why bother capturing this much: a recent ball-balancing study found
+> RL's edge over PID came "not from improved parameter tuning... but from
+> its ability to effectively utilize richer state observations"
+> ([Rich State Observations Empower RL to Surpass PID](https://arxiv.org/abs/2509.21122)).
+> Richer logging is the lever; the stopping criteria keep it from running
+> forever.
+
+## 18. Digest error visualizations — watching the sim approach reality
+
+Every fit/digest emits (extending, not replacing, the existing STEP_ID
+plots like `plant_gain_fit.png` / `phase_plane.png`):
+
+- **Sim-vs-real overlay** — model rollout vs recorded ball on the XY plane
+  + `px(t), py(t)` time series, per held-out bag. The headline picture.
+- **Horizon-error curve** — prediction error vs lookahead (0–200 ms),
+  model vs the constant-velocity baseline. Shows the win and the
+  trustworthy horizon.
+- **Residual heatmaps** — error binned over position, speed, tilt, and
+  tilt-rate. Shows *where* we're wrong.
+- **Residual whiteness** — autocorrelation + residual-vs-state scatter
+  (the missing-physics detector).
+- **Coverage map** — occupancy + per-bin counts over the §17 bins.
+- **Parameter convergence** — each parameter ± CRLB std vs #bags.
+- **Learning curve** — held-out horizon-error vs data quantity.
+- **Per-bag QA timeline** — `axis_state`/`feeder_mode`/`active_errors`,
+  latency, detection-rate, dropout markers, and the auto-exclude verdict.
+
+These are what you watch, run over run, to confirm the work is actually
+getting closer to reality — and to prove it for the click-to-goto demo.
+
+---
+
 ## 11. Sources
 
 Ball-and-plate dynamics & validation:
@@ -398,3 +598,14 @@ Data-driven / hybrid system identification:
 Excitation / experiment design:
 - [MIT 6.435 — input design & persistence of excitation](https://ocw.mit.edu/courses/6-435-system-identification-spring-2005/ffdd1299a755458f8b990bf3f8de8d20_lec4_6_435.pdf)
 - [Excitation signals for identification of dynamic systems (PRBS/multisine/chirp)](https://sciengineer.com/excitation-signals-for-identification-of-dynamic-systems/)
+
+Data sufficiency / optimal experiment design (Part II §17):
+- [Optimal experiment design & Fisher information (Springer ref)](https://link.springer.com/10.1007/978-1-4419-9863-7_1222)
+- [D-optimal design for parameter estimation in nonlinear dynamic systems](https://www.hindawi.com/journals/mpe/2012/296701/)
+- [Optimal experimental design under observation noise (arXiv)](https://arxiv.org/pdf/2504.19233)
+- [Learning curves for model selection / data sufficiency (scikit-learn)](https://scikit-learn.org/stable/auto_examples/model_selection/plot_learning_curve.html)
+
+Ball-balancing control & the value of rich observations (Part II §17):
+- [Rich state observations empower RL to surpass PID — drone ball balancing](https://arxiv.org/abs/2509.21122)
+- [Learning a ball-balancing robot through deep RL (compound controller, contacts hard to model)](https://arxiv.org/abs/2208.10142)
+- [Model predictive control of a ball-and-plate model](https://www.researchgate.net/publication/301407898_Model_Predictive_Control_of_a_Ball_and_Plate_laboratory_model)
