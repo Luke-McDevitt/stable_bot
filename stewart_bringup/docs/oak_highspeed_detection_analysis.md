@@ -262,6 +262,82 @@ once — and it's what the $400 of hardware was designed to do.
 4. **On-device latency check**: re-run `measure_detector_latency.py` on
    the mono/on-device path vs the 108 ms cv2 baseline.
 
+## Detector: cv2 vs YOLO, and "would more training data help?" (2026-06-04)
+
+Question from the operator: should we go back to YOLO, and would a few
+thousand more labeled images fix the accuracy? **Short answer: the
+detector is not the root cause, and more data in the current regime hits
+a ceiling fast.**
+
+### What we actually did with the two YOLO models
+
+- Trained **YOLOv6n** and **YOLOv8n** at **320×320** on a Roboflow dataset
+  of **262 images, 3 classes (aruco/ball/hand), _no augmentation_**
+  (`training_data/v1_yolov6/run1`, exported 2026-05-01).
+- Benchmarks: v6n ~67 FPS, v8n ~30 FPS on the Myriad X; v8n ~20 % more
+  accurate offline (`benchmark_v1_yolo.py`, `oak_throughput_diagnosis.md`).
+- In a real demo, **V1 YOLO "lost the ball almost right away" under fast
+  motion**, so we reverted to cv2 HSV (`step_id_tuning_lessons.md` §3).
+  Recorded lesson: *offline accuracy benchmarks don't predict closed-loop
+  tracking quality.*
+
+### Why it failed — and why it isn't a data-volume problem
+
+The failure was **during fast motion**, where three things stack up, none
+fixed by more labels:
+
+1. **Motion blur (dominant).** At 8 ms exposure an 800 mm/s ball smears
+   ~6 mm into a faint streak. A detector trained on (mostly sharp, slow)
+   frames can't reliably localize a streak, and **labeling blurred balls
+   is itself imprecise** — a smear has no well-defined center, so you'd
+   train on noisy labels and inherit their ceiling. **The light does not
+   fix this unless you spend it on a shorter exposure** — brightness ≠
+   shutter speed. This is almost certainly why accuracy was still bad
+   "with the light": exposure is still 8 ms (`OAK_EXP_US=8000`).
+2. **Resolution.** 540p → letterboxed to **320×320** makes the ball
+   ~20 px — small-object territory, where nano detectors are weakest. More
+   data doesn't raise this ceiling; **input resolution** does.
+3. **Latency.** YOLO is slower than cv2 → staler ball → the predictor
+   works harder. Orthogonal to dataset size.
+
+So pouring thousands of labels into the **current** regime (8 ms exposure,
+320² input) is low-ROI — you hit the blur + resolution + label-noise
+ceiling well before the model runs out of capacity. (262 images *is*
+small, so you'd see *some* gain — but it plateaus against the physics, not
+the data.)
+
+### When more data IS worth it — the right order
+
+1. **Fix exposure first** (1–2 ms with your light). Addresses the actual
+   failure for **both** detectors — and on sharp frames cv2 HSV may simply
+   be good enough (it was already the more robust choice).
+2. **Only if you still want YOLO's lighting/clutter robustness**, retrain
+   on data collected **under the short exposure**, deliberately including
+   **fast-motion frames** (representative distribution) **+ augmentation**.
+   Now more data helps, because labels are crisp and the distribution
+   matches deployment. A few hundred well-chosen *sharp motion* frames
+   beat thousands of blurry ones.
+3. **Raise effective resolution with a tracking-gate ROI**: run the NN on
+   a full-res crop around the predicted ball position (the predictor
+   already supplies one). The ball fills the crop → far better
+   small-object accuracy than a 320² letterbox — usually a bigger win than
+   more data.
+
+### "Will we hit a limit?"
+
+- **Roboflow**: a few thousand images is within typical plan limits;
+  *labeling* that many is the real cost — spend it after exposure is fixed
+  so the labels are crisp.
+- **The real limit is a quality ceiling, not a quota.** Blur + 320²
+  resolution + ambiguous labels on blurred balls cap accuracy regardless
+  of dataset size. Remove those (short exposure + ROI + representative
+  data) and the ceiling moves.
+
+**Bottom line:** not a recommendation to jump back to YOLO. Fix exposure,
+re-test cv2 on sharp frames, and treat YOLO + more-data as a *later* step
+that only pays off once the images are sharp and the input resolution is
+addressed.
+
 ## 10. Sources
 
 - [OAK-D Pro product page / specs (Luxonis)](https://docs.luxonis.com/hardware/products/OAK-D%20Pro)
