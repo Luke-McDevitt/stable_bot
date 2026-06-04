@@ -88,6 +88,29 @@ on-device and ship coordinates (step 3 above).
 
 ---
 
+## Adopted — verified on hardware (2026-06-04)
+
+Two changes shipped to `stable_bot.service` from the empirical sweeps (so
+§1 below now describes the *pre-adoption* baseline):
+
+1. **Fixed manual focus 130** (was CONTINUOUS_VIDEO autofocus). The Z→focus
+   map (`tuning_data/20260604T163850Z_zfocusmap`) showed the sharpness peak
+   is flat at ~130 across the whole 0–80 mm demo Z range — depth of field
+   covers it. Locking 130 gives peak sharpness with **no autofocus
+   hunting** (the AF FPS stutter). Did **not** change `/oak/latency_ms`
+   (~122 ms either way); the benefit is FPS stability + consistent sharpness.
+2. **Manual exposure 1500 µs @ ISO 3200** (was 8 ms auto). The exposure
+   sweeps (`tuning_data/20260604T17*_expsweep`) found this is the shortest
+   exposure that still detects the ball with the available light (panel
+   caps ~63 %, so ISO is the brightness lever). At 1.5 ms it **freezes a
+   rolling ball** (~5× less blur than 8 ms) and detection holds under motion
+   (verified rolling). Did **not** reduce latency (USB + host-queue bound —
+   `oak_latency_map.md`); it's a motion-blur / detection-robustness win.
+
+**Still open:** **latency (~120 ms)** — not a camera-tuning knob. Needs
+**on-device detection** (ship `(cx,cy)`, not raw frames) to remove the USB
+transfer + host queue-wait. That's the next project.
+
 ## 1. Exactly what we run today
 
 From `oak_driver_node.py` + the `/oak/config` snapshot in the Demo-2 bag:
