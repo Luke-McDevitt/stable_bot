@@ -19,6 +19,75 @@ target) is exactly what this "Pro" hardware was built for, and we own all
 of it. Plausible upside: from ~12.6 Hz / ~108 ms today to ~100+ Hz /
 ~15–30 ms, while *removing* the cv2-vs-YOLO robustness tradeoff.
 
+## Update (2026-06-04): operator constraints → revised path
+
+Field feedback ruled out parts of §7. Recorded so they aren't re-tried:
+
+1. **A single locked focus fails across the Z range.** The platform Z
+   setpoint varies the camera→ball distance enough that one fixed focus
+   isn't sharp everywhere, and CONTINUOUS autofocus *hunts* (the FPS
+   killer). So "lock manual focus" as written is out.
+2. Operator has a **SmallRig RM 40C RGB LED** (collimated + diffused,
+   ~63 %) giving even, bright **visible** illumination — a strong asset.
+3. On-device detection is fine; the only concern is filling USB.
+4. **IR flood was tried and scrapped — it washed out the ArUco markers,
+   breaking the pose/rotation solve.** No IR-reflective ball on hand,
+   just bright orange foam. → **IR is out.**
+5. Q: would the Pi's USB-C port be faster? → **No** (see below).
+
+### Revised path — no IR, keep color + ArUco, use the visible light
+
+The blur fix never actually needed IR; it needs **short exposure + enough
+visible light**, which the SmallRig provides:
+
+1. **Cut exposure to ~1–2 ms on the RGB**, raising ISO (HSV holds to
+   ~3200) and/or the light to keep brightness. Kills the dominant motion
+   blur while keeping color HSV detection *and* ArUco on the same sensor.
+   The exposure-sweep experiment (§9) quantifies how low you can go before
+   SNR suffers.
+2. **Solve focus by Z-scheduling, not a single lock.** The controller
+   already knows the commanded platform Z, so map `Z → focus_pos` (a quick
+   4–5-point calibration, interpolate) and call `setManualFocus()`
+   deterministically whenever Z changes. Sharp at every height, **zero
+   autofocus hunting** — the fix for constraint 1 without losing
+   sharpness. (`setManualFocus` is already wired for runtime updates at
+   `oak_driver_node` lines 1696/1871; this just drives it from Z.)
+3. **Move detection on-device to lift the 27 Hz USB-raw cap** while
+   keeping color — on-device HSV/blob (the `oak_phase2b_on_device_v0.md`
+   plan) ships only `(cx, cy)`, so USB stays tiny (constraint 3).
+
+This keeps everything that works today (color ball, ArUco pose, your
+lighting) and changes only exposure + focus-scheduling + where detection
+runs — no IR, no new ball, no sensor swap.
+
+### Fallback if rolling-shutter skew or rate is still the limit: mono (now focus-free)
+
+The mono OV9282 are **fixed-focus, 19.6 cm → ∞**
+([Luxonis AF-vs-FF](https://docs.luxonis.com/projects/hardware/en/latest/pages/guides/af_ff.html))
+— a depth of field that covers your **entire Z range for free**, so
+constraint 1 simply vanishes (no focus management at all). They're also
+global-shutter (no skew), 120 FPS, and *more* light-sensitive than RGB
+(no Bayer/IR-cut), so under the SmallRig they need an even shorter
+exposure for the same SNR. The catch is still grayscale — but a bright
+orange ball on the dark carbon-fibre deck is a strong **brightness** blob,
+so a mono blob detector under **visible** light (no IR) may work with no
+special ball. Keep ArUco on RGB. Use this only if the RGB short-exposure
+path can't hit the rate/skew you need.
+
+### USB-C on the Raspberry Pi 5 — would it be faster? No.
+
+The Pi 5's USB-C port is **power input + USB 2.0 only** (it's also the
+device/"gadget" port); it is **not** a USB-3 host port
+([Pi forums](https://forums.raspberrypi.com/viewtopic.php?t=375782)). The
+OAK already runs on a 5 Gbps USB-3 Type-A port (`usb_speed: super`).
+Moving it to USB-C would drop it to USB 2.0 — **slower** — and collide
+with power delivery. Keep it in a blue USB-3 port, on a *different* USB-3
+controller than the CAN adapter (the NEXT_STEPS note). The real
+USB-throughput fix is **not transferring raw frames at all**: detect
+on-device and ship coordinates (step 3 above).
+
+---
+
 ## 1. Exactly what we run today
 
 From `oak_driver_node.py` + the `/oak/config` snapshot in the Demo-2 bag:
