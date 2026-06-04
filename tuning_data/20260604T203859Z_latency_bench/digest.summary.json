@@ -22,38 +22,12 @@
     "/status": 7
   },
   "step_metrics": {
-    "pitch": {
-      "step_cmd": -2.0,
-      "step_resp": -0.694,
-      "gain": 0.347,
-      "dead_time_ms": -617.5,
-      "xcorr_lag_ms": 135.0,
-      "rise_10_90_ms": 990.0,
-      "settle_ms": 465.0,
-      "overshoot_pct": 2.9
-    },
-    "roll": null,
-    "leg": {
-      "step_cmd": -2.0,
-      "step_resp": 0.057,
-      "gain": -0.029,
-      "dead_time_ms": -617.5,
-      "xcorr_lag_ms": 195.0,
-      "rise_10_90_ms": null,
-      "settle_ms": 517.5,
-      "overshoot_pct": 177.7,
-      "leg_index": 1
-    }
+    "imu": null,
+    "leg": null,
+    "driven_axis": "pitch",
+    "resp_axis": "pitch"
   },
-  "actuation_stages": {
-    "cmd_to_leg_onset_ms": -617.5,
-    "leg_onset_to_imu_ms": 0.0,
-    "cmd_to_imu_onset_ms": -617.5,
-    "imu_rise_10_90_ms": 990.0,
-    "settle_ms": 465.0,
-    "overshoot_pct": 2.9,
-    "note": "cmd\u2192leg = feeder ZOH + CAN + ODrive dead time; leg\u2192IMU = leg slew \u2192 platform; rise = mechanical. Unambiguous (aperiodic step) \u2014 unlike orbital runs."
-  },
+  "actuation_stages": null,
   "run_config": {
     "soft_max_vel_tps": 1.0,
     "leg_current_soft_max_a": 6.0
