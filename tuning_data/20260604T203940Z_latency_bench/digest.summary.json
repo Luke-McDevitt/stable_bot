@@ -20,9 +20,10 @@
     "/status": 6
   },
   "step_metrics": {
-    "pitch": null,
-    "roll": null,
-    "leg": null
+    "imu": null,
+    "leg": null,
+    "driven_axis": "pitch",
+    "resp_axis": "roll"
   },
   "actuation_stages": null,
   "run_config": {
