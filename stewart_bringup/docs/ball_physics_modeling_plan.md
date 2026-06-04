@@ -574,6 +574,97 @@ getting closer to reality — and to prove it for the click-to-goto demo.
 
 ---
 
+## 19. Reality check (2026-06-03): allowlist safety + measured latency
+
+Two questions answered before touching code.
+
+### Expanding the bag allowlist is safe — verified
+
+- **Two record paths already exist.** `bag_recorder_node.TOPICS_DEFAULT`
+  (auto, on mode-transition, *narrow*) and `gui_server.DEMO_TOPICS`
+  (manual `/demo/start`, *broad*). The Demo-2 tuning bags were recorded
+  with `DEMO_TOPICS`, which **already** includes `/oak/latency_ms`,
+  `/oak/health`, `/oak/config`, `/ball_track/diagnostic`,
+  `/leg_currents`, `/leg_encoders`, `/odrive_errors`, `/status`. So
+  expanding the auto-list is *not new behavior* — it aligns the
+  auto-recorder with the manual recorder already in daily use.
+- **Every bag consumer is topic-filtered.** `digest_demo_bag`,
+  `digest_vision_bag`, `digest_iva_bag`, and `smooth_demo_bag` build a
+  `{topic: type}` map and do `cls = _TYPE_CLASS.get(type); if cls is
+  None: continue` — unknown/extra topics are silently skipped.
+  `analyze_level_bag` reads only `LevelDiag`; `compare_demo_bags` reads
+  digest JSON, not bags. **Adding topics cannot break any of them**, and
+  `digest_demo_bag.py` already has handlers for the latency/health/diag/
+  currents topics — they're coded but the *auto*-recorder starves them.
+- **Nothing pins the list.** `TOPICS_DEFAULT` is referenced only inside
+  `bag_recorder_node.py`; no test asserts it (the four tests cover
+  aruco / ball-physics / marker-layout / safety-yaml).
+- **Net:** additive and safe. The only genuinely new topics (`/level_diag`,
+  per-motor `RobotState`, CAN traffic) are skipped by existing digests
+  until one opts in — so just (a) flow `/level_diag` during BALL_TRACK
+  (§13), and (b) confirm `RobotState`/CAN are actually published before
+  relying on them (`ros2 bag record` only *warns* if a listed topic is
+  absent, never errors). Consideration, not breakage: bag size / Pi load
+  grows modestly — still no images, and `DEMO_TOPICS` already records at
+  these rates without issue.
+
+### Measured latency (Demo-2 run `20260502T031335Z`)
+
+| Metric | Value |
+|---|---|
+| `/oak/latency_ms` (capture→Pi, **cv2** path) | mean **108 ms**, std **29 ms**, p95 **162 ms**, max 186 ms |
+| on-device NN path (`v0_lat_ms`) | mean **56 ms**, p95 75 ms |
+| detection arrival → publish | **27 Hz → 12.6 Hz** (publish-capped; ~79 ms between ball updates) |
+| controller assumption (`control_latency_s`) | **0.2 s** (operator doubled it to fight the lag) |
+| platform IMU rate | ~283 Hz (near-zero-latency *input* signal) |
+| exposure / ISO | 8 ms / 1600 → ~6 mm motion blur at 800 mm/s |
+
+### Is that latency reasonable for what we're planning?
+
+- **Offline modeling — yes, with discipline.** 108 ms is fine to fit
+  *through* provided every sample carries its capture timestamp and we
+  time-align offline. The 29 ms jitter means a *fixed*-delay assumption
+  would smear the input↔output correlation, so the fit must use the
+  per-sample `/oak/latency_ms` (already in the plan, §4/§13).
+- **Online control — no, not with the current predictor.** 108 ms ± 29 ms
+  (tail to 186) is large for 0.5 mm-class control of an 800 mm/s ball
+  (108 ms ⇒ up to 86 mm of travel), and a *fixed* `control_latency_s`
+  cannot track the varying real delay — the jitter alone injects tens of
+  mm of prediction error, enough to sustain the orbital limit cycle. It
+  is only tolerable with a **model-based** predictor.
+
+### Latency mitigations (priority order)
+
+1. **Use the per-sample latency you already log.** Feed live
+   `/oak/latency_ms` (+ capture timestamp) into the predictor instead of
+   the fixed `control_latency_s`. Kills the ±29 ms jitter penalty;
+   near-zero cost; also a modeling prerequisite.
+2. **Model-based dead-time compensation (Smith predictor / known-input
+   EKF).** The tilt is known at ~283 Hz, ~0 latency — forward-integrate
+   the ball through the *known* tilt over the dead time with the fitted
+   model. This *is* the modeling work; it's what makes 100 ms survivable.
+   Smith predictors are the textbook tool for camera-delay visual
+   tracking, and their benefit is bounded by model fidelity — which is
+   exactly why the empirical model matters
+   ([Smith predictor for CCD/optical tracking](https://www.mdpi.com/1424-8220/24/17/5546)).
+3. **Close the 27 → 12.6 Hz publish gap** → roughly halve inter-sample
+   staleness (the repo's own note: would "halve the effective vision
+   latency").
+4. **Cut motion blur** (exposure 8 ms → 2–3 ms + more light / IR) so the
+   fast on-device YOLO path (56 ms) is reliable under motion and can
+   replace the slow cv2 path (108 ms). One lever that both ~halves
+   latency and fixes the detection-accuracy failure (`step_id_tuning_lessons.md` §3).
+5. **Faster control tick** (50 → 100 Hz) to shave the control-stage delay.
+6. **Tracking-gate ROI** around the model-predicted position → faster
+   inference + fewer false positives.
+
+**Headline:** latency is high and jittery, but the cheapest win — stop
+assuming a fixed 0.2 s and use the per-sample latency already in the bag —
+plus the model-based predictor (the planned work) is the path to a crisp,
+real-to-life click-to-goto.
+
+---
+
 ## 11. Sources
 
 Ball-and-plate dynamics & validation:
@@ -609,3 +700,7 @@ Ball-balancing control & the value of rich observations (Part II §17):
 - [Rich state observations empower RL to surpass PID — drone ball balancing](https://arxiv.org/abs/2509.21122)
 - [Learning a ball-balancing robot through deep RL (compound controller, contacts hard to model)](https://arxiv.org/abs/2208.10142)
 - [Model predictive control of a ball-and-plate model](https://www.researchgate.net/publication/301407898_Model_Predictive_Control_of_a_Ball_and_Plate_laboratory_model)
+
+Latency / dead-time compensation (Part II §19):
+- [Smith predictor modified with pseudo-feedforward for CCD optical tracking (MDPI Sensors)](https://www.mdpi.com/1424-8220/24/17/5546)
+- [Discrete-time Smith dead-time compensator (MathWorks ref)](https://www.mathworks.com/help/sps/ref/smithpredictorcontroller.html)
