@@ -65,12 +65,12 @@ For laptop / dev workflow, see
 
 ```bash
 ssh sorak@stablebot.local      # works whenever mDNS/Bonjour is up
-ssh sorak@<YOUR_PI_IP>         # ← replace with the Pi's IP (see below)
+ssh sorak@10.31.1.98         # current Pi IP (see note below)
 ```
 
-**Pi IP:** `<SET ME — e.g. 192.168.x.x>` — find it by running
-`hostname -I` on the Pi, or from your router / phone-hotspot client list.
-(Set a DHCP reservation so it stops changing, then paste it above.)
+**Pi IP:** `10.31.1.98` — if it changes, find the new one with
+`hostname -I` on the Pi (or your router / phone-hotspot client list) and
+update it here. Set a DHCP reservation so it stays put.
 
 **Startup is two systemd services** (auto-start on boot — this *is* the
 "startup script"):
@@ -101,7 +101,7 @@ journalctl -u stable_bot.service -f                  # follow control-stack logs
 journalctl -u stable_bot_gui.service -f              # follow GUI logs
 ```
 
-Then open `http://stablebot.local:8080/` (or `http://<YOUR_PI_IP>:8080/`)
+Then open `http://stablebot.local:8080/` (or `http://10.31.1.98:8080/`)
 in a laptop browser.
 
 ## Documentation
