@@ -171,6 +171,27 @@ choice was made.
 - [`NEXT_STEPS.md`](stewart_bringup/docs/NEXT_STEPS.md) — roadmap from
   the early scripted-rolling-ball state.
 
+### Vision, latency & roadmap (2026-06 work)
+
+- [`control_path_latency.md`](stewart_bringup/docs/control_path_latency.md)
+  — **end-to-end latency trace, detection → platform moved**, every stage
+  grounded in code with a **value-provenance table** (where each gain/limit
+  lives). Read this to know where a number comes from.
+- [`oak_latency_map.md`](stewart_bringup/docs/oak_latency_map.md) —
+  vision-side latency sources + the control-path-vs-GUI-display distinction.
+- [`oak_highspeed_detection_analysis.md`](stewart_bringup/docs/oak_highspeed_detection_analysis.md)
+  — camera config, the focus/exposure work, and what's adopted (focus 130,
+  exposure 1500 µs/ISO 3200).
+- [`oak_focus_exposure_autocal.md`](stewart_bringup/docs/oak_focus_exposure_autocal.md)
+  — empirical focus/exposure calibration method (the sweeps + metrics).
+- [`oak_on_device_detection_research.md`](stewart_bringup/docs/oak_on_device_detection_research.md)
+  — on-device detection options (YOLO re-test / fixed color blob).
+- [`ball_physics_modeling_plan.md`](stewart_bringup/docs/ball_physics_modeling_plan.md)
+  — data-driven ball+platform model to replace the constant-velocity
+  look-forward (the next major controls project).
+- [`IMPLEMENTATION_PLAN.md`](stewart_bringup/docs/IMPLEMENTATION_PLAN.md)
+  — how the GUI/deploy/data-collection pieces fit together.
+
 ## Tooling
 
 In `stewart_bringup/scripts/`:

@@ -6,13 +6,22 @@ to get the "cv2 circle latency all over the place" under control. Companion
 to `oak_throughput_diagnosis.md`, `oak_highspeed_detection_analysis.md`,
 and `ball_physics_modeling_plan.md` §19.
 
+> **Correction (2026-06-04):** this doc originally treated `/oak/latency_ms`
+> (~120 ms) as the control-path latency. It is **NOT** — that's the GUI-feed
+> frame. The controller's vision input is the **detector** latency
+> `/oak/health.v0_lat_ms ≈ 56 ms` (measured, both cv2 and YOLO). The full,
+> code-grounded end-to-end trace (vision → actuation → platform, with value
+> provenance) is in [`control_path_latency.md`](control_path_latency.md) —
+> read that first; this doc is the vision-side detail.
+
 ## The one distinction that matters first
 
 There are **two different latencies**, and they're easy to conflate:
 
 - **Control-path latency** — photon → `/ball_state` → controller → motor.
-  This is what the predictor/controller fights. The vision part is measured
-  by **`/oak/latency_ms`** (device-capture timestamp → host receipt).
+  This is what the predictor/controller fights. The vision part is the
+  **detector** latency, **`/oak/health.v0_lat_ms` ≈ 56 ms** — *not*
+  `/oak/latency_ms` (the slower GUI-feed/rgb-raw frame, ~120 ms).
 - **GUI display latency** — the "cv2 circle" you see drawn over the live
   feed lags by control-path-vision latency **plus** the JPEG/rosbridge/
   browser render path. The circle bouncing "all over the place" is partly
