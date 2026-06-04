@@ -165,6 +165,7 @@ class BallLocalizerNode(Node):
         self._last_v0_recv_s = 0.0   # ROS-clock receive time of last v0
         self._last_v1_recv_s = 0.0
         self._last_pub_t = 0.0       # monotonic time of last mono publish
+        self._last_lat_cap_ns = -1   # capture stamp of last latency probe
 
         # Tick at 60 Hz as the steady republish cadence (unchanged). On top
         # of it we ALSO publish the instant a new detection arrives
@@ -521,14 +522,21 @@ class BallLocalizerNode(Node):
         # detector's v0_lat and the KF's capture→state to localize the gap.
         if src_msg is not None:
             cap = src_msg.header.stamp
-            cap_s = cap.sec + cap.nanosec * 1e-9
-            now_s = self.get_clock().now().nanoseconds * 1e-9
-            recv_s = (self._last_v1_recv_s if src == 'v1'
-                      else self._last_v0_recv_s)
-            lat = Float32MultiArray()
-            lat.data = [float((recv_s - cap_s) * 1e3),
-                        float((now_s - cap_s) * 1e3)]
-            self.pub_xy_mono_lat.publish(lat)
+            cap_ns = int(cap.sec) * 1_000_000_000 + int(cap.nanosec)
+            # Emit the probe ONLY for a fresh detection (new capture stamp),
+            # never for the 60 Hz republishes of a cached v0 — otherwise the
+            # median measures republish STALENESS, not the localizer's fresh
+            # receive→publish latency.
+            if cap_ns != self._last_lat_cap_ns:
+                self._last_lat_cap_ns = cap_ns
+                cap_s = cap_ns * 1e-9
+                now_s = self.get_clock().now().nanoseconds * 1e-9
+                recv_s = (self._last_v1_recv_s if src == 'v1'
+                          else self._last_v0_recv_s)
+                lat = Float32MultiArray()
+                lat.data = [float((recv_s - cap_s) * 1e3),
+                            float((now_s - cap_s) * 1e3)]
+                self.pub_xy_mono_lat.publish(lat)
 
         # Diagnostic: which detector won.
         d = Float32MultiArray()

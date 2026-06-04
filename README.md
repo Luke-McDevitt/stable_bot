@@ -73,13 +73,20 @@ the IP changes each session.
 **Pi login:** user `sorak` · hostname `stablebot`
 
 ```bash
-ssh sorak@stablebot.local      # works whenever mDNS/Bonjour is up
-ssh sorak@10.31.1.98         # current Pi IP (see note below)
+ssh sorak@stablebot.local      # preferred — mDNS resolves the current IP
+ssh sorak@<current-ip>         # e.g. 10.86.11.98; changes on the hotspot
 ```
 
 **Pi IP:** `10.86.11.98` (last seen). On the phone hotspot this changes
 each session, so prefer `stablebot.local`. Need the current IP? Run
-`hostname -I` on the Pi, or check the hotspot's connected-clients list.
+`hostname -I` **on the Pi** (the SSH login *banner* caches a stale IP —
+ignore it; trust `hostname -I`).
+
+**GUI rosbridge connection:** the header connection box now **auto-targets
+the host you opened the page from** (`ws://<that-host>:9090`), so opening
+`http://stablebot.local:8080/` connects with no IP to type. If the dot
+stays red, the box is editable — set it to `ws://<current-ip>:9090`
+(e.g. `ws://10.86.11.98:9090`) and click **Reconnect rosbridge**.
 
 **Startup is two systemd services** (auto-start on boot — this *is* the
 "startup script"):

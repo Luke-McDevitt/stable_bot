@@ -2520,6 +2520,18 @@ function setConn(ok, label) {
   $('conn-label').innerText = label;
 }
 
+// Default the rosbridge target to the host that served this page, so the
+// GUI auto-connects to the Pi regardless of its (hotspot-assigned) IP —
+// load http://stablebot.local:8080/ and rosbridge resolves to
+// ws://stablebot.local:9090 with no IP to chase. The box stays editable
+// for manual override; only applied when served over the network.
+(function () {
+  if (location.hostname) {
+    const el = $('ws-url');
+    if (el) el.value = `ws://${location.hostname}:9090`;
+  }
+})();
+
 function connect() {
   const url = $('ws-url').value;
   if (ros) { try { ros.close(); } catch (e) {} }
