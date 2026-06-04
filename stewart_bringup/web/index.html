@@ -38,6 +38,9 @@
       <span id="mode-label"
             class="text-xs mono px-2 py-0.5 rounded bg-slate-700 text-slate-300"
             title="active demo mode">LEVEL_HOLD</span>
+      <span id="sys-stats"
+            class="text-xs mono px-2 py-0.5 rounded bg-slate-700 text-slate-300"
+            title="Pi host load (updates ~2 s). Turns RED if the SoC is throttling — under-voltage / thermal / freq-cap — which would inflate latency. load is the 1-min average (≈cores busy; 4.0 = saturated on a Pi 5).">host —</span>
       <label class="text-xs text-slate-400 flex items-center gap-1">
         Ball:
         <select id="ball-type-select"
@@ -4196,6 +4199,26 @@ window.addEventListener('DOMContentLoaded', () => {
       if (fps) fps.textContent = 'paused';
     }
   });
+  // Pi host stats in the banner (load / temp / freq / throttle), every 2 s.
+  function _pollSysStats() {
+    fetch('/system/stats').then(r => r.json()).then(s => {
+      const el = $('sys-stats');
+      if (!el) return;
+      const load = s.load1 != null ? `load ${s.load1}` : '';
+      const temp = s.temp_c != null ? `${s.temp_c}°C` : '';
+      const freq = s.freq_mhz != null ? `${s.freq_mhz}MHz` : '';
+      const tflag = s.throttled_now ? ' THROTTLED'
+        : (s.throttled_ever ? ' (throttled-past)' : '');
+      el.textContent = `host ${load} ${temp} ${freq}${tflag}`
+        .replace(/\s+/g, ' ').trim();
+      el.className = 'text-xs mono px-2 py-0.5 rounded '
+        + (s.throttled_now ? 'bg-red-700 text-white'
+           : (s.throttled_ever ? 'bg-amber-700 text-white'
+              : 'bg-slate-700 text-slate-300'));
+    }).catch(() => {});
+  }
+  _pollSysStats();
+  setInterval(_pollSysStats, 2000);
   $('estop-btn').addEventListener('click', () => publishCmd({ cmd: 'e_stop' }));
   $('arm-btn').addEventListener('click', () => publishCmd({ cmd: 'activate' }));
   $('disarm-btn').addEventListener('click', () => publishCmd({ cmd: 'deactivate' }));
@@ -6584,7 +6607,8 @@ async function dbagStart() {
     const r = await fetch('/demo/start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({label}),
+      body: JSON.stringify({label,
+        video_on: !!($('vis-live-video') && $('vis-live-video').checked)}),
     });
     const j = await r.json();
     dbagSetStatus(j.message || (j.ok ? 'recording' : 'failed'),
@@ -6739,7 +6763,8 @@ function dbagPushBag(name) {
       if (s.recording) { stSet('a recording is already active — stop it first'); return; }
       const r1 = await fetch('/demo/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: 'latency_bench' }) });
+        body: JSON.stringify({ label: 'latency_bench',
+          video_on: !!($('vis-live-video') && $('vis-live-video').checked) }) });
       const j1 = await r1.json();
       if (!j1.ok) { stSet('record start failed: ' + (j1.message || '')); return; }
       const name = (j1.path || '').split('/').filter(Boolean).pop();

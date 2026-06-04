@@ -16,7 +16,61 @@ see `control_path_latency.md` §3.
 """
 from __future__ import annotations
 
+import json
+import os
+
 import numpy as np
+
+
+def read_system_stats(bag_dir):
+    """Read <bag_dir>/system_stats.jsonl (written by gui_server during a
+    demo/bench recording): host CPU%/temp/freq/throttle samples + the GUI
+    live-video flag. Lets the digest quantify host load per run and whether
+    the video feed was streaming. Returns a summary dict or None."""
+    path = os.path.join(bag_dir, 'system_stats.jsonl')
+    if not os.path.isfile(path):
+        return None
+    video_on = None
+    cpu, temp, load, freq = [], [], [], []
+    throttled_now = throttled_ever = False
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get('meta'):
+                    video_on = d.get('video_on')
+                    continue
+                if d.get('cpu_pct') is not None:
+                    cpu.append(float(d['cpu_pct']))
+                if d.get('temp_c') is not None:
+                    temp.append(float(d['temp_c']))
+                if d.get('load1') is not None:
+                    load.append(float(d['load1']))
+                if d.get('freq_mhz') is not None:
+                    freq.append(float(d['freq_mhz']))
+                throttled_now = throttled_now or bool(d.get('throttled_now'))
+                throttled_ever = (throttled_ever
+                                  or bool(d.get('throttled_ever')))
+    except Exception:
+        return None
+
+    def _ms(a):
+        return ({'mean': round(float(np.mean(a)), 1),
+                 'max': round(float(np.max(a)), 1)} if a else None)
+
+    return {
+        'gui_video_on': video_on,
+        'cpu_pct': _ms(cpu),
+        'temp_c': _ms(temp),
+        'load1': _ms(load),
+        'freq_mhz': _ms(freq),
+        'throttled_now': throttled_now,
+        'throttled_ever': throttled_ever,
+        'n_samples': max(len(cpu), len(load)),
+    }
 
 
 def quat_to_roll_pitch_deg(quat):

@@ -53,12 +53,14 @@ except ImportError as e:
 # Shared, unit-tested latency math (same module the demo digest uses).
 try:
     from stewart_bringup._latency import (
-        quat_to_roll_pitch_deg, step_train_metrics, imu_step_metrics)
+        quat_to_roll_pitch_deg, step_train_metrics, imu_step_metrics,
+        read_system_stats)
 except ImportError:
     sys.path.insert(
         0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from stewart_bringup._latency import (
-        quat_to_roll_pitch_deg, step_train_metrics, imu_step_metrics)
+        quat_to_roll_pitch_deg, step_train_metrics, imu_step_metrics,
+        read_system_stats)
 
 
 _TYPE_CLASS = {
@@ -243,6 +245,7 @@ def digest(bag_dir):
                          'resp_axis': resp_axis},
         'actuation_stages': stages,
         'run_config': _run_config(data['status']),
+        'host': read_system_stats(bag_dir),
     }
 
     print(f"[latency-bench] driven={driven} resp_axis={resp_axis} "

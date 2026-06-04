@@ -74,12 +74,12 @@ except ImportError as e:
 # from scripts/ which may precede a colcon install).
 try:
     from stewart_bringup._latency import (
-        actuation_latency, quat_to_roll_pitch_deg)
+        actuation_latency, quat_to_roll_pitch_deg, read_system_stats)
 except ImportError:
     sys.path.insert(
         0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from stewart_bringup._latency import (
-        actuation_latency, quat_to_roll_pitch_deg)
+        actuation_latency, quat_to_roll_pitch_deg, read_system_stats)
 
 
 def _parse_control_cmd(raw: str) -> dict:
@@ -710,6 +710,10 @@ def digest(bag_dir: str):
     run_config = _run_config(status_d)
     cap_a = (run_config or {}).get('leg_current_cap_a')
     leg_current = _leg_current_analysis(cur_data, cap_a)
+    # Host load (CPU/temp/throttle) + GUI live-video flag, sampled by
+    # gui_server into the bag's system_stats.jsonl. Lets us correlate
+    # detect→state latency with host contention / video-on vs -off.
+    host = read_system_stats(bag_dir)
 
     # Iteration-actionable gain recommendation. Reads the active
     # gains, the trial outcome, and the controller's actual
@@ -850,6 +854,7 @@ def digest(bag_dir: str):
         'gains_at_record': gains_at_record,
         'run_config': run_config,
         'leg_current': leg_current,
+        'host': host,
         'next_step': next_step,
         'ball_state_n': int(state_t.size),
         'ball_ref_n':   int(ref_t.size),
@@ -985,6 +990,17 @@ def digest(bag_dir: str):
               f"p95={lc.get('measured_p95_a')}A cap={lc.get('cap_a')}A"
               + (f"  near-cap {sat*100:.0f}% of run"
                  if sat is not None else ""))
+    hs = summary.get('host') or {}
+    if hs:
+        cpu = hs.get('cpu_pct') or {}
+        tmp = hs.get('temp_c') or {}
+        ld = hs.get('load1') or {}
+        thr = ('THROTTLED' if hs.get('throttled_now')
+               else ('throttled-past' if hs.get('throttled_ever') else 'ok'))
+        print(f"  host: video={hs.get('gui_video_on')} "
+              f"cpu={cpu.get('mean')}/{cpu.get('max')}% "
+              f"load={ld.get('mean')}/{ld.get('max')} "
+              f"temp={tmp.get('max')}°C throttle={thr}")
 
     # ----- Iteration-actionable next-step recommendation -----
     # Big banner so the operator can read it at a glance after each

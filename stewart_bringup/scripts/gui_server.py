@@ -1145,10 +1145,132 @@ def _resolve_demo_bag_path(name):
     return full
 
 
-def _demo_start(label='demo_run'):
+# ---- System stats (CPU / temp / throttle) for the GUI banner + bags ----
+# All local file reads except the throttle (vcgencmd subprocess, cached).
+# Lives here (not the control node) so the safety-critical node is untouched.
+_throttle_cache = {'t': 0.0, 'hex': None}
+
+
+def _cpu_snapshot():
+    """(idle, total) jiffies from /proc/stat's aggregate cpu line."""
+    try:
+        with open('/proc/stat') as f:
+            vals = [int(x) for x in f.readline().split()[1:]]
+        idle = vals[3] + (vals[4] if len(vals) > 4 else 0)   # idle + iowait
+        return idle, sum(vals)
+    except Exception:
+        return None, None
+
+
+def _read_temp_c():
+    try:
+        with open('/sys/class/thermal/thermal_zone0/temp') as f:
+            return round(int(f.read().strip()) / 1000.0, 1)
+    except Exception:
+        return None
+
+
+def _read_freq_mhz():
+    try:
+        with open('/sys/devices/system/cpu/cpu0/cpufreq/'
+                  'scaling_cur_freq') as f:
+            return round(int(f.read().strip()) / 1000.0)
+    except Exception:
+        return None
+
+
+def _read_throttled(ttl=5.0):
+    """vcgencmd get_throttled (subprocess, cached). Returns (hex, now, ever)
+    where now/ever are bools (bits 0-2 = currently; 16-18 = since boot)."""
+    global _throttle_cache
+    now = time.time()
+    if _throttle_cache['hex'] is None or now - _throttle_cache['t'] >= ttl:
+        try:
+            r = subprocess.run(['vcgencmd', 'get_throttled'],
+                               capture_output=True, text=True, timeout=2)
+            _throttle_cache = {'t': now,
+                               'hex': r.stdout.strip().split('=')[-1]}
+        except Exception:
+            _throttle_cache = {'t': now, 'hex': None}
+    h = _throttle_cache['hex']
+    if not h:
+        return None, None, None
+    try:
+        v = int(h, 16)
+    except ValueError:
+        return h, None, None
+    return h, bool(v & 0x7), bool(v & 0x70000)
+
+
+def _system_stats_instant():
+    """Cheap, state-free snapshot for the banner endpoint (load avg, not a
+    CPU% that needs two samples)."""
+    h, now_b, ever_b = _read_throttled()
+    return {
+        'load1': (round(os.getloadavg()[0], 2)
+                  if hasattr(os, 'getloadavg') else None),
+        'temp_c': _read_temp_c(),
+        'freq_mhz': _read_freq_mhz(),
+        'throttled_hex': h,
+        'throttled_now': now_b,
+        'throttled_ever': ever_b,
+    }
+
+
+# Bag-time sampler: writes <bag_dir>/system_stats.jsonl while a demo/bench
+# records, so the digest can quantify host load + whether the GUI live
+# video was on. Lifecycle tied to _demo_start / _demo_stop.
+_sampler_stop = None
+
+
+def _start_sampler(bag_dir, video_on):
+    global _sampler_stop
+    _stop_sampler()
+    stop = threading.Event()
+    _sampler_stop = stop
+
+    def _run():
+        for _ in range(80):            # wait for ros2 bag record to mkdir
+            if stop.is_set() or os.path.isdir(bag_dir):
+                break
+            time.sleep(0.1)
+        prev = _cpu_snapshot()
+        try:
+            with open(os.path.join(bag_dir, 'system_stats.jsonl'), 'w') as f:
+                f.write(json.dumps({'meta': True,
+                                    'video_on': bool(video_on),
+                                    't0': time.time()}) + '\n')
+                while not stop.wait(1.0):
+                    idle, total = _cpu_snapshot()
+                    cpu = None
+                    if (idle is not None and prev[0] is not None
+                            and total - prev[1] > 0):
+                        cpu = round(100.0 * (1.0 - (idle - prev[0])
+                                             / (total - prev[1])), 1)
+                    prev = (idle, total)
+                    s = _system_stats_instant()
+                    s['cpu_pct'] = cpu
+                    s['t'] = time.time()
+                    f.write(json.dumps(s) + '\n')
+                    f.flush()
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _stop_sampler():
+    global _sampler_stop
+    if _sampler_stop is not None:
+        _sampler_stop.set()
+        _sampler_stop = None
+
+
+def _demo_start(label='demo_run', video_on=True):
     """Spawn `ros2 bag record` for the demo-run topic set. `label`
     is folded into the directory name so the operator can tell at a
-    glance which demo a bag was for."""
+    glance which demo a bag was for. `video_on` records whether the GUI
+    live feed was streaming, sampled into the bag's system_stats.jsonl."""
     global _demo_proc, _demo_path, _demo_started_at, _demo_label
     # Sanitize label so it can't escape the directory.
     safe_label = re.sub(r'[^a-zA-Z0-9_]', '_', str(label) or 'demo_run')[:32]
@@ -1173,6 +1295,7 @@ def _demo_start(label='demo_run'):
             _demo_path = out_dir
             _demo_started_at = time.time()
             _demo_label = safe_label
+            _start_sampler(out_dir, video_on)
             return True, f'recording → {out_dir}', out_dir
         except Exception as e:
             _demo_proc = None
@@ -1184,6 +1307,7 @@ def _demo_start(label='demo_run'):
 
 def _demo_stop():
     global _demo_proc, _demo_path, _demo_started_at, _demo_label
+    _stop_sampler()
     with _demo_lock:
         if _demo_proc is None:
             return False, 'not recording', _demo_path
@@ -1789,6 +1913,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == '/demo/bags':
             self._send_json({'demo_dir': _iva_bags_root(),
                              'entries': _list_demo_bags()})
+            return
+        if self.path == '/system/stats':
+            # Pi host load for the GUI banner: load avg, temp, freq, throttle.
+            self._send_json(_system_stats_instant())
             return
         if self.path.startswith('/demo/bags/png'):
             from urllib.parse import urlsplit, parse_qs
@@ -2646,10 +2774,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 body = (json.loads(self.rfile.read(length) or b'{}')
                         if length else {})
                 label = str(body.get('label', 'demo_run'))
+                video_on = bool(body.get('video_on', True))
             except Exception:
                 self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
                 return
-            ok, msg, path = _demo_start(label=label)
+            ok, msg, path = _demo_start(label=label, video_on=video_on)
             self._send_json(
                 {'ok': ok, 'message': msg, 'path': path},
                 status=200 if ok else 409)
