@@ -1,0 +1,58 @@
+kind: focus_sweep
+utc: 20260604T154647Z
+z_mm: 60.0
+oak_config_at_start:
+  rgb_fps: 60
+  mono_fps: 15
+  jpeg_quality: 50
+  focus_mode: auto
+  focus_pos: 145
+  exp_us: 8000
+  iso: 1600
+  v0_backend: cv2
+  v0_blob: null
+  v1_blob: v1_yolov8n_320.blob
+  v1_arch: v8
+  nn_conf_min: 0.0001
+  v1_yolo_conf_min: 0.3
+  jpeg_fps: 10
+  hsv_lo:
+  - 5
+  - 100
+  - 60
+  hsv_hi:
+  - 22
+  - 255
+  - 255
+  enable_depth: false
+  mask_v0_to_platform: true
+  usb_speed: super
+  rgb_w: 960
+  rgb_h: 540
+sweep:
+  focus_min: 0
+  focus_max: 255
+  step: 5
+  frames_per_pos: 8
+  roi_frac: 0.4
+  metric: tenengrad
+original_focus_pos: 145
+original_focus_mode: auto
+peak_per_metric:
+  tenengrad:
+    focus_pos: 125
+    value: 34510.42760194905
+  variance_of_laplacian:
+    focus_pos: 130
+    value: 1537.595756062554
+  sum_modified_laplacian:
+    focus_pos: 125
+    value: 17.379170657080294
+  normalized_variance:
+    focus_pos: 125
+    value: 43.1459270218822
+recommended_focus_pos: 125
+restored_to: 145
+notes: Recommended focus is the sharpness peak for THIS Z; it was NOT applied. Repeat
+  at several --z-mm to build z_focus_map.yaml. Focus was restored to the pre-sweep
+  value, so the live system is unchanged.
