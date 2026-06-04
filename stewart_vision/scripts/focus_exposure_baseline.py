@@ -171,7 +171,7 @@ def main():
     full_reports = [image_quality_report(f) for f in frames]
     roi_reports = [image_quality_report(_center_roi(f)) for f in frames]
 
-    ts = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     out_dir = args.out_dir or os.path.join(_tuning_data_dir(), f'{ts}_baseline')
     os.makedirs(out_dir, exist_ok=True)
 

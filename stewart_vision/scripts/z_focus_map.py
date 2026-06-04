@@ -349,7 +349,7 @@ def main():
         node.destroy_node(); rclpy.shutdown(); sys.exit(3)
 
     # ---- write outputs ----
-    ts = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     out_dir = args.out_dir or os.path.join(_tuning_data_dir(), f'{ts}_zfocusmap')
     os.makedirs(out_dir, exist_ok=True)
 
