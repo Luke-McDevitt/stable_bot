@@ -170,6 +170,13 @@ gains just hides the instability.
 hardware — it replaces the *model* the controller uses to predict the
 ball during the latency window.
 
+> **Deep dive:** the full research-grounded physics-model hierarchy and
+> the ROS-bag data-collection battery (breakaway-vs-tilt-rate, coasting,
+> persistent-excitation sweeps, ArUco coverage grid, every loggable
+> parameter) live in
+> [`ball_physics_modeling_plan.md`](ball_physics_modeling_plan.md).
+> This section is the summary.
+
 ## What the "look-forward" is today
 
 BALL_TRACK runs ~100 ms behind reality (OAK exposure + USB + KF +
