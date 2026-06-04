@@ -1,0 +1,44 @@
+kind: z_focus_map
+utc: 20260604T162443Z
+metric: tenengrad
+z_safe_range_mm:
+- 0.0
+- 80.0
+oak_config_at_start:
+  rgb_fps: 60
+  mono_fps: 15
+  jpeg_quality: 50
+  focus_mode: auto
+  focus_pos: 145
+  exp_us: 8000
+  iso: 1600
+  v0_backend: cv2
+  v0_blob: null
+  v1_blob: v1_yolov8n_320.blob
+  v1_arch: v8
+  nn_conf_min: 0.0001
+  v1_yolo_conf_min: 0.3
+  jpeg_fps: 10
+  hsv_lo:
+  - 5
+  - 100
+  - 60
+  hsv_hi:
+  - 22
+  - 255
+  - 255
+  enable_depth: false
+  mask_v0_to_platform: true
+  usb_speed: super
+  rgb_w: 960
+  rgb_h: 540
+original_focus_pos: 145
+original_focus_mode: auto
+aborted: false
+map:
+- z_mm: 50.0
+  focus_pos: 125
+  peak_value: 35008.69202117367
+  clamped: false
+notes: Record-only. Platform returned to rest and focus restored. Repeat / refine
+  before adopting. Red-x points were clamped by leg limits (Z not fully reached).
