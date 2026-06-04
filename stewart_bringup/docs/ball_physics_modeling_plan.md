@@ -665,6 +665,123 @@ real-to-life click-to-goto.
 
 ---
 
+## 20. Throughput levers — publish gap, loop rates, CAN (2026-06-04)
+
+Investigation of two proposed improvements: close the 27 → 12.6 Hz
+vision publish gap, and raise the control tick to 100 Hz. Headline: the
+bottlenecks are not where they first appear, and most of the machinery to
+change rates safely already exists.
+
+### 20.1 The publish gap (27 → 12.6 Hz) is two bottlenecks, not a throttle
+
+Mechanism in `oak_driver_node`:
+- The slow tick `_tick` runs at **60 Hz**, but `q_rgb_raw.tryGet()` only
+  yields ~27 frames/s: the full-res RGB-raw stream (~1.5 MB/frame) is
+  **USB-bandwidth-limited**, not tick-limited → `v0_arr ≈ 27 Hz`.
+- `_n_v0` (→ `v0_pub`) increments **only on a successful detection**. The
+  cv2 HSV detector misses the ball under motion blur, so ~27 attempts →
+  ~12.6 successes. The code comment is explicit: *"v0_pub crash from 13 Hz
+  → 5 Hz once the ball started moving."* → `v0_pub ≈ 12.6 Hz`.
+
+So "closing the gap" is **not** removing a rate cap. It means:
+1. **Kill the USB-raw bottleneck** by detecting on-device — the VPU/YOLO
+   path sends only `(cx, cy)` over USB and hits 37–60 Hz
+   (`oak_throughput_diagnosis.md`).
+2. **Fix the detection misses** — reduce motion blur (exposure 8 ms →
+   2–3 ms + light/IR), a better-trained on-device model, and a
+   tracking-gate ROI. The blocker today is on-device detector robustness
+   under fast motion (cv2 is robust but USB-capped; YOLO is fast but loses
+   the ball — the `step_id_tuning_lessons.md` §3 tradeoff).
+
+Downstream of a higher ball-publish rate — all additive, no breakage:
+
+| Consumer | Effect |
+|---|---|
+| `ball_localizer` / `ball_kf` | Subscription-based, rate-agnostic; more updates → tighter KF. **Re-tune KF `R`/`Q`** for the new measurement interval — the only required change. |
+| BALL_TRACK controller | Fresher anchors for the predictor; strictly better. |
+| digests / bags | More samples per topic; larger bags (still no images). Topic-filtered readers unaffected. |
+
+### 20.2 "Control tick" is three distinct clocks — the outer loop is already 200 Hz
+
+| Clock | Where | Current rate | Configurable? | On the CAN bus? |
+|---|---|---|---|---|
+| **Outer control loop** (level + BALL_TRACK) | `ctrl_period_s = 1/level_loop_hz` | **200 Hz** (default) | Yes — `--level-loop-hz` | No |
+| **ODrive feeder** (`Set_Input_Pos/Vel`) | `ODriveFeeder.period` | **50 Hz** (hardcoded) | No (period not plumbed through) | **Yes** |
+| **Encoder feedback** (RTR) | `EncoderListener.rtr_period` | **10 Hz** enc / 2 Hz err | Yes (constructor arg) | Yes (light) |
+
+The *outer* loop already runs at **200 Hz**, with gains calibrated at
+`LEVEL_REF_HZ = 50` and **auto-scaled** (`rate_limit`, `alpha`,
+`integ_decay` via `rate_scale = dt/ref_dt`). So "raise the control loop to
+100 Hz" is already satisfied — and the rate-change machinery is proven.
+The meaningful levers are the **feeder** (what actually commands the
+motors) and the **encoder RTR** (what the loop senses).
+
+### 20.3 Raising the feeder 50 → 100 Hz — safe, one plumbing change
+
+- **Plumb a period/rate into `ODriveFeeder`** — line 1367 constructs it
+  without a `period`, so it uses the hardcoded `0.02`. Make it a
+  constructor/CLI arg.
+- **CAN TX doubles**: feeder ≈ 6 legs × 50 Hz × ~116 bits ≈ 35 kbps →
+  ~70 kbps at 100 Hz. The bus is **1 Mbps**, and the design deliberately
+  uses RTR (10 Hz/2 Hz) instead of cyclic ODrive broadcast to keep it
+  light — utilization is order ~5–10 %. **Ample headroom; 100 Hz is
+  safe.** Monitor `can_bus_utilization_pct` (already computed in
+  `_compute_can_rates`) and bag it (§13).
+- **Watchdog**: the 500 ms ODrive watchdog is fed every 20 ms (50 Hz) →
+  25× margin; at 100 Hz, 50×. Non-issue.
+- **`_feeder_safety_check` runs every feeder tick** ("called every 20 ms
+  (50 Hz)", line 1912) → 2× its CPU at 100 Hz; it's cheap bounds-checks,
+  but confirm.
+- **Docs/comments** saying "50 Hz cyclic" need updating
+  (`level_loop_architecture.md`, `ARCHITECTURE.md`, feeder docstrings).
+- **Benefit**: the 200 Hz outer loop is currently down-sampled to 50 Hz
+  at the feeder; at 100 Hz, twice as much of the loop's resolution reaches
+  the motors and the zero-order-hold lag halves (~10 ms → ~5 ms) — a
+  direct, free cut to the §19 latency budget.
+
+### 20.4 Raising the BALL_TRACK loop rate — one hidden gain-scaling gap
+
+The outer loop is already 200 Hz, but BALL_TRACK's **tick-based** params
+are NOT all rate-scaled the way the level loop's are:
+- `stiction_moving_hyst_ticks` (3): comment says "At 50 Hz, 3 ticks =
+  60 ms" — but at the 200 Hz default it's already only **15 ms**. This is
+  a latent mismatch *today*, and any rate change shifts it further.
+  **Convert to a time (ms) or scale by rate.**
+- Confirm `tilt_slew_up_deg_per_s` is applied as `slew × period` (it reads
+  as °/s, so verify the multiply isn't per-tick).
+- The integrator (`integ + ex·period`) and Kd LPF (`alpha =
+  period/(tau+period)`) are already period-correct.
+
+This is the **main correctness change** for any BALL_TRACK rate change —
+otherwise the stiction-break timing drifts silently.
+
+### 20.5 Bonus finding: leg encoder/current telemetry is only 10 Hz-fresh
+
+`/leg_encoders` and `/leg_currents` are *published* at 20 Hz
+(`_tick_state`), but the underlying data is RTR-refreshed at only **10 Hz**
+(`EncoderListener`, 10 Hz/2 Hz) — so the bag holds 20 Hz of 10 Hz-fresh
+data (aliased). For the ball-physics fit, which wants leg current
+(applied-torque proxy) and FK pose, **10 Hz is coarse**. Raising
+`rtr_period` (e.g. 10 → 50 Hz) costs a little CAN (headroom exists) and
+materially sharpens the motor-side telemetry. Worth doing alongside §13.
+
+### Summary — changes & blast radius
+
+| Change | Files touched | Downstream risk |
+|---|---|---|
+| On-device detection robustness (close publish gap) | `oak_driver_node`, blob/training, exposure | Low — re-tune KF `R`/`Q` |
+| Feeder 50 → 100 Hz | `stewart_control_node` (plumb period) + docs | Low — CAN headroom ample, watchdog fine; update "50 Hz" comments |
+| BALL_TRACK tick-param rate-scaling | `stewart_control_node._ball_track_run` | **Correctness** — convert `stiction_moving_hyst_ticks` or timing shifts silently |
+| Encoder RTR 10 → 50 Hz | `stewart_control_node.EncoderListener` | Low — CAN headroom; better telemetry |
+
+**None of these touch the bag-consumer scripts**; all are additive or
+rely on the existing rate-scaling machinery. The two genuinely free wins:
+feeder → 100 Hz (halves actuation ZOH lag) and encoder RTR → 50 Hz
+(sharper modeling telemetry); the one that needs care is the BALL_TRACK
+`stiction_moving_hyst_ticks` rescale (already subtly wrong at 200 Hz).
+
+---
+
 ## 11. Sources
 
 Ball-and-plate dynamics & validation:
