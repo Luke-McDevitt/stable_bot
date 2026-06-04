@@ -22,37 +22,42 @@
     "/status": 10
   },
   "step_metrics": {
-    "pitch": null,
-    "roll": {
-      "step_cmd": -2.428,
-      "step_resp": 0.011,
-      "gain": -0.005,
-      "dead_time_ms": 120.0,
-      "xcorr_lag_ms": 350.0,
-      "rise_10_90_ms": 0.0,
+    "imu": {
+      "n_steps": 1,
+      "dead_time_ms": 99.7,
+      "rise_10_90_ms": 404.5,
       "settle_ms": null,
-      "overshoot_pct": 1454.7
+      "overshoot_pct": 16.4,
+      "gain": 0.7,
+      "step_cmd": 2.5,
+      "step_resp": 1.6
     },
     "leg": {
-      "step_cmd": -1.196,
-      "step_resp": -0.001,
-      "gain": 0.001,
-      "dead_time_ms": 0.0,
-      "xcorr_lag_ms": 400.0,
-      "rise_10_90_ms": null,
+      "n_steps": 1,
+      "dead_time_ms": 236.3,
+      "rise_10_90_ms": 369.1,
       "settle_ms": null,
-      "overshoot_pct": null,
+      "overshoot_pct": 11.2,
+      "gain": -0.0,
+      "step_cmd": 2.5,
+      "step_resp": -0.1,
       "leg_index": 5
-    }
+    },
+    "driven_axis": "roll",
+    "resp_axis": "roll"
   },
   "actuation_stages": {
-    "cmd_to_leg_onset_ms": 0.0,
-    "leg_onset_to_imu_ms": 120.0,
-    "cmd_to_imu_onset_ms": 120.0,
-    "imu_rise_10_90_ms": 0.0,
+    "n_steps": 1,
+    "driven_axis": "roll",
+    "resp_axis": "roll",
+    "cmd_to_leg_onset_ms": 236.3,
+    "leg_onset_to_imu_ms": -136.6,
+    "cmd_to_imu_onset_ms": 99.7,
+    "imu_rise_10_90_ms": 404.5,
     "settle_ms": null,
-    "overshoot_pct": 1454.7,
-    "note": "cmd\u2192leg = feeder ZOH + CAN + ODrive dead time; leg\u2192IMU = leg slew \u2192 platform; rise = mechanical. Unambiguous (aperiodic step) \u2014 unlike orbital runs."
+    "overshoot_pct": 16.4,
+    "gain_imu_per_cmd": 0.7,
+    "note": "per-rep medians over n_steps. cmd\u2192leg = feeder ZOH + CAN + ODrive dead time; leg\u2192IMU = leg slew \u2192 platform; rise = mechanical. gain<1 \u21d2 platform under-tilts the command. Dead time is precise only if the diag captured the step edges (low diag rate \u2192 coarse dead time)."
   },
   "run_config": {
     "soft_max_vel_tps": 1.0,
