@@ -1352,6 +1352,19 @@ class OakDriverNode(Node):
         if self._focus_mode not in ('auto', 'auto_one_shot', 'manual'):
             self._focus_mode = 'auto'
         self._focus_pos: int = _initial_focus
+        # Live exposure state (manual exposure time µs + ISO gain). Lets the
+        # exposure sweep + GUI sliders adjust it at runtime, and /oak/config
+        # report the live value. Initialized from the env _build_pipeline used.
+        try:
+            self._exp_us = max(500, min(33000,
+                int(os.environ.get('OAK_EXP_US', '8000'))))
+        except Exception:
+            self._exp_us = 8000
+        try:
+            self._iso = max(100, min(6400,
+                int(os.environ.get('OAK_ISO', '800'))))
+        except Exception:
+            self._iso = 800
         # Live HSV bounds for cv2 V0. Start at the module defaults;
         # operator can adjust via /oak/cmd_hsv at runtime.
         self._hsv_lo = HSV_LO.copy()
@@ -1507,6 +1520,12 @@ class OakDriverNode(Node):
         self.create_subscription(
             Float32MultiArray, '/oak/cmd_hsv', self._on_hsv_cmd, 1,
             callback_group=self._excl_cbg)
+        # Runtime manual-exposure update. Payload Float32MultiArray
+        # [exp_us, iso]. The exposure sweep + GUI sliders publish here; the
+        # firmware applies setManualExposure on the next frame.
+        self.create_subscription(
+            Float32MultiArray, '/oak/cmd_exposure', self._on_exposure_cmd, 1,
+            callback_group=self._excl_cbg)
         # Hot-swap NN blob without restarting the process. GUI's
         # "Reload NN on device" button publishes here after a
         # successful blob rebuild. Tears down + rebuilds the DepthAI
@@ -1583,8 +1602,8 @@ class OakDriverNode(Node):
                 # /oak/cmd_focus, not just the boot-time env value.
                 'focus_mode': str(self._focus_mode),
                 'focus_pos':  int(self._focus_pos),
-                'exp_us':    int(os.environ.get('OAK_EXP_US', '8000')),
-                'iso':       int(os.environ.get('OAK_ISO', '800')),
+                'exp_us':    int(self._exp_us),
+                'iso':       int(self._iso),
                 'v0_backend': str(self.v0_backend),
                 'v0_blob': (os.path.basename(self._v0_blob_path)
                             if self._v0_blob_path else None),
@@ -1704,6 +1723,38 @@ class OakDriverNode(Node):
         self._publish_config_snapshot()
         self.get_logger().info(
             f"  ✓ focus → mode={self._focus_mode} pos={self._focus_pos}")
+
+    def _on_exposure_cmd(self, msg: Float32MultiArray):
+        """Live manual-exposure update. Payload Float32MultiArray
+        [exp_us, iso]. exp_us clipped to [500, 33000] µs, iso to
+        [100, 6400]. Pushes a CameraControl onto the cam_rgb input queue;
+        applied on the next frame. /oak/config reports the live value."""
+        try:
+            d = list(msg.data)
+            if len(d) < 2:
+                self.get_logger().warn(
+                    f"/oak/cmd_exposure: expected [exp_us, iso], got {d}")
+                return
+            exp_us = max(500, min(33000, int(round(d[0]))))
+            iso = max(100, min(6400, int(round(d[1]))))
+        except Exception as e:
+            self.get_logger().warn(f"/oak/cmd_exposure parse failed: {e}")
+            return
+        if self.q_cam_ctrl is None:
+            self.get_logger().warn(
+                "  /oak/cmd_exposure rejected: cam control queue not open")
+            return
+        ctrl = dai.CameraControl()
+        ctrl.setManualExposure(exp_us, iso)
+        try:
+            self.q_cam_ctrl.send(ctrl)
+        except Exception as e:
+            self.get_logger().warn(f"  cmd_exposure send failed: {e}")
+            return
+        self._exp_us = exp_us
+        self._iso = iso
+        self._publish_config_snapshot()
+        self.get_logger().info(f"  ✓ exposure → {exp_us} µs, ISO {iso}")
 
     def _on_hsv_cmd(self, msg: Float32MultiArray):
         """Live HSV-bound update from the GUI sliders. Payload is
@@ -1856,8 +1907,9 @@ class OakDriverNode(Node):
                     self.get_logger().warn(
                         f"  IR projector restore failed: {e}")
 
-            # Restore focus state (mode + manual position) from the
-            # values stashed on self by _on_focus_cmd.
+            # Restore focus + exposure state (stashed on self by the
+            # _on_focus_cmd / _on_exposure_cmd handlers) so runtime tweaks
+            # survive a pipeline rebuild.
             try:
                 ctrl = dai.CameraControl()
                 if self._focus_mode == 'auto':
@@ -1869,9 +1921,10 @@ class OakDriverNode(Node):
                     ctrl.setAutoFocusTrigger()
                 else:
                     ctrl.setManualFocus(int(self._focus_pos))
+                ctrl.setManualExposure(int(self._exp_us), int(self._iso))
                 self.q_cam_ctrl.send(ctrl)
             except Exception as e:
-                self.get_logger().warn(f"  focus restore failed: {e}")
+                self.get_logger().warn(f"  focus/exposure restore failed: {e}")
 
             # If we were running v0_nn / v1_yolo but the corresponding
             # blob disappeared between builds, fall back to cv2 so the
