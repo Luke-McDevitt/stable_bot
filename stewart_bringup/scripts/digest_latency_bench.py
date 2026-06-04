@@ -165,10 +165,15 @@ def digest(bag_dir):
     imu_t, imu_rp = data['imu_t'], data['imu_rp']
     enc_t, enc = data['enc_t'], data['enc']
 
-    if diag.shape[0] < 4 or imu_rp.shape[0] < 8:
-        raise RuntimeError(
-            "bench bag missing /latency_bench/diag or /platform/imu/data — "
-            "was this recorded by the Latency Bench panel while armed?")
+    if diag.shape[0] < 2 or imu_rp.shape[0] < 8:
+        # Clean exit (no traceback) so the GUI push reports a readable
+        # message. Almost always: the platform wasn't ARMED when Run was
+        # clicked, so the tilt step refused and published no diag.
+        print(f"[latency-bench] SKIP {os.path.basename(bag_dir)}: "
+              f"diag={diag.shape[0]} imu={imu_rp.shape[0]} — the tilt step "
+              f"needs the platform ARMED. Arm in the Latency Bench panel, "
+              f"then Run.", file=sys.stderr)
+        sys.exit(2)
 
     t0 = int(min(diag_t[0], imu_t[0] if imu_t.size else diag_t[0]))
     diag_s = (diag_t - t0) * 1e-9
