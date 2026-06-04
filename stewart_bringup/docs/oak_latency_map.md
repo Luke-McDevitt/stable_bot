@@ -52,20 +52,34 @@ of ~122 ms).
 - Detection throughput: `v0_arr ≈ 27 Hz`, `v0_pub` bounces 5–13 Hz with the
   ball moving (HSV misses under motion blur — a *detection* problem that
   looks like latency because the controller goes stale between hits).
+- **`/oak/latency_ms` includes host queue-wait (2026-06-04 exposure sweeps).**
+  It reads **~120 ms while cv2 is detecting vs ~80 ms when it isn't** — at
+  the same USB/exposure. While cv2 does HSV+contour work the Pi can't drain
+  the raw-frame queue fast enough, so frames age in the buffer. So stage 4
+  is **USB transport + host queue-wait**, and the host is a real bottleneck.
+  Corollary trap: shorter exposure *appeared* to cut latency only because
+  detection failed there (host idled). With detection held (ISO 3200,
+  1500 µs), latency is flat ~120–130 ms across exposure. **Exposure is a
+  blur lever, not a latency lever.**
 
 ## Attack order (biggest, cheapest first)
 
-1. **Shorten exposure** (`exposure_sweep.py`) — removes stage 1 directly
-   (8 ms → 1–2 ms) *and* kills motion blur (which fixes the v0_pub
-   collapse, stage 4/5 effective staleness). One change, two wins.
-2. **Use per-sample `/oak/latency_ms` in the predictor** instead of a fixed
+1. **On-device detection** (stages 4+5) — **the actual latency lever.**
+   Removes the raw-frame USB transfer AND the host cv2 work that causes the
+   queue-wait, so capture→host drops from ~120 ms to ~50 ms
+   (`oak_throughput_diagnosis.md`). Needs the detector robust under motion
+   (couples to #2). The `oak_phase2b_on_device_v0.md` path.
+2. **Shorten exposure** (`exposure_sweep.py`) — a **motion-blur** fix, *not*
+   a latency fix (see the measured-reality note). It freezes the moving
+   ball so detection survives motion (fixes the v0_pub collapse). Best so
+   far: **1500 µs @ ISO 3200** (~5× less blur than 8 ms). Limited by light
+   (operator's panel caps ~63 %), so ISO is the only brightness lever.
+3. **Use per-sample `/oak/latency_ms` in the predictor** instead of a fixed
    `control_latency_s` — the ±29 ms jitter is otherwise baked-in error
    (§19). Free.
-3. **Reduce host contention** for stage 5 — the JPEG encoder throttle is
-   done; confirm cv2 isn't fighting rosbridge for CPU.
-4. **On-device detection** (stage 4) — the structural fix that takes
-   capture→host from ~108 ms to ~50 ms, but needs the detector robust
-   under motion (couples to #1). The `oak_phase2b_on_device_v0.md` path.
+4. **Reduce host contention** for stage 5 — the JPEG encoder throttle is
+   done; the host queue-wait finding says CPU is a real factor, so confirm
+   cv2 isn't fighting rosbridge for cycles.
 5. **Feeder 50→100 Hz** (stage 10) — halves actuation ZOH lag (§20.3).
 6. **Did autofocus removal help?** Now that focus is fixed manual 130,
    compare `/oak/latency_ms` from a fresh run to the ~122 ms autofocus
