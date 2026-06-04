@@ -9,6 +9,19 @@ disk.
 
 Hardware has been purchased and the plan is now concrete.
 
+> **Status update (2026-06-03)** — Milestones 1–6 are done and the
+> click-to-goto closed loop (Demo 2) has shipped (settled ball at
+> ~0.5 mm median tracking error). Milestone 7 (click-to-move / live
+> re-targeting) is in active operator tuning. Everything from here down
+> to the Milestones list is the original 2026-04-22 plan, kept for
+> context — the architecture it describes is now built and live in
+> `stewart_vision/` + `stewart_bringup/`. The next *foundational*
+> controls work is **[Phase 2 — Data-driven ball + platform forward
+> model](#phase-2--data-driven-ball--platform-forward-model-look-forward-upgrade)**
+> at the end of this doc: replacing the constant-velocity "look-forward"
+> the controller uses for latency compensation with an empirical,
+> data-driven physics model.
+
 ## Hardware
 
 - **Luxonis OAK-D-PRO-AF** — stereo + 12 MP color + IR dot projector +
@@ -116,20 +129,25 @@ gains just hides the instability.
 
 ## Milestones
 
-1. **Print + stick the ArUco ring.** Use `generate_aruco_ring.py`.
-2. **OAK-D driver up.** Stream RGB on the Pi; verify frames land.
-3. **Ring pose working.** Publish `/platform_pose` at ≥ 30 Hz. Move the
-   platform by hand; confirm roll/pitch match the IMU reading within
-   a degree.
-4. **Ball detection on VPU.** Publish `/ball_pixel`. Drop the ball in
-   frame and watch the pixel coordinates track it.
-5. **Ball-in-disk-frame.** `/ball_xy` in mm. Measure against a ruler.
-6. **Closed-loop ball-centering.** Disk level, drop ball off-center,
-   platform tilts to push it to the middle. PID tuning starts here.
-7. **Click-to-move (extra credit).** Click anywhere on the GUI video
-   feed; platform drives the ball to that spot.
-8. **Trajectory tracking (base demo).** Replace the scripted
-   rolling-ball feed-forward with real-time reference tracking.
+1. ✅ **Print + stick the ArUco ring.** `generate_aruco_ring.py` →
+   `marker_layout.yaml`, detected as an ArUco board.
+2. ✅ **OAK-D driver up.** `oak_driver_node.py` streams and runs
+   detection on the VPU; the Pi never decodes raw frames for tracking.
+3. ✅ **Ring pose working.** `platform_pose_node.py` publishes platform
+   pose; verified against the IMU to within ~1°.
+4. ✅ **Ball detection on VPU.** cv2-HSV V0 backend @ ~27 Hz arrival.
+   (YOLOv6n/v8n V1 also built but worse under fast motion — see
+   `step_id_tuning_lessons.md` §3.)
+5. ✅ **Ball-in-disk-frame.** `ball_localizer_node.py` → `/ball_xy_mono`;
+   `ball_kf_node.py` fuses to `/ball_state` (px, py, vx, vy) @ 100 Hz.
+6. ✅ **Closed-loop ball-centering.** `BALL_TRACK` PID commands tilt
+   directly (cascade-bypass — level-PI disabled on entry). Velocity
+   sanity gate + stiction relief + latency lookahead all live.
+7. ⏳ **Click-to-move (extra credit).** `BALL_TRACK_GOTO` /
+   `BALL_TRACK_PATH` modes exist; live operator tuning in progress.
+8. ☐ **Trajectory tracking (base demo).** `BALL_TRACK_TRAJECTORY` +
+   `ref_generator_node` scaffolded; gated on the Phase 2 predictor for
+   clean tracking at speed.
 
 ## Open questions / decisions to make before writing code
 
@@ -143,3 +161,143 @@ gains just hides the instability.
 - **When does `/ball_xy` become stale?** If the ArUco ring is fully
   occluded, the last good pose is held, but for how long? Default:
   drop to level-only mode after 500 ms of no detection.
+
+---
+
+# Phase 2 — Data-driven ball + platform forward model (look-forward upgrade)
+
+**Added 2026-06-03.** The next foundational controls task. It adds no
+hardware — it replaces the *model* the controller uses to predict the
+ball during the latency window.
+
+## What the "look-forward" is today
+
+BALL_TRACK runs ~100 ms behind reality (OAK exposure + USB + KF +
+control tick). So the controller doesn't chase where the ball *was*,
+`_ball_track_run` extrapolates the ball forward by one latency window
+before computing error:
+
+```python
+# PID branch (stewart_control_node._ball_track_run)
+ex_lead = ex + edot_x * control_latency_s     # control_latency_s ≈ 0.10 s
+ey_lead = ey + edot_y * control_latency_s
+# bang-bang FSM branch (mirror)
+px_lead = px + vx * latency_s
+py_lead = py + vy * latency_s
+```
+
+This is a **constant-velocity straight-line extrapolation** — it assumes
+the ball keeps its current KF velocity for the entire 100 ms. The KF
+behind it (`ball_kf_node.py`) is *also* constant-velocity: state
+`[px, py, vx, vy]`, `F` is pure kinematics, and Q/R are still the
+untuned placeholders (σ_a = 5000 mm/s², R = 1 mm).
+
+## Why that's not good enough
+
+During the latency window the ball is not coasting — it is on a plate
+the controller is actively tilting. The true plant (already written down
+in `_ball_physics.py`) is:
+
+```
+ẍ = α·g·sin θ  −  (rolling / viscous damping)  −  (stiction dead-zone)
+α = 5/7 foam (solid sphere),  3/5 ping-pong (hollow)
+```
+
+At the tilts BALL_TRACK commands, `α·g·sin θ` is a real acceleration the
+straight-line model ignores completely; so is friction deceleration near
+the target and the stiction dead-zone near zero velocity. The prediction
+is therefore wrong exactly on the accelerating / decelerating transients
+where look-forward matters most — part of why fast trajectories still
+orbit and overshoot (see `step_id_tuning_lessons.md`). Constant-velocity
+is the easy 80 %; getting the controls *perfect* needs a predictor that
+knows what the plate is doing.
+
+## The upgrade: fit the forward model from logged data
+
+Instead of feeding textbook constants into `α·g·sin θ`, **fit the
+effective dynamics from our own bags** and integrate *that* forward over
+the latency window using the tilt the controller actually commanded:
+
+```
+x̂(t + Td) = ∫ f_θ( ball_state, commanded_tilt(τ) ) dτ      over [t, t + Td]
+```
+
+where `f_θ` is the fitted model. Two candidate forms (open decision —
+start gray-box):
+
+| Form | Model | Trade-off |
+|---|---|---|
+| **Gray-box (do this first)** | Keep the physics skeleton `ẍ = G_eff·sinθ − c·ẋ − stiction(θ_s, μ_s)`; fit `G_eff` (effective α·g, *not* the nominal 5/7), damping `c`, breakaway `θ_s`. | Interpretable, few params, and **STEP_ID already estimates exactly these** (`G_eff`, `θ_s`, `μ_s`). Direct extension of existing code. |
+| **Black-box** | Small regression / tiny NN: recent `(state, tilt)` history → Δposition over Td. | Captures un-modeled effects (leg backlash, IK error, Z-coupling) but is data-hungry and opaque; vision noise makes it fragile. |
+
+Gray-box is the obvious starting point: it generalizes `_ball_physics.py`
+(swap nominal α for fitted `G_eff`) and reuses the STEP_ID Gen-3
+regression methodology — `v(t)` vs `∫θ dτ`, median-filtered position,
+3σ outlier rejection (`step_id_tuning_lessons.md`, "Plant ID
+methodology").
+
+## Where it plugs in
+
+1. **Predictor (primary).** Replace the `x_lead = x + v·Td` lines in
+   `_ball_track_run` with a forward-integration of `f_θ` over the
+   commanded-tilt history. The controller already knows its own command
+   stream — keep a short ring buffer of issued tilts so the integration
+   uses the real `θ(τ)`, not a single instantaneous value.
+2. **KF → EKF (optional; spec §8 / `ball_kf_node.py` TODO).** Fold `f_θ`
+   into the motion model so prediction is dynamics-aware *between*
+   measurements. Shrinks Q and keeps `/ball_state` sane through vision
+   dropouts (the dominant failure mode). Do this only if the predictor
+   swap alone doesn't settle Demo 2.
+
+Gate the new predictor behind a runtime flag, mirroring the existing
+`use_empirical_ik` A/B toggle, so the constant-velocity baseline stays
+one switch away during tuning.
+
+## Data pipeline (mostly already built)
+
+- **Record** — `bag_recorder_node.py` already logs `/ball_state`,
+  commanded tilt, IMU-actual tilt, and `/oak/latency_ms`. Make sure
+  every BALL_TRACK + STEP_ID run captures all four.
+- **Clean the target** — `smooth_demo_bag.py` is an offline *non-causal*
+  velocity estimator; use it to produce the clean "ground-truth" future
+  position each causal prediction is scored against. Vision noise is the
+  bottleneck — never fit against raw single-frame velocity.
+- **Fit** — new `scripts/fit_ball_forward_model.py`, ingesting STEP_ID +
+  demo bags, emitting `config/ball_forward_model.yaml` (the analog of
+  `step_id_recommendation.json`).
+- **Validate** — prediction error *at horizon Td* on held-out bags
+  (model-predicted position vs smoothed actual), reported against the
+  constant-velocity baseline. The win condition is lower horizon error,
+  not lower fit residual.
+
+## Milestones (Phase 2)
+
+1. ☐ Confirm logging: every relevant bag carries commanded tilt + IMU
+   tilt + `/ball_state` + measured latency. Measure latency for real
+   with `measure_detector_latency.py` instead of assuming 0.10 s.
+2. ☐ Offline gray-box fit → `ball_forward_model.yaml` (`G_eff`, `c`,
+   `θ_s`) using the robust STEP_ID regression.
+3. ☐ Horizon-error validation on held-out bags; quantify the improvement
+   over constant-velocity.
+4. ☐ Online predictor swap in `_ball_track_run`, behind a flag; A/B on
+   Demo 2.
+5. ☐ (Optional) EKF motion model in `ball_kf_node.py`; tune Q/R from the
+   same bags.
+6. ☐ Re-run STEP_ID verification + Demo 2; confirm reduced orbital
+   limit-cycling and tighter settle.
+
+## Open decisions (Phase 2)
+
+- **Gray-box vs black-box** — start gray-box; revisit only if structured
+  residuals remain after fitting.
+- **Predictor-only vs predictor + EKF** — ship the predictor swap first;
+  it's cheaper and the KF change is riskier.
+- **One global fit vs Z-parameterized** — `G_eff` may vary with platform
+  Z (`step_id_tuning_lessons.md` open-question #6). All STEP_ID runs so
+  far were at Z = 80 mm, but demos run at Z = 30–50 mm. Fit at the demo
+  Z, or parameterize on Z.
+- **Horizon** — fixed 100 ms vs per-tick from `/oak/latency_ms`. Per-tick
+  is more correct if latency jitters.
+- **Tune KF R first?** — `step_id_tuning_lessons.md` open-question #2:
+  damping vision spikes at the KF input may matter more than the model
+  form. Probably do this before / alongside the fit.
