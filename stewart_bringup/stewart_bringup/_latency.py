@@ -31,7 +31,7 @@ def read_system_stats(bag_dir):
     if not os.path.isfile(path):
         return None
     video_on = None
-    cpu, temp, load, freq = [], [], [], []
+    cpu, iowait, temp, load, freq = [], [], [], [], []
     throttled_now = throttled_ever = False
     try:
         with open(path) as f:
@@ -45,6 +45,8 @@ def read_system_stats(bag_dir):
                     continue
                 if d.get('cpu_pct') is not None:
                     cpu.append(float(d['cpu_pct']))
+                if d.get('iowait_pct') is not None:
+                    iowait.append(float(d['iowait_pct']))
                 if d.get('temp_c') is not None:
                     temp.append(float(d['temp_c']))
                 if d.get('load1') is not None:
@@ -64,6 +66,7 @@ def read_system_stats(bag_dir):
     return {
         'gui_video_on': video_on,
         'cpu_pct': _ms(cpu),
+        'iowait_pct': _ms(iowait),
         'temp_c': _ms(temp),
         'load1': _ms(load),
         'freq_mhz': _ms(freq),

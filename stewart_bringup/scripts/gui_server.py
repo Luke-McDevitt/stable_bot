@@ -1152,14 +1152,17 @@ _throttle_cache = {'t': 0.0, 'hex': None}
 
 
 def _cpu_snapshot():
-    """(idle, total) jiffies from /proc/stat's aggregate cpu line."""
+    """(idle, iowait, total) jiffies from /proc/stat's aggregate cpu line.
+    iowait split out so the digest can tell COMPUTE-bound (high cpu, low
+    iowait) from I/O-bound (high iowait — the SD card / bag writer)."""
     try:
         with open('/proc/stat') as f:
             vals = [int(x) for x in f.readline().split()[1:]]
-        idle = vals[3] + (vals[4] if len(vals) > 4 else 0)   # idle + iowait
-        return idle, sum(vals)
+        idle = vals[3]
+        iowait = vals[4] if len(vals) > 4 else 0
+        return idle, iowait, sum(vals)
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def _read_temp_c():
@@ -1241,15 +1244,18 @@ def _start_sampler(bag_dir, video_on):
                                     'video_on': bool(video_on),
                                     't0': time.time()}) + '\n')
                 while not stop.wait(1.0):
-                    idle, total = _cpu_snapshot()
-                    cpu = None
+                    idle, iowait, total = _cpu_snapshot()
+                    cpu = iow = None
                     if (idle is not None and prev[0] is not None
-                            and total - prev[1] > 0):
-                        cpu = round(100.0 * (1.0 - (idle - prev[0])
-                                             / (total - prev[1])), 1)
-                    prev = (idle, total)
+                            and total - prev[2] > 0):
+                        dt = total - prev[2]
+                        cpu = round(100.0 * (1.0 - (idle - prev[0]
+                                             + iowait - prev[1]) / dt), 1)
+                        iow = round(100.0 * (iowait - prev[1]) / dt, 1)
+                    prev = (idle, iowait, total)
                     s = _system_stats_instant()
                     s['cpu_pct'] = cpu
+                    s['iowait_pct'] = iow
                     s['t'] = time.time()
                     f.write(json.dumps(s) + '\n')
                     f.flush()

@@ -995,12 +995,16 @@ def digest(bag_dir: str):
         cpu = hs.get('cpu_pct') or {}
         tmp = hs.get('temp_c') or {}
         ld = hs.get('load1') or {}
+        iow = hs.get('iowait_pct') or {}
         thr = ('THROTTLED' if hs.get('throttled_now')
                else ('throttled-past' if hs.get('throttled_ever') else 'ok'))
+        bound = ('I/O-BOUND (disk)' if (iow.get('mean') or 0) > 25
+                 else 'compute-bound' if (cpu.get('mean') or 0) > 85 else '')
         print(f"  host: video={hs.get('gui_video_on')} "
               f"cpu={cpu.get('mean')}/{cpu.get('max')}% "
+              f"iowait={iow.get('mean')}% "
               f"load={ld.get('mean')}/{ld.get('max')} "
-              f"temp={tmp.get('max')}°C throttle={thr}")
+              f"temp={tmp.get('max')}°C throttle={thr} {bound}")
 
     # ----- Iteration-actionable next-step recommendation -----
     # Big banner so the operator can read it at a glance after each
