@@ -112,6 +112,57 @@ showed ~100% CPU → primarily compute (made worse by the throttle).
   it raises voltage/heat/draw, the opposite of what we need. The goal is to
   reliably *reach* 2.4 GHz under load, not exceed it.
 
+## Profiling the compute (the Pi held 2.4 GHz → compute-bound, not throttled)
+
+Find the hog in increasing resolution:
+1. `htop` (press **P** = sort by CPU). Expect: OAK driver (cv2), rosbridge,
+   `ros2 bag record`, control node.
+2. **py-spy** on the Python nodes — attaches live, no restart:
+   ```bash
+   sudo py-spy top  --pid $(pgrep -f oak_driver_node)        # live which-function
+   sudo py-spy dump --pid $(pgrep -f stewart_control_node)   # call stack / thread
+   sudo py-spy record -o oak.svg --pid <pid> --duration 20   # flame graph
+   ```
+   Pinpoints e.g. `getCvFrame` vs HSV vs projection vs publish.
+3. `sudo perf top` — system-wide incl. C (Fast-DDS, cv2 internals, rosbridge).
+4. The digest `host` block now tags **compute-bound** vs **I/O-BOUND (disk)**
+   via the iowait split — read that first.
+
+## Increase throughput WITHOUT adding latency
+
+Latency = the see→move *critical path* (capture→detect→localize→KF→control→
+actuate). Much of "load 26" is NOT on that path — it steals CPU from it:
+rosbridge serialising to the browser, `ros2 bag record` serialising 400 Hz
+IMU, the GUI live feed. **Cutting that bookkeeping frees the critical path →
+lower latency** (live-video off, fewer/throttled browser subs, minimal-topic
+recording, mcap `fastwrite`).
+
+The bigger lever: **offload vision to the OAK's own VPU.** DepthAI "does the
+heavy lifting… leaving the host CPU free for business logic"; the host
+`getCvFrame()` copies the full ~1.5 MB frame each time. Detecting on-device
+and shipping only (cx,cy) deletes that copy + the host HSV — the Pi then only
+runs the light control. (Scoped in `oak_phase2b_on_device_v0.md`; caveat: the
+on-device detector must match the host cv2's motion robustness — the earlier
+YOLO attempt didn't, so this needs detector work, not just a flag.)
+
+## Should we switch off the Pi 5? — profile + offload first
+
+Load 26 at *full clock* for a control + camera task is a software-utilisation
+smell, not a hardware ceiling; a clean version runs at load 2–4. The OAK
+already has a VPU, so **we don't need a host GPU for the vision.**
+
+If it still can't keep up after offloading:
+
+| Option | vs Pi 5 | Why / why not | Effort |
+|---|---|---|---|
+| **Intel N100 mini-PC** (~$150) | ~3× CPU | x86, ROS 2 **binary** install (no 3 h source build), big headroom. No GPIO → CAN via USB adapter (SocketCAN). Best $/CPU. | port workspace + USB-CAN + re-test (~days) |
+| **Jetson Orin Nano** (~$249) | ≈CPU, +CUDA/TensorRT (100+ FPS YOLO vs 5–15 on Pi) | GPU is **redundant here** (the OAK does vision); only worth it for heavy *on-host* NNs later. 25 W. | JetPack/Isaac + port (~days+) |
+| **Stay on Pi 5** | — | Likely fine after offload + cutting bookkeeping; CAN HAT already wired. | software only |
+
+**Verdict: don't switch yet.** Profile → offload vision to the OAK → cut the
+browser/recorder load → re-measure. A switch is a multi-day port (ROS 2 +
+depthai + CAN + re-test) and probably unnecessary.
+
 ## Sources
 - Raspberry Pi 5 PSU / under-voltage: pimylifeup, peppe8o, RPi forums
   (t=381080 "5V/5A power issues", t=371450, t=382143).
@@ -121,3 +172,9 @@ showed ~100% CPU → primarily compute (made worse by the throttle).
 - I/O-wait diagnosis: Netdata, Site24x7, Alibaba ECS (iostat+iotop).
 - rosbag2 / mcap on constrained machines: ros2/rosbag2#1787, mcap.dev
   storage-plugin benchmarks (fastwrite preset).
+- Profiling: benfred/py-spy (sampling profiler, attach by PID);
+  awesomebytes/python_profiling_tutorial_with_ros.
+- Compute offload: Luxonis DepthAI docs ("device does the heavy lifting"),
+  LearnOpenCV intro to OAK-D/DepthAI.
+- Hardware: Pi 5 vs Jetson Orin Nano (kunalganglani, ThinkRobotics,
+  hackster); Pi 5 vs Intel N100 (CNX Software, Jeff Geerling, Tom's Hardware).
