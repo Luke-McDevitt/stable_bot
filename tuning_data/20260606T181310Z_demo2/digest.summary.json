@@ -1,0 +1,691 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260606T181310Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": "BALL_TRACK_GOTO",
+  "demo_params": {
+    "x_mm": 86.42383575439453,
+    "y_mm": -89.90755462646484
+  },
+  "duration_s": 44.011508002,
+  "topic_counts": {
+    "/ball_ref": 2493,
+    "/ball_state": 6014,
+    "/ball_track/diagnostic": 2118,
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 2766,
+    "/ball_xy_mono/lat": 901,
+    "/control_cmd": 12,
+    "/control_result": 0,
+    "/latency_bench/diag": 0,
+    "/leg_currents": 821,
+    "/leg_encoders": 821,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/v0/diagnostic": 974,
+    "/oak/ball/v0/rgb_pixel": 978,
+    "/oak/config": 9,
+    "/oak/health": 9,
+    "/oak/latency_ms": 400,
+    "/odrive_errors": 87,
+    "/platform/imu/data": 13616,
+    "/platform_pose": 401,
+    "/platform_pose/markers_visible": 399,
+    "/platform_rpy": 821,
+    "/status": 87
+  },
+  "gains_at_record": {
+    "kp": 0.016,
+    "kd": 0.02,
+    "ki": 0.0,
+    "max_tilt_deg": 1.2,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 100.0,
+    "stiction_v_threshold_mm_s": 61.0,
+    "stiction_break_s": 0.25,
+    "brake_tilt_deg": 9.0,
+    "control_latency_s": 0.2,
+    "kd_v_tau_s": 0.35,
+    "stiction_ramp_start_deg": 2.0,
+    "stiction_ramp_max_deg": 6.0,
+    "stiction_ramp_rate_deg_per_s": 0.25,
+    "stiction_ramp_timeout_s": 25.0,
+    "stiction_moving_hyst_ticks": 3.0,
+    "stiction_pos_delta_mm": 12.0,
+    "tilt_slew_up_deg_per_s": 100.0,
+    "algorithm": "pid"
+  },
+  "run_config": {
+    "soft_max_vel_tps": 1.0,
+    "hard_max_vel_tps": 4.0,
+    "leg_current_cap_a": 10.0
+  },
+  "leg_current": {
+    "measured_peak_a": 7.94,
+    "measured_p95_a": 4.99,
+    "per_leg_peak_a": [
+      3.39,
+      6.22,
+      4.8,
+      7.57,
+      5.18,
+      7.94
+    ],
+    "cap_a": 10.0,
+    "headroom_a": 2.06,
+    "saturation_fraction": 0.0
+  },
+  "host": {
+    "gui_video_on": false,
+    "cpu_pct": {
+      "mean": 99.5,
+      "max": 100.0
+    },
+    "iowait_pct": {
+      "mean": 0.0,
+      "max": 0.2
+    },
+    "temp_c": {
+      "mean": 56.6,
+      "max": 57.9
+    },
+    "load1": {
+      "mean": 17.9,
+      "max": 19.2
+    },
+    "freq_mhz": {
+      "mean": 2400.0,
+      "max": 2400.0
+    },
+    "throttled_now": true,
+    "throttled_ever": true,
+    "n_samples": 44
+  },
+  "host_latency_correlation": {
+    "n_windows": 44,
+    "window_s": 1.0,
+    "headline_r": -0.39,
+    "headline_vs": "load1",
+    "pearson_r_load1_vs_lat_p95": -0.39,
+    "pearson_r_cpu_vs_lat_p95": -0.134,
+    "pearson_r_load1_vs_lat_p50": -0.251,
+    "pearson_r_cpu_vs_lat_p50": 0.022,
+    "lat_p95_ms_range": [
+      168.4,
+      402.9
+    ],
+    "load1_range": [
+      15.96,
+      19.18
+    ],
+    "cpu_pct_range": [
+      99.0,
+      100.0
+    ],
+    "interpretation": "MODERATE (r=-0.39 vs load1): some coupling of host load and latency; headroom helps but other factors dominate.",
+    "windows": [
+      {
+        "t": 1780769594.259,
+        "cpu_pct": 99.8,
+        "load1": 15.96,
+        "lat_p50_ms": 248.5,
+        "lat_p95_ms": 362.9,
+        "n": 102
+      },
+      {
+        "t": 1780769595.272,
+        "cpu_pct": 99.5,
+        "load1": 15.96,
+        "lat_p50_ms": 130.0,
+        "lat_p95_ms": 223.7,
+        "n": 157
+      },
+      {
+        "t": 1780769596.275,
+        "cpu_pct": 99.5,
+        "load1": 16.68,
+        "lat_p50_ms": 197.7,
+        "lat_p95_ms": 280.1,
+        "n": 134
+      },
+      {
+        "t": 1780769597.276,
+        "cpu_pct": 99.5,
+        "load1": 16.68,
+        "lat_p50_ms": 170.0,
+        "lat_p95_ms": 245.4,
+        "n": 138
+      },
+      {
+        "t": 1780769598.278,
+        "cpu_pct": 99.5,
+        "load1": 16.68,
+        "lat_p50_ms": 208.0,
+        "lat_p95_ms": 326.0,
+        "n": 119
+      },
+      {
+        "t": 1780769599.28,
+        "cpu_pct": 99.2,
+        "load1": 16.68,
+        "lat_p50_ms": 188.3,
+        "lat_p95_ms": 287.7,
+        "n": 125
+      },
+      {
+        "t": 1780769600.288,
+        "cpu_pct": 99.3,
+        "load1": 16.68,
+        "lat_p50_ms": 166.6,
+        "lat_p95_ms": 319.1,
+        "n": 147
+      },
+      {
+        "t": 1780769601.29,
+        "cpu_pct": 99.3,
+        "load1": 16.95,
+        "lat_p50_ms": 163.8,
+        "lat_p95_ms": 240.7,
+        "n": 146
+      },
+      {
+        "t": 1780769602.296,
+        "cpu_pct": 99.3,
+        "load1": 16.95,
+        "lat_p50_ms": 263.5,
+        "lat_p95_ms": 402.9,
+        "n": 105
+      },
+      {
+        "t": 1780769603.299,
+        "cpu_pct": 99.3,
+        "load1": 16.95,
+        "lat_p50_ms": 166.9,
+        "lat_p95_ms": 283.6,
+        "n": 148
+      },
+      {
+        "t": 1780769604.306,
+        "cpu_pct": 99.5,
+        "load1": 16.95,
+        "lat_p50_ms": 168.0,
+        "lat_p95_ms": 248.2,
+        "n": 129
+      },
+      {
+        "t": 1780769605.33,
+        "cpu_pct": 99.3,
+        "load1": 16.95,
+        "lat_p50_ms": 151.1,
+        "lat_p95_ms": 257.0,
+        "n": 138
+      },
+      {
+        "t": 1780769606.332,
+        "cpu_pct": 99.8,
+        "load1": 17.83,
+        "lat_p50_ms": 158.1,
+        "lat_p95_ms": 242.5,
+        "n": 123
+      },
+      {
+        "t": 1780769607.335,
+        "cpu_pct": 99.5,
+        "load1": 17.83,
+        "lat_p50_ms": 212.4,
+        "lat_p95_ms": 278.5,
+        "n": 115
+      },
+      {
+        "t": 1780769608.353,
+        "cpu_pct": 99.3,
+        "load1": 17.83,
+        "lat_p50_ms": 128.0,
+        "lat_p95_ms": 225.2,
+        "n": 134
+      },
+      {
+        "t": 1780769609.359,
+        "cpu_pct": 99.0,
+        "load1": 17.83,
+        "lat_p50_ms": 168.6,
+        "lat_p95_ms": 240.6,
+        "n": 133
+      },
+      {
+        "t": 1780769610.395,
+        "cpu_pct": 99.2,
+        "load1": 17.83,
+        "lat_p50_ms": 170.8,
+        "lat_p95_ms": 267.5,
+        "n": 119
+      },
+      {
+        "t": 1780769611.398,
+        "cpu_pct": 99.3,
+        "load1": 17.77,
+        "lat_p50_ms": 158.0,
+        "lat_p95_ms": 280.6,
+        "n": 136
+      },
+      {
+        "t": 1780769612.399,
+        "cpu_pct": 99.5,
+        "load1": 17.77,
+        "lat_p50_ms": 239.0,
+        "lat_p95_ms": 316.0,
+        "n": 115
+      },
+      {
+        "t": 1780769613.4,
+        "cpu_pct": 99.2,
+        "load1": 17.77,
+        "lat_p50_ms": 128.3,
+        "lat_p95_ms": 185.2,
+        "n": 156
+      },
+      {
+        "t": 1780769614.405,
+        "cpu_pct": 99.5,
+        "load1": 17.77,
+        "lat_p50_ms": 144.4,
+        "lat_p95_ms": 208.9,
+        "n": 148
+      },
+      {
+        "t": 1780769615.429,
+        "cpu_pct": 99.0,
+        "load1": 17.77,
+        "lat_p50_ms": 210.4,
+        "lat_p95_ms": 343.2,
+        "n": 109
+      },
+      {
+        "t": 1780769616.43,
+        "cpu_pct": 99.5,
+        "load1": 18.11,
+        "lat_p50_ms": 137.0,
+        "lat_p95_ms": 198.4,
+        "n": 164
+      },
+      {
+        "t": 1780769617.433,
+        "cpu_pct": 99.5,
+        "load1": 18.11,
+        "lat_p50_ms": 108.6,
+        "lat_p95_ms": 168.4,
+        "n": 157
+      },
+      {
+        "t": 1780769618.434,
+        "cpu_pct": 99.5,
+        "load1": 18.11,
+        "lat_p50_ms": 107.1,
+        "lat_p95_ms": 172.9,
+        "n": 173
+      },
+      {
+        "t": 1780769619.436,
+        "cpu_pct": 99.2,
+        "load1": 18.11,
+        "lat_p50_ms": 110.1,
+        "lat_p95_ms": 172.9,
+        "n": 155
+      },
+      {
+        "t": 1780769620.449,
+        "cpu_pct": 99.5,
+        "load1": 18.11,
+        "lat_p50_ms": 122.2,
+        "lat_p95_ms": 181.1,
+        "n": 159
+      },
+      {
+        "t": 1780769621.45,
+        "cpu_pct": 99.3,
+        "load1": 18.58,
+        "lat_p50_ms": 149.4,
+        "lat_p95_ms": 234.1,
+        "n": 151
+      },
+      {
+        "t": 1780769622.459,
+        "cpu_pct": 99.3,
+        "load1": 18.58,
+        "lat_p50_ms": 181.1,
+        "lat_p95_ms": 262.3,
+        "n": 146
+      },
+      {
+        "t": 1780769623.469,
+        "cpu_pct": 99.5,
+        "load1": 18.58,
+        "lat_p50_ms": 160.4,
+        "lat_p95_ms": 254.1,
+        "n": 143
+      },
+      {
+        "t": 1780769624.479,
+        "cpu_pct": 99.8,
+        "load1": 18.58,
+        "lat_p50_ms": 157.5,
+        "lat_p95_ms": 227.9,
+        "n": 142
+      },
+      {
+        "t": 1780769625.547,
+        "cpu_pct": 99.5,
+        "load1": 18.58,
+        "lat_p50_ms": 168.2,
+        "lat_p95_ms": 262.5,
+        "n": 146
+      },
+      {
+        "t": 1780769626.551,
+        "cpu_pct": 99.3,
+        "load1": 18.85,
+        "lat_p50_ms": 201.9,
+        "lat_p95_ms": 276.1,
+        "n": 125
+      },
+      {
+        "t": 1780769627.557,
+        "cpu_pct": 99.5,
+        "load1": 18.85,
+        "lat_p50_ms": 138.8,
+        "lat_p95_ms": 218.6,
+        "n": 138
+      },
+      {
+        "t": 1780769628.566,
+        "cpu_pct": 100.0,
+        "load1": 18.85,
+        "lat_p50_ms": 156.7,
+        "lat_p95_ms": 208.0,
+        "n": 143
+      },
+      {
+        "t": 1780769629.574,
+        "cpu_pct": 99.8,
+        "load1": 18.85,
+        "lat_p50_ms": 194.9,
+        "lat_p95_ms": 282.5,
+        "n": 113
+      },
+      {
+        "t": 1780769630.639,
+        "cpu_pct": 99.8,
+        "load1": 18.85,
+        "lat_p50_ms": 196.3,
+        "lat_p95_ms": 257.7,
+        "n": 120
+      },
+      {
+        "t": 1780769631.642,
+        "cpu_pct": 99.8,
+        "load1": 19.1,
+        "lat_p50_ms": 148.3,
+        "lat_p95_ms": 236.3,
+        "n": 130
+      },
+      {
+        "t": 1780769632.645,
+        "cpu_pct": 100.0,
+        "load1": 19.1,
+        "lat_p50_ms": 181.3,
+        "lat_p95_ms": 270.9,
+        "n": 123
+      },
+      {
+        "t": 1780769633.652,
+        "cpu_pct": 99.8,
+        "load1": 19.1,
+        "lat_p50_ms": 140.2,
+        "lat_p95_ms": 206.8,
+        "n": 146
+      },
+      {
+        "t": 1780769634.667,
+        "cpu_pct": 100.0,
+        "load1": 19.1,
+        "lat_p50_ms": 148.6,
+        "lat_p95_ms": 206.8,
+        "n": 143
+      },
+      {
+        "t": 1780769635.684,
+        "cpu_pct": 99.8,
+        "load1": 19.1,
+        "lat_p50_ms": 155.0,
+        "lat_p95_ms": 225.8,
+        "n": 148
+      },
+      {
+        "t": 1780769636.685,
+        "cpu_pct": 100.0,
+        "load1": 19.18,
+        "lat_p50_ms": 208.7,
+        "lat_p95_ms": 283.5,
+        "n": 115
+      },
+      {
+        "t": 1780769637.686,
+        "cpu_pct": 99.8,
+        "load1": 19.18,
+        "lat_p50_ms": 134.0,
+        "lat_p95_ms": 245.5,
+        "n": 102
+      }
+    ]
+  },
+  "next_step": {
+    "suggestion": "Kp +30% (\u21920.021) \u2014 ball got near target but didn't settle within tolerance.",
+    "suggested_gains": {
+      "kp": 0.0208
+    },
+    "rationale": [
+      "final-5s err=48mm > 1.5\u00d7err_tol=22mm but no clear failure mode; nudge Kp up."
+    ],
+    "metrics": {
+      "settled": false,
+      "median_tail_err_mm": 47.66090750225263,
+      "p95_err_mm": 221.1434866147539,
+      "peak_speed_mm_s": 347.7119554989053,
+      "saturation_fraction": 0.7724268177525968,
+      "cmd_jitter_deg_per_tick": 0.1041109740788918
+    }
+  },
+  "ball_state_n": 6014,
+  "ball_ref_n": 2493,
+  "mono_n": 2766,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 5927,
+    "mean": 70.20185189677767,
+    "std": 52.565671073588256,
+    "rms": 87.70091097105993,
+    "p50": 63.50424675117208,
+    "p95": 221.1434866147539,
+    "min": 1.8751511264800815,
+    "max": 241.6654088066689
+  },
+  "error_x_mm": {
+    "n": 5927,
+    "mean": 12.968775862315761,
+    "std": 26.041199168005033,
+    "rms": 29.091806431961047,
+    "p50": 15.33804894385787,
+    "p95": 54.19931343123099,
+    "min": -58.9872411504029,
+    "max": 80.6965336668572
+  },
+  "error_y_mm": {
+    "n": 5927,
+    "mean": 22.934096697309762,
+    "std": 79.493042414777,
+    "rms": 82.73521972944224,
+    "p50": 32.808694801990725,
+    "p95": 116.84945553636823,
+    "min": -230.67928639505865,
+    "max": 241.00363952240417
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 401,
+    "mean": 886.7446492251523,
+    "std": 3.596026108410243,
+    "rms": 886.7519406988692,
+    "p50": 886.3071372098125,
+    "p95": 892.3122631130602,
+    "min": 880.3797064965225,
+    "max": 894.789738620236
+  },
+  "latency_breakdown": {
+    "vision_detector_ms": 56.1,
+    "vision_source": "/oak/health.v0_lat_ms (windowed detector latency)",
+    "vision_pipeline": {
+      "capture_to_state_fresh_ms": 126.2,
+      "capture_to_state_min_ms": 79.2,
+      "capture_to_state_p50_ms": 157.7,
+      "capture_to_state_p90_ms": 245.5,
+      "capture_to_detect_ms": 56.1,
+      "detect_to_state_ms": 70.2,
+      "n": 6014,
+      "note": "capture\u2192state from /ball_state.orientation.z; p10=fresh pipeline, p50/p90=staleness; detect\u2192state = localizer+KF = fresh \u2212 v0_lat.",
+      "capture_to_localizer_in_ms": 98.7,
+      "capture_to_mono_out_ms": 107.7,
+      "stage_split_ms": {
+        "transport_to_localizer": 42.6,
+        "localizer_tick_reproject": 9.0,
+        "kf_mono_to_state": 18.5
+      }
+    },
+    "actuation": {
+      "source": "platform_imu",
+      "pitch_lag_ms": 285.0,
+      "pitch_corr": 0.969,
+      "roll_lag_ms": 285.0,
+      "roll_corr": 0.965,
+      "n_overlap": 8645,
+      "actuation_ms": 285.0,
+      "cmd_period_s": null,
+      "ambiguous": false
+    },
+    "see_to_move_est_ms": 411.2,
+    "note": "vision_detector = capture\u2192detect (host); vision_pipeline splits capture\u2192state (Part-2 orientation.z) into detect\u2192state = localizer+KF; actuation = cmd-tilt\u2192IMU cross-correlation (feeder ZOH + leg slew + mechanical); see_to_move = capture\u2192state fresh + actuation."
+  },
+  "oak_latency_ms": {
+    "n": 400,
+    "mean": 94.67485498428344,
+    "std": 30.813317208073805,
+    "rms": 99.56298852314788,
+    "p50": 91.22150039672852,
+    "p95": 149.50204315185542,
+    "min": 37.0890007019043,
+    "max": 222.60800170898438
+  },
+  "oak_health": {
+    "n": 9,
+    "v0_arr_hz": {
+      "n": 9,
+      "mean": 46.13487116495768,
+      "std": 5.395120709802232,
+      "rms": 46.449259034785264,
+      "p50": 45.089111328125,
+      "p95": 54.62681274414062,
+      "min": 36.269527435302734,
+      "max": 55.88288116455078
+    },
+    "v0_pub_hz": {
+      "n": 9,
+      "mean": 23.055982377794052,
+      "std": 3.412580522731154,
+      "rms": 23.30716690696821,
+      "p50": 22.626220703125,
+      "p95": 28.89010772705078,
+      "min": 18.134763717651367,
+      "max": 29.643966674804688
+    },
+    "jpeg_hz": {
+      "n": 9,
+      "mean": 9.128533363342285,
+      "std": 0.16343410029309047,
+      "rms": 9.129996279889266,
+      "p50": 9.208966255187988,
+      "p95": 9.303216361999512,
+      "min": 8.810210227966309,
+      "max": 9.32702922821045
+    },
+    "pose_hz": {
+      "n": 9,
+      "mean": 9.085108439127604,
+      "std": 0.31552801867002056,
+      "rms": 9.090585970182198,
+      "p50": 8.977920532226562,
+      "p95": 9.564936256408691,
+      "min": 8.609977722167969,
+      "max": 9.6655855178833
+    },
+    "jpeg_lat_ms": {
+      "n": 9,
+      "mean": 95.1327773200141,
+      "std": 33.25278034214922,
+      "rms": 100.77694538485781,
+      "p50": 92.22100067138672,
+      "p95": 152.20499877929686,
+      "min": 57.24100112915039,
+      "max": 157.12899780273438
+    },
+    "v0_lat_ms": {
+      "n": 9,
+      "mean": 56.053111182318794,
+      "std": 10.839295248946744,
+      "rms": 57.09151946402575,
+      "p50": 53.27299880981445,
+      "p95": 73.22360229492188,
+      "min": 42.441001892089844,
+      "max": 81.16200256347656
+    }
+  },
+  "oak_config": {
+    "rgb_fps": 60,
+    "mono_fps": 15,
+    "jpeg_quality": 50,
+    "focus_mode": "manual",
+    "focus_pos": 130,
+    "exp_us": 8000,
+    "iso": 1600,
+    "v0_backend": "cv2",
+    "v0_blob": null,
+    "v1_blob": "v1_yolov8n_320.blob",
+    "v1_arch": "v8",
+    "nn_conf_min": 0.0001,
+    "v1_yolo_conf_min": 0.3,
+    "jpeg_fps": 10,
+    "hsv_lo": [
+      5,
+      100,
+      60
+    ],
+    "hsv_hi": [
+      22,
+      255,
+      255
+    ],
+    "enable_depth": false,
+    "mask_v0_to_platform": true,
+    "usb_speed": "super",
+    "rgb_w": 960,
+    "rgb_h": 540
+  },
+  "markers_visible": {
+    "n": 399,
+    "mean": 7.634085213032582,
+    "min": 7,
+    "max": 8
+  }
+}
