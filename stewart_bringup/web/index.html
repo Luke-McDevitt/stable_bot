@@ -663,6 +663,11 @@
           <input id="d1-auto-bag" type="checkbox" checked>
           auto-record + digest demo bag (uses Demo Run Bag panel)
         </label>
+        <label class="col-span-2 flex items-center gap-2 text-slate-400"
+               title="Drop the browser live-video feed when a run starts recording — rosbridge serializing JPEG to the browser is ~0.3 core that competes with the see->move path. Synced across demo panels; persists across reloads.">
+          <input type="checkbox" class="cfg-drop-video" checked>
+          drop live video while recording (frees CPU)
+        </label>
       </div>
       <div class="grid grid-cols-3 gap-2">
         <button id="d1-start-btn"
@@ -695,6 +700,11 @@
         <label class="col-span-2 flex items-center gap-2 text-slate-400">
           <input id="d2-auto-bag" type="checkbox" checked>
           auto-record + digest demo bag (uses Demo Run Bag panel)
+        </label>
+        <label class="col-span-2 flex items-center gap-2 text-slate-400"
+               title="Drop the browser live-video feed when a run starts recording — rosbridge serializing JPEG to the browser is ~0.3 core that competes with the see->move path. Synced across demo panels; persists across reloads.">
+          <input type="checkbox" class="cfg-drop-video" checked>
+          drop live video while recording (frees CPU)
         </label>
       </div>
       <div class="grid grid-cols-3 gap-2">
@@ -4767,6 +4777,8 @@ function initVisionGUI() {
     setInterval(() => { if (calDetails.open) publishCalActive(true); }, 5000);
   }
 
+  initDropVideoToggles();   // synced "drop live video while recording" checkboxes
+
   // --- Demo 1 (Orbit) ---
   $('d1-start-btn').addEventListener('click', startDemo1);
   $('d1-stop-btn').addEventListener('click',  stopAllDemos);
@@ -6635,9 +6647,26 @@ function setLiveVideo(on) {
   cb.dispatchEvent(new Event('change'));
 }
 
+// "Drop live video while recording" preference — surfaced as a synced
+// checkbox (class .cfg-drop-video) in the demo panels, persisted in
+// localStorage so it survives reloads. Default ON. dbagStart + the bench
+// honor it; uncheck to keep watching the feed during a recorded run.
+const DROP_VIDEO_KEY = 'stable-bot-drop-video-on-run';
+function dropVideoOnRun() { return localStorage.getItem(DROP_VIDEO_KEY) !== '0'; }
+function initDropVideoToggles() {
+  const boxes = document.querySelectorAll('.cfg-drop-video');
+  boxes.forEach((cb) => {
+    cb.checked = dropVideoOnRun();
+    cb.addEventListener('change', () => {
+      localStorage.setItem(DROP_VIDEO_KEY, cb.checked ? '1' : '0');
+      boxes.forEach((o) => { o.checked = cb.checked; });   // keep panels in sync
+    });
+  });
+}
+
 async function dbagStart() {
   dbagSetStatus('starting…', null);
-  setLiveVideo(false);   // drop the live feed for the duration of the run
+  if (dropVideoOnRun()) setLiveVideo(false);   // free CPU for the run (toggle in demo panels)
   const labelEl = document.getElementById('dbag-label');
   const label = labelEl ? labelEl.value : 'demo_run';
   try {
@@ -6798,7 +6827,7 @@ function dbagPushBag(name) {
     try {
       const s = await fetch('/demo/status').then((r) => r.json());
       if (s.recording) { stSet('a recording is already active — stop it first'); return; }
-      setLiveVideo(false);   // drop the live feed for the latency run
+      if (dropVideoOnRun()) setLiveVideo(false);   // free CPU for the latency run
       const r1 = await fetch('/demo/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ label: 'latency_bench',
