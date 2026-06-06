@@ -44,6 +44,7 @@ import datetime
 import json
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -55,7 +56,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
 try:
@@ -111,6 +112,12 @@ class CalibrationNode(Node):
             self.detect_params = cv2.aruco.DetectorParameters()
         else:
             self.detect_params = cv2.aruco.DetectorParameters_create()
+        # Build the ArUco detector ONCE (OpenCV 4.7+). The old code
+        # constructed it inside _on_image — i.e. 10x/second — for no
+        # reason. None on legacy OpenCV (falls back to the free function).
+        self._detector = (
+            cv2.aruco.ArucoDetector(self.aruco_dict, self.detect_params)
+            if hasattr(cv2.aruco, 'ArucoDetector') else None)
 
         # Intrinsics: must exist before Stage C is meaningful. Either
         # the user ran `calibrate_oak.py --stage factory` (default) or
@@ -142,6 +149,17 @@ class CalibrationNode(Node):
         self.create_subscription(
             CompressedImage, '/oak/rgb/image_compressed',
             self._on_image, qos_profile_sensor_data)
+        # Gate: only decode + detect ArUco while a calibration session is
+        # active. The GUI's Calibration panel publishes
+        # /calibrate/cmd_active=true on a ~5 s keepalive while it's open;
+        # we sleep 12 s after the last one. Default OFF. Running ArUco on
+        # EVERY RGB frame forever (the old behavior) cost ~0.35 core on
+        # the Pi for a result nobody reads outside calibration — and it
+        # duplicated platform_pose_node's identical detection
+        # (profile 2026-06-05).
+        self._active_until = 0.0    # time.monotonic() deadline
+        self.create_subscription(
+            Bool, '/calibrate/cmd_active', self._on_set_active, 10)
 
         self.create_service(
             Trigger, '/calibrate/capture_frame', self._srv_capture)
@@ -180,21 +198,31 @@ class CalibrationNode(Node):
 
     # ---- image stream -------------------------------------------------------
 
+    def _on_set_active(self, msg: Bool):
+        """GUI keepalive while the Calibration panel is open. Each ``True``
+        extends the active window 12 s; a ``False`` ends the session now."""
+        if msg.data:
+            self._active_until = time.monotonic() + 12.0
+        else:
+            self._active_until = 0.0
+
     def _on_image(self, msg: CompressedImage):
         """Decode + detect markers; cache latest detection so capture
-        can access it without re-doing the work.
+        can access it without re-doing the work. Gated: does nothing
+        unless a calibration session is active (see _on_set_active) —
+        that decode+detect is the bulk of this node's CPU.
         """
         if self.K is None:
+            return
+        if time.monotonic() >= self._active_until:
             return
         arr = np.frombuffer(bytearray(msg.data), dtype=np.uint8)
         gray = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
         if gray is None:
             return
 
-        if hasattr(cv2.aruco, 'ArucoDetector'):
-            detector = cv2.aruco.ArucoDetector(
-                self.aruco_dict, self.detect_params)
-            corners, ids, _ = detector.detectMarkers(gray)
+        if self._detector is not None:
+            corners, ids, _ = self._detector.detectMarkers(gray)
         else:
             corners, ids, _ = cv2.aruco.detectMarkers(
                 gray, self.aruco_dict, parameters=self.detect_params)

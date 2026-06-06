@@ -2266,6 +2266,19 @@ class OakDriverNode(Node):
             return  # queue closed during reload
         if yolo_msg is None:
             return
+        # Skip the host-side YOLO decode unless it's actually consumed:
+        # either v1_yolo is the active detector backend, or the GUI is
+        # showing the YOLO overlay (a subscriber on
+        # /oak/ball/v0/yolo_pixel). The OAK still runs the NN on-device;
+        # this just avoids getFirstLayerFp16 + yolo_*_decode at 60 Hz
+        # (~5% of this node's own-time, profile 2026-06-05) whenever cv2
+        # is active and nobody is viewing YOLO. The queue is already
+        # drained above so it can't back up; flipping the backend to
+        # v1_yolo or opening the overlay re-enables it instantly (no
+        # pipeline rebuild).
+        if (self.v0_backend != 'v1_yolo'
+                and self.pub_v0_yolo.get_subscription_count() == 0):
+            return
         self._n_v0_attempts += 1
         self._n_v0_nn_attempts += 1
         try:

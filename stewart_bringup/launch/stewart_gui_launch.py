@@ -50,16 +50,24 @@ def generate_launch_description():
     ))
 
     # Auto-tune node — exposes /auto_tune/start and /auto_tune/stop
-    # service triggers + /auto_tune/status JSON snapshot. Idle until
-    # the operator calls start. Lives in the same launch so the GUI
-    # can call it through the existing rosbridge.
-    ld.add_action(Node(
-        package='stewart_bringup',
-        executable='auto_tune_node',
-        name='auto_tune',
-        output='screen',
-        emulate_tty=True,
-    ))
+    # service triggers + /auto_tune/status JSON snapshot. Lives in the
+    # same launch so the GUI can call it through the existing rosbridge.
+    #
+    # DISABLED BY DEFAULT (2026-06-06): even "idle" it costs ~0.23 core
+    # on the Pi — ~13 subscriptions (several at frame rate: marker_ids,
+    # platform_rpy) churning the rclpy executor, plus the per-node
+    # framework floor (profile 2026-06-05). The operator no longer uses
+    # auto-tune or STEP_ID, so we don't launch it. Re-enable by setting
+    # STABLE_BOT_AUTOTUNE=1 (e.g. Environment= in stable_bot.service),
+    # then redeploy.
+    if os.environ.get('STABLE_BOT_AUTOTUNE', '0') == '1':
+        ld.add_action(Node(
+            package='stewart_bringup',
+            executable='auto_tune_node',
+            name='auto_tune',
+            output='screen',
+            emulate_tty=True,
+        ))
 
     # Vision stack — OAK driver, ArUco platform pose, Stage-C
     # calibration node, plus the ball localizer / KF / ref_generator

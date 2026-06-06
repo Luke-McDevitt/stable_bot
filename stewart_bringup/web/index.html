@@ -2747,6 +2747,12 @@ function setupROSInterface() {
   topic.cal_status = new ROSLIB.Topic({
     ros, name: '/calibrate/status', messageType: 'std_msgs/msg/String' });
   topic.cal_status.subscribe(m => { try { onCalStatus(JSON.parse(m.data)); } catch (e) {} });
+  // Calibration session gate — the node only decodes+detects ArUco while
+  // it's receiving cmd_active=true (Calibration panel open). Publisher
+  // declared here; the open/close + keepalive wiring is in the panel
+  // handlers (see initButtons / "Calibration buttons").
+  topic.cal_active = new ROSLIB.Topic({
+    ros, name: '/calibrate/cmd_active', messageType: 'std_msgs/msg/Bool' });
   topic.autotune_status = new ROSLIB.Topic({
     ros, name: '/auto_tune/status', messageType: 'std_msgs/msg/String' });
   topic.autotune_status.subscribe(m => {
@@ -4743,6 +4749,23 @@ function initVisionGUI() {
   $('cal-capture-btn').addEventListener('click', () => callCalSrv('cal_capture'));
   $('cal-solve-btn').addEventListener('click',   () => callCalSrv('cal_solve'));
   $('cal-reset-btn').addEventListener('click',   () => callCalSrv('cal_reset'));
+  // Calibration detection is gated server-side: the node only runs ArUco
+  // while a session is active, so it doesn't burn ~0.35 core duplicating
+  // platform_pose on every frame when nobody's calibrating. Signal
+  // "active" while the Calibration panel (<details>) is open — true on
+  // open + a 5 s keepalive, false on close. The node auto-sleeps 12 s
+  // after the last true (covers a browser that vanishes mid-session).
+  const calDetails = $('cal-capture-btn').closest('details');
+  function publishCalActive(on) {
+    if (!topic.cal_active) return;
+    try { topic.cal_active.publish(new ROSLIB.Message({ data: !!on })); }
+    catch (e) {}
+  }
+  if (calDetails) {
+    calDetails.addEventListener('toggle',
+      () => publishCalActive(calDetails.open));
+    setInterval(() => { if (calDetails.open) publishCalActive(true); }, 5000);
+  }
 
   // --- Demo 1 (Orbit) ---
   $('d1-start-btn').addEventListener('click', startDemo1);
@@ -6599,8 +6622,22 @@ function dbagPollStatus() {
   }).catch(() => {});
 }
 
+// Programmatically flip the live-video toggle, reusing its change handler
+// (the rosbridge subscribe/unsubscribe + UI update). Used to auto-drop the
+// browser video feed when a measured run starts — rosbridge serializing
+// JPEG to the browser was ~0.3 core in the 2026-06-05 profile (its
+// __repr__(CompressedImage) alone was 22% of the node), CPU that competes
+// with the see->move path. Re-enable manually if you need to watch.
+function setLiveVideo(on) {
+  const cb = $('vis-live-video');
+  if (!cb || cb.checked === on) return;
+  cb.checked = on;
+  cb.dispatchEvent(new Event('change'));
+}
+
 async function dbagStart() {
   dbagSetStatus('starting…', null);
+  setLiveVideo(false);   // drop the live feed for the duration of the run
   const labelEl = document.getElementById('dbag-label');
   const label = labelEl ? labelEl.value : 'demo_run';
   try {
@@ -6761,6 +6798,7 @@ function dbagPushBag(name) {
     try {
       const s = await fetch('/demo/status').then((r) => r.json());
       if (s.recording) { stSet('a recording is already active — stop it first'); return; }
+      setLiveVideo(false);   // drop the live feed for the latency run
       const r1 = await fetch('/demo/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ label: 'latency_bench',
