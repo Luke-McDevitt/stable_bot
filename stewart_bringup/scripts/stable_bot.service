@@ -26,13 +26,13 @@ Environment=OAK_ENABLE_DEPTH=0
 # Myriad X SHAVE budget. V0.5c was a dead end (NaN output, wrong
 # detection ceiling); kept in code for git-history fallback only.
 Environment=OAK_DISABLE_V0_NN=1
-# Boot-time default detector. cv2 (HSV+contour, host-side) is the
-# operator's preferred default for closed-loop demos as of
-# 2026-05-02 — it's empirically more reliable for the demo's motion
-# profile despite v1_yolo's edge in static benchmarks. Runtime-
-# switchable via /oak/cmd_v0_backend topic + GUI selector; this
-# just sets what's running at boot.
-Environment=OAK_V0_BACKEND=cv2
+# Boot-time default detector. SWITCHED to v1_yolo (2026-06-06): the
+# on-device YOLO offload tracked the ball comparably to cv2 (demo rms
+# ~76 vs ~88) while deleting the host cv2 detect + the 60 Hz rgb_raw
+# frame copy — oak_driver -13%, OAK capture->Pi 95->56 ms, load 17->11.
+# Runtime-switchable via /oak/cmd_v0_backend topic + GUI selector (which
+# already defaults to YOLO); this sets what's running at boot.
+Environment=OAK_V0_BACKEND=v1_yolo
 # Fixed manual focus instead of autofocus. The empirical Z->focus map
 # (tuning_data/20260604T163850Z_zfocusmap) showed the sharpness peak is
 # essentially flat at focus_pos ~130 across the whole demo Z range (125 at

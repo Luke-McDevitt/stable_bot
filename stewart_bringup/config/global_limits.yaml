@@ -10,5 +10,5 @@ hard_max_tilt_rate_deg_per_sec: 15.0     # platform rotational rate
 hard_max_translation_rate_mm_per_sec: 30.0
 
 # Default soft-cap (user can lower in GUI, but never raise above hard_max)
-default_soft_max_leg_vel_turns_per_sec: 1.0   # ~10 mm/s leg speed - comfortable for bench dev
+default_soft_max_leg_vel_turns_per_sec: 2.0   # raised from 1.0 (2026-06-06) for the rolling-ball latency A/B — faster leg tracking. Control node commands ODrive vel_limit = 2.0*1.5 = 3.0 t/s at runtime (well under hard_max 4.0). NOTE: ~2x leg speed = more current draw under accel — keep the Pi/motor power solid (brown-out risk).
 default_soft_max_tilt_rate_deg_per_sec: 8.0
