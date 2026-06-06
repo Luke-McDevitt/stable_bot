@@ -2918,7 +2918,13 @@ class StewartControlNode(Node):
             return False, "no leg_limits.yaml"
         self.current_xyz = [x, y, z]
         self.current_rpy = [r, p, yw]
-        self._save_persisted_pose()
+        # BALL_TRACK commands direct-tilt through here EVERY control tick, so
+        # throttle the SD-card persist to ~1 Hz. (The 2026-06-06 YOLO profile
+        # showed _save_persisted_pose still ~8.5% of a core — the earlier
+        # throttle landed on srv_set_pose, the wrong path; this is the hot
+        # one.) Restart recovery only needs ~1 Hz; transitions (rest/level/
+        # init/explicit GUI set) still force-write via the default.
+        self._save_persisted_pose(min_interval=1.0)
         if self.level_enabled:
             return True, "pose set (level loop will track)"
         # Use empirical IK when available so BALL_TRACK direct-tilt commands
@@ -4114,7 +4120,7 @@ class StewartControlNode(Node):
         # only update the commanded xyz and let the level loop add tilt.
         self.current_xyz = list(xyz)
         self.current_rpy = list(rpy)
-        self._save_persisted_pose(min_interval=1.0)   # per-tick path: throttle
+        self._save_persisted_pose()   # GUI service (infrequent): persist now
         if self.level_enabled:
             # level thread will pick up new xyz on next iter
             res.success = True
