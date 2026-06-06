@@ -76,6 +76,156 @@ def read_system_stats(bag_dir):
     }
 
 
+def read_system_stats_series(bag_dir):
+    """Per-sample host series from <bag_dir>/system_stats.jsonl (each row is
+    stamped with wall-clock 't' by gui_server's sampler). Companion to
+    read_system_stats, which returns only aggregates — the CPU<->latency
+    correlation needs the timeline. Returns a list of row dicts sorted by
+    't' (possibly empty)."""
+    path = os.path.join(bag_dir, 'system_stats.jsonl')
+    out = []
+    if not os.path.isfile(path):
+        return out
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get('meta') or d.get('t') is None:
+                    continue
+                out.append(d)
+    except Exception:
+        return []
+    out.sort(key=lambda d: float(d['t']))
+    return out
+
+
+def _pearson_r(x, y):
+    """Pearson r of two equal-length sequences, or None if either has no
+    variance (correlation undefined — e.g. CPU pegged flat all run) or
+    fewer than 4 finite paired points."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    x, y = x[ok], y[ok]
+    if x.size < 4 or np.std(x) < 1e-9 or np.std(y) < 1e-9:
+        return None
+    return round(float(np.corrcoef(x, y)[0, 1]), 3)
+
+
+def host_latency_correlation(stats_series, lat_t_s, lat_vals,
+                             window_s=1.0, min_frames=3):
+    """Do host CPU/load spikes move the see-pipeline latency? — the headroom
+    question, answered from two timelines a demo bag already co-records.
+
+    For each host sample (~1 Hz, carrying cpu_pct + load1 + wall-clock t),
+    gather the per-frame latencies within +/- window_s/2 and take their
+    median + p95; pair those with the sample's cpu_pct and load1; Pearson-
+    correlate across the run. Strong positive r => saturation is leaking
+    into the loop (headroom would cut latency spikes). Near-zero r at high
+    load => the loop no longer feels the CPU (enough headroom).
+
+    Args:
+      stats_series: rows with 't','cpu_pct','load1' (read_system_stats_series).
+      lat_t_s:      per-frame latency timestamps, wall seconds (array-like).
+      lat_vals:     per-frame latency in ms (same length as lat_t_s).
+      window_s:     pairing half-window is window_s/2 around each host t.
+      min_frames:   skip a host sample with fewer than this many frames in
+                    its window (keeps the p95 honest).
+
+    Returns a dict, or None if <4 usable windows / no overlap.
+    """
+    lat_t = np.asarray(lat_t_s, dtype=float)
+    lat_v = np.asarray(lat_vals, dtype=float)
+    # Keep finite, positive latencies (orientation.z is 0 on no-detection /
+    # pre-Part-2 frames).
+    ok = np.isfinite(lat_t) & np.isfinite(lat_v) & (lat_v > 0.0)
+    lat_t, lat_v = lat_t[ok], lat_v[ok]
+    if lat_t.size < min_frames or not stats_series:
+        return None
+
+    half = float(window_s) / 2.0
+    windows = []
+    for d in stats_series:
+        try:
+            t = float(d['t'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        m = np.abs(lat_t - t) <= half
+        n = int(np.count_nonzero(m))
+        if n < min_frames:
+            continue
+        w = lat_v[m]
+        cpu = d.get('cpu_pct')
+        load = d.get('load1')
+        windows.append({
+            't': round(t, 3),
+            'cpu_pct': (round(float(cpu), 1) if cpu is not None else None),
+            'load1': (round(float(load), 2) if load is not None else None),
+            'lat_p50_ms': round(float(np.percentile(w, 50)), 1),
+            'lat_p95_ms': round(float(np.percentile(w, 95)), 1),
+            'n': n,
+        })
+    if len(windows) < 4:
+        return None
+
+    cpu_col = [w['cpu_pct'] for w in windows]
+    load_col = [w['load1'] for w in windows]
+    p50_col = [w['lat_p50_ms'] for w in windows]
+    p95_col = [w['lat_p95_ms'] for w in windows]
+
+    r_load_p95 = _pearson_r(load_col, p95_col)
+    r_cpu_p95 = _pearson_r(cpu_col, p95_col)
+    r_load_p50 = _pearson_r(load_col, p50_col)
+    r_cpu_p50 = _pearson_r(cpu_col, p50_col)
+
+    # Headline = first available |r| among load-then-cpu vs p95 (load1 keeps
+    # variance even when cpu_pct pegs flat at ~100%).
+    r_head, r_src = next(
+        ((r, s) for r, s in ((r_load_p95, 'load1'), (r_cpu_p95, 'cpu_pct'))
+         if r is not None), (None, None))
+
+    if r_head is None:
+        interp = ('host load OR latency held essentially constant this run — '
+                  'correlation undefined (need variance in both; often CPU '
+                  'pegged flat the whole time).')
+    elif abs(r_head) >= 0.5:
+        interp = (f'STRONG (r={r_head:+.2f} vs {r_src}): host contention is '
+                  'leaking into see-pipeline latency — more headroom would '
+                  'directly cut latency spikes.')
+    elif abs(r_head) >= 0.3:
+        interp = (f'MODERATE (r={r_head:+.2f} vs {r_src}): some coupling of '
+                  'host load and latency; headroom helps but other factors '
+                  'dominate.')
+    else:
+        interp = (f'WEAK (r={r_head:+.2f} vs {r_src}): latency largely '
+                  'decoupled from host load — the loop is not feeling the '
+                  'CPU (enough headroom on this axis).')
+
+    def _rng(col):
+        v = [c for c in col if c is not None]
+        return ([round(float(np.min(v)), 2), round(float(np.max(v)), 2)]
+                if v else None)
+
+    return {
+        'n_windows': len(windows),
+        'window_s': window_s,
+        'headline_r': r_head,
+        'headline_vs': r_src,
+        'pearson_r_load1_vs_lat_p95': r_load_p95,
+        'pearson_r_cpu_vs_lat_p95': r_cpu_p95,
+        'pearson_r_load1_vs_lat_p50': r_load_p50,
+        'pearson_r_cpu_vs_lat_p50': r_cpu_p50,
+        'lat_p95_ms_range': _rng(p95_col),
+        'load1_range': _rng(load_col),
+        'cpu_pct_range': _rng(cpu_col),
+        'interpretation': interp,
+        'windows': windows,
+    }
+
+
 def quat_to_roll_pitch_deg(quat):
     """ZYX roll/pitch (deg) from an (N,4) array of [qx,qy,qz,qw].
     The platform MTi-630 reports fused orientation, so this gives the

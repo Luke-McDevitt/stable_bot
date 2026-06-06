@@ -74,12 +74,14 @@ except ImportError as e:
 # from scripts/ which may precede a colcon install).
 try:
     from stewart_bringup._latency import (
-        actuation_latency, quat_to_roll_pitch_deg, read_system_stats)
+        actuation_latency, host_latency_correlation, quat_to_roll_pitch_deg,
+        read_system_stats, read_system_stats_series)
 except ImportError:
     sys.path.insert(
         0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from stewart_bringup._latency import (
-        actuation_latency, quat_to_roll_pitch_deg, read_system_stats)
+        actuation_latency, host_latency_correlation, quat_to_roll_pitch_deg,
+        read_system_stats, read_system_stats_series)
 
 
 def _parse_control_cmd(raw: str) -> dict:
@@ -714,6 +716,20 @@ def digest(bag_dir: str):
     # gui_server into the bag's system_stats.jsonl. Lets us correlate
     # detect→state latency with host contention / video-on vs -off.
     host = read_system_stats(bag_dir)
+    # Combined CPU<->latency: do host spikes move see-pipeline latency? Both
+    # timelines are already co-recorded — system_stats.jsonl (cpu/load @1Hz,
+    # wall-clock 't') and /ball_state.orientation.z (per-frame photon→state
+    # age). The Pearson r is the "did we earn enough headroom" metric: a
+    # strong positive r means saturation is leaking into the loop; a flat r
+    # at high load means it isn't (dragon slain).
+    host_latency = None
+    if state_t.size and state_age.size:
+        _host_series = read_system_stats_series(bag_dir)
+        if _host_series:
+            host_latency = host_latency_correlation(
+                _host_series,
+                state_t.astype(float) / 1e9,   # bag ns -> wall seconds
+                state_age * 1e3)               # s -> ms
 
     # Iteration-actionable gain recommendation. Reads the active
     # gains, the trial outcome, and the controller's actual
@@ -855,6 +871,7 @@ def digest(bag_dir: str):
         'run_config': run_config,
         'leg_current': leg_current,
         'host': host,
+        'host_latency_correlation': host_latency,
         'next_step': next_step,
         'ball_state_n': int(state_t.size),
         'ball_ref_n':   int(ref_t.size),
@@ -914,6 +931,9 @@ def digest(bag_dir: str):
               f"p95={ey['p95']:+.1f}")
     if settling is not None:
         print(f"  settling_time_s: {settling:.2f}")
+    if host_latency:
+        print(f"  cpu<->latency ({host_latency['n_windows']} win): "
+              f"{host_latency['interpretation']}")
     # Vision health — what camera/detector rates were achieved during
     # this run, and what the see→Pi latency looked like. These are
     # the numbers the user (and Claude) want at a glance to decide
@@ -1044,12 +1064,17 @@ def digest(bag_dir: str):
 
     bt_diag_t, bt_diag = data['bt_diag']
     if plt is not None:
-        # Add a row for the bang-bang phase strip when we have data.
-        nrows = 7 if bt_diag.size else 6
+        # Extra rows: the bang-bang phase strip (when we have it) and the
+        # CPU<->latency scatter (when system_stats + latency co-recorded).
+        _has_hl = bool(host_latency and host_latency.get('windows'))
+        nrows = 6 + (1 if bt_diag.size else 0) + (1 if _has_hl else 0)
         height_ratios = [2.4, 1.2, 1.2, 1.2, 1.2, 1.2]
         if bt_diag.size:
             height_ratios.append(1.0)
-        fig = plt.figure(figsize=(13, 14 if not bt_diag.size else 16))
+        if _has_hl:
+            height_ratios.append(1.2)
+        fig_h = 14 + (2 if bt_diag.size else 0) + (2 if _has_hl else 0)
+        fig = plt.figure(figsize=(13, fig_h))
         gs = GridSpec(nrows, 2, figure=fig,
                       height_ratios=height_ratios,
                       hspace=0.6, wspace=0.25)
@@ -1219,6 +1244,34 @@ def digest(bag_dir: str):
             ax.set_title(
                 'BALL_TRACK FSM phase + commanded tilts' + _act_str,
                 fontsize=10)
+
+        # CPU<->latency scatter (last row, only when both timelines were
+        # co-recorded): host load vs see-pipeline p95 latency, one point per
+        # ~1 s window. The Pearson r in the title is the headroom verdict —
+        # strong slope = saturation leaks into latency; flat = decoupled.
+        if _has_hl:
+            hl = host_latency
+            ax = fig.add_subplot(gs[nrows - 1, :])
+            pts = [(w['load1'], w['lat_p95_ms']) for w in hl['windows']
+                   if w['load1'] is not None]
+            if pts:
+                xs, ys = zip(*pts)
+                ax.scatter(xs, ys, s=20, color='#f59e0b', alpha=0.85,
+                           edgecolors='none')
+            ax.set_xlabel('host load (1-min avg)')
+            ax.set_ylabel('see-pipeline p95 (ms)')
+            r = hl.get('headline_r')
+            if r is None:
+                rtxt, verdict = 'r=n/a', 'flat — no load variance to test'
+            else:
+                rtxt = f'r={r:+.2f} vs {hl.get("headline_vs")}'
+                verdict = ('STRONG — contention leaks into latency'
+                           if abs(r) >= 0.5 else
+                           'MODERATE coupling' if abs(r) >= 0.3 else
+                           'WEAK — latency decoupled from load')
+            ax.set_title(f'host load vs see-latency  ·  {rtxt}  ·  {verdict}',
+                         fontsize=10)
+            ax.grid(alpha=0.3)
 
         # Suptitle — three lines: name+mode, error/settling, params.
         title = (f"Demo digest — {os.path.basename(bag_dir)} "

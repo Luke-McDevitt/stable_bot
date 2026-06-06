@@ -14,8 +14,10 @@ import pytest
 from stewart_bringup._latency import (
     actuation_latency,
     dominant_period_s,
+    host_latency_correlation,
     imu_step_metrics,
     quat_to_roll_pitch_deg,
+    read_system_stats_series,
     resample_uniform,
     step_response_metrics,
     step_train_metrics,
@@ -424,3 +426,65 @@ def test_resample_uniform_nan_outside_span():
     mid = np.isfinite(ys)
     assert mid.sum() > 0
     assert np.allclose(ys[mid].min(), 0.0, atol=0.2)
+
+
+# --- host CPU <-> latency correlation (the "did we earn headroom" metric) --
+
+def _host_series(loads, cpus, t0=1000.0):
+    return [{'t': t0 + i, 'cpu_pct': c, 'load1': l}
+            for i, (l, c) in enumerate(zip(loads, cpus))]
+
+
+def test_host_latency_correlation_detects_coupling():
+    # Latency tracks load -> strong positive r, STRONG interpretation.
+    rng = np.random.default_rng(0)
+    loads = [10 + 2 * i for i in range(12)]       # 10..32, varies
+    cpus = [90 + i for i in range(12)]
+    stats = _host_series(loads, cpus)
+    lat_t, lat_v = [], []
+    for i, l in enumerate(loads):
+        t = 1000.0 + i
+        for k in range(6):                        # 6 frames per 1 s window
+            lat_t.append(t - 0.3 + 0.1 * k)
+            lat_v.append(20.0 + 1.5 * l + rng.normal(0, 0.4))
+    r = host_latency_correlation(stats, lat_t, lat_v)
+    assert r is not None
+    assert r['n_windows'] >= 8
+    assert r['headline_r'] is not None and r['headline_r'] > 0.8
+    assert 'STRONG' in r['interpretation']
+
+
+def test_host_latency_correlation_decoupled():
+    # Flat latency regardless of load -> no y-variance -> r undefined, and
+    # the interpretation must NOT claim coupling.
+    loads = [10 + 2 * i for i in range(12)]
+    cpus = [99] * 12
+    stats = _host_series(loads, cpus, t0=2000.0)
+    lat_t, lat_v = [], []
+    for i in range(12):
+        t = 2000.0 + i
+        for k in range(6):
+            lat_t.append(t - 0.3 + 0.1 * k)
+            lat_v.append(30.0)                    # flat
+    r = host_latency_correlation(stats, lat_t, lat_v)
+    assert r is not None
+    assert r['headline_r'] is None               # std(latency) == 0
+    assert 'STRONG' not in r['interpretation']
+
+
+def test_host_latency_correlation_insufficient_data():
+    stats = [{'t': 1000.0 + i, 'cpu_pct': 99, 'load1': 20} for i in range(2)]
+    assert host_latency_correlation(
+        stats, [1000.0, 1000.5, 1001.0], [30.0, 31.0, 29.0]) is None
+
+
+def test_read_system_stats_series(tmp_path):
+    (tmp_path / 'system_stats.jsonl').write_text(
+        '{"meta": true, "video_on": false}\n'
+        '{"t": 1002.0, "cpu_pct": 99.0, "load1": 22.0}\n'
+        '{"t": 1001.0, "cpu_pct": 98.0, "load1": 20.0}\n'
+        'garbage line\n')
+    s = read_system_stats_series(str(tmp_path))
+    assert len(s) == 2                            # meta + garbage excluded
+    assert s[0]['t'] == 1001.0                    # sorted by 't'
+    assert s[1]['cpu_pct'] == 99.0
