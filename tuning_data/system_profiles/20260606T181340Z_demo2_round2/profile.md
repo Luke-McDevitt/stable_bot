@@ -1,0 +1,102 @@
+# System profile — demo2_round2  (20260606T181340Z)
+
+- code git sha: `d504585`  ·  OAK depth subsystem: **unknown**
+- window: 25.1s  ·  cores: 4  ·  **COMPUTE-BOUND (cores saturated at full clock)**
+- CPU busy: **99.4%**  ·  iowait: 0.0%  ·  load1 (min/mean/max): 16.7/17.5/18.1
+- ARM MHz (min/mean/max): 2400.0/2400.0/2400.0  ·  temp °C: 55.4/57.1/58.7
+- throttle flags: under_voltage_since_boot, throttled_since_boot
+- mem used/total: 1259.0/15973.3 MB
+- **tracked stack ≈ 3.27 of 4 cores**
+
+| # | node | %core | %machine | RSS MB | thr |
+|---|------|------:|---------:|-------:|----:|
+| 1 | 🐍 oak_driver | 54.7 | 13.7 | 260.9 | 36 |
+| 2 | 🐍 platform_pose | 48.1 | 12.0 | 135.0 | 21 |
+| 3 | 🐍 rosbridge_websocket | 40.2 | 10.1 | 92.4 | 20 |
+| 4 | 🐍 stewart_control_node | 37.4 | 9.4 | 89.0 | 22 |
+| 5 | 🐍 ball_kf | 26.1 | 6.5 | 74.7 | 18 |
+| 6 | 🐍 ref_generator | 23.7 | 5.9 | 75.7 | 18 |
+| 7 | xsens_mti_platform | 20.1 | 5.0 | 40.6 | 20 |
+| 8 | 🐍 ball_localizer | 19.1 | 4.8 | 88.6 | 18 |
+| 9 | 🐍 ros2 bag record | 17.2 | 4.3 | 80.8 | 21 |
+| 10 | xsens_mti_base | 16.6 | 4.1 | 41.3 | 20 |
+| 11 | 🐍 ros2 bag record | 15.2 | 3.8 | 80.3 | 22 |
+| 12 | [kworker/u9:0-brcmf_wq/mmc1:0001:1] | 2.3 | 0.6 | 0.0 | 1 |
+| 13 | 🐍 calibration_node | 2.3 | 0.6 | 89.4 | 18 |
+| 14 | [rcu_preempt] | 0.5 | 0.1 | 0.0 | 1 |
+| 15 | [kworker/0:0-events] | 0.5 | 0.1 | 0.0 | 1 |
+| 16 | [ksoftirqd/0] | 0.4 | 0.1 | 0.0 | 1 |
+| 17 | [kworker/u8:3-events_unbound] | 0.4 | 0.1 | 0.0 | 1 |
+| 18 | 🐍 gui_server | 0.4 | 0.1 | 25.9 | 2 |
+| 19 | 🐍 profile_system.py | 0.4 | 0.1 | 13.4 | 1 |
+| 20 | [kworker/0:0H-mmc_complete] | 0.3 | 0.1 | 0.0 | 1 |
+| 21 | 🐍 bag_recorder | 0.3 | 0.1 | 73.1 | 18 |
+
+## py-spy own-time (hottest Python nodes)
+
+### oak_driver (pid 5028, 4238 samples)
+| own% | function |
+|-----:|----------|
+| 16.2 | `_worker (concurrent/futures/thread.py:89)` |
+| 15.3 | `_wait_for_ready_callbacks (rclpy/executors.py:865)` |
+| 8.4 | `_tick (stewart_vision/oak_driver_node.py:2511)` |
+| 7.5 | `yolo_v1_decode (stewart_vision/oak_driver_node.py:117)` |
+| 6.7 | `publish (rclpy/publisher.py:72)` |
+| 6.2 | `detect_ball_v0 (stewart_vision/oak_driver_node.py:238)` |
+| 5.5 | `data (sensor_msgs/msg/_compressed_image.py:202)` |
+| 2.3 | `await_or_execute (rclpy/executors.py:138)` |
+| 1.9 | `_tick_yolo (stewart_vision/oak_driver_node.py:2285)` |
+| 1.5 | `add_to_wait_set (rclpy/event_handler.py:177)` |
+| 1.5 | `detect_ball_v0 (stewart_vision/oak_driver_node.py:239)` |
+| 1.4 | `_wrapfunc (numpy/core/fromnumeric.py:59)` |
+
+### platform_pose (pid 5029, 1447 samples)
+| own% | function |
+|-----:|----------|
+| 77.2 | `_on_image (stewart_vision/platform_pose_node.py:137)` |
+| 9.9 | `_on_image (stewart_vision/platform_pose_node.py:129)` |
+| 3.1 | `publish (rclpy/publisher.py:72)` |
+| 2.8 | `_on_image (stewart_vision/platform_pose_node.py:167)` |
+| 2.8 | `_wait_for_ready_callbacks (rclpy/executors.py:865)` |
+| 0.4 | `_take_subscription (rclpy/executors.py:540)` |
+| 0.3 | `_create_exit_wrapper (contextlib.py:473)` |
+| 0.2 | `wait_for_ready_callbacks (rclpy/executors.py:963)` |
+| 0.2 | `_on_image (stewart_vision/platform_pose_node.py:190)` |
+| 0.1 | `_rot_to_quat (stewart_vision/platform_pose_node.py:226)` |
+| 0.1 | `__init__ (sensor_msgs/msg/_compressed_image.py:102)` |
+| 0.1 | `enter_context (contextlib.py:526)` |
+
+### rosbridge_websocket (pid 5232, 1926 samples)
+| own% | function |
+|-----:|----------|
+| 46.1 | `send (rosbridge_library/protocol.py:316)` |
+| 9.1 | `_write_to_self (asyncio/selector_events.py:152)` |
+| 6.3 | `_take_subscription (rclpy/executors.py:540)` |
+| 3.3 | `write_to_fd (tornado/iostream.py:1124)` |
+| 1.7 | `_read_from_self (asyncio/selector_events.py:132)` |
+| 1.0 | `_run (asyncio/events.py:88)` |
+| 1.0 | `serialize (rosbridge_library/protocol.py:347)` |
+| 0.6 | `await_or_execute (rclpy/executors.py:138)` |
+| 0.6 | `__exit__ (contextlib.py:595)` |
+| 0.6 | `_wait_for_ready_callbacks (rclpy/executors.py:865)` |
+| 0.6 | `add_to_wait_set (rclpy/event_handler.py:176)` |
+| 0.5 | `can_execute (rclpy/callback_groups.py:114)` |
+
+### stewart_control_node (pid 5027, 3895 samples)
+| own% | function |
+|-----:|----------|
+| 11.9 | `_recv_internal (can/interfaces/socketcan/socketcan.py:827)` |
+| 8.5 | `capture_message (can/interfaces/socketcan/socketcan.py:624)` |
+| 8.4 | `_run (stewart_bringup/stewart_control_node.py:1038)` |
+| 7.2 | `publish (rclpy/publisher.py:72)` |
+| 5.4 | `_save_persisted_pose (stewart_bringup/stewart_control_node.py:2796)` |
+| 5.1 | `_wait_for_ready_callbacks (rclpy/executors.py:865)` |
+| 3.6 | `_save_persisted_pose (stewart_bringup/stewart_control_node.py:2805)` |
+| 2.6 | `orientation_covariance (sensor_msgs/msg/_imu.py:254)` |
+| 2.3 | `_take_subscription (rclpy/executors.py:540)` |
+| 2.3 | `set_pos_targets (stewart_bringup/stewart_control_node.py:941)` |
+| 2.0 | `_tx_loop (stewart_bringup/stewart_control_node.py:712)` |
+| 1.2 | `_send_once (can/interfaces/socketcan/socketcan.py:889)` |
+
+---
+_Generated by profile_system.py. Re-run during a demo2/bench and at idle; pass --compare <old profile.json> for deltas._
