@@ -1110,6 +1110,7 @@ class StewartControlNode(Node):
         # always shows the current commanded pose.
         self.current_xyz = [0.0, 0.0, 0.0]
         self.current_rpy = [0.0, 0.0, 0.0]
+        self._last_pose_save = 0.0   # monotonic; throttles the per-tick save
         self._load_persisted_pose()
         self._save_persisted_pose()
 
@@ -2786,11 +2787,22 @@ class StewartControlNode(Node):
                 f"[pose-state] could not load {POSE_STATE_FILE} ({e}); "
                 f"using default pose")
 
-    def _save_persisted_pose(self):
+    def _save_persisted_pose(self, min_interval=0.0):
         """Write the current commanded xyz/rpy to disk so a subsequent GUI
         start can read it back. Atomic via tmp+rename. Best-effort — any
         failure is swallowed (saving fail-mode is just sliders showing
-        stale values)."""
+        stale values).
+
+        min_interval>0 throttles the write: the per-tick caller (srv_set_pose
+        during a tracking demo) passes 1.0 so we persist at most ~1 Hz
+        instead of every control tick. That disk write (json.dump + os.replace
+        to the SD card) was ~9% of a core mid-demo per the 2026-06-06 profile,
+        and 1 Hz is plenty for restart recovery. Pose transitions
+        (reset/level/explicit set) keep the default 0.0 so they always
+        persist immediately."""
+        if min_interval > 0.0 and (
+                time.monotonic() - self._last_pose_save) < min_interval:
+            return
         try:
             tmp = POSE_STATE_FILE + '.tmp'
             with open(tmp, 'w') as f:
@@ -2803,6 +2815,7 @@ class StewartControlNode(Node):
                 # instead of merging into the next shell prompt.
                 f.write('\n')
             os.replace(tmp, POSE_STATE_FILE)
+            self._last_pose_save = time.monotonic()
         except Exception:
             pass
 
@@ -4101,7 +4114,7 @@ class StewartControlNode(Node):
         # only update the commanded xyz and let the level loop add tilt.
         self.current_xyz = list(xyz)
         self.current_rpy = list(rpy)
-        self._save_persisted_pose()
+        self._save_persisted_pose(min_interval=1.0)   # per-tick path: throttle
         if self.level_enabled:
             # level thread will pick up new xyz on next iter
             res.success = True
