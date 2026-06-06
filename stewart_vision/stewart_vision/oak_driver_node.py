@@ -2202,16 +2202,29 @@ class OakDriverNode(Node):
             self._platform_bbox = (x_min, y_min, x_max, y_max)
         else:
             self._platform_bbox = None
-        # Tight mask for depth-blob: inside the marker ring, so the
-        # raised marker hardware doesn't win the largest-blob contest.
-        depth_poly = _project_platform_polygon(
-            self.K_rgb, self.dist_rgb, R_pose, t_pose,
-            radius_m=PLATFORM_DEPTH_MASK_RADIUS_M)
-        self._platform_depth_mask = (
-            _platform_image_mask((RGB_H, RGB_W), depth_poly)
-            if depth_poly is not None else None)
-        self._expected_depth = _expected_plane_depth_map(
-            (RGB_H, RGB_W), self.K_rgb, R_pose, t_pose)
+        # Tight mask for depth-blob + the per-pixel expected-plane depth
+        # map. BOTH are consumed ONLY by the depth-blob detector, which
+        # runs only when OAK_ENABLE_DEPTH=1 (q_depth is not None — see
+        # the two `self.q_depth is not None` guards in _tick). Building
+        # the 540×960 expected-depth map (np.meshgrid + a per-pixel plane
+        # solve + a fancy-index assignment, several 2 MB allocations) on
+        # every new ArUco pose was the single largest CPU cost in this
+        # node — ~31% own-time per py-spy (2026-06-05) — and with depth
+        # off the result was discarded every frame. Gate it on
+        # enable_depth: depth-ON behaviour is unchanged; depth-OFF skips
+        # the waste. (Downstream readers already guard `is not None`.)
+        if self.enable_depth:
+            depth_poly = _project_platform_polygon(
+                self.K_rgb, self.dist_rgb, R_pose, t_pose,
+                radius_m=PLATFORM_DEPTH_MASK_RADIUS_M)
+            self._platform_depth_mask = (
+                _platform_image_mask((RGB_H, RGB_W), depth_poly)
+                if depth_poly is not None else None)
+            self._expected_depth = _expected_plane_depth_map(
+                (RGB_H, RGB_W), self.K_rgb, R_pose, t_pose)
+        else:
+            self._platform_depth_mask = None
+            self._expected_depth = None
         self._mask_pose_stamp = stamp_s
 
     def _publish_compressed(self, pub, payload: bytes, fmt: str):
@@ -2297,10 +2310,11 @@ class OakDriverNode(Node):
             return
         if not getattr(self, 'device', None):
             return
-        # Refresh the projected platform mask + expected-plane depth
-        # map whenever the latest pose is newer than what we baked
-        # into the cache. Cheap when stamps match; ~3 ms when they
-        # don't.
+        # Refresh the projected platform mask (+ the expected-plane
+        # depth map, only when OAK_ENABLE_DEPTH=1) whenever the latest
+        # pose is newer than what we baked into the cache. Cheap when
+        # stamps match; with depth off it's just the polygon mask, with
+        # depth on it adds the 540×960 expected-depth solve.
         self._refresh_mask_if_stale()
 
         # RGB JPEG stream — skipped entirely when OAK_DISABLE_JPEG=1.
