@@ -704,7 +704,12 @@ def _push(repo, out_dir):
     msg = f'System profile {os.path.basename(out_dir)}\n'
     if not run(['git', 'commit', '-m', msg]):
         return False, '\n'.join(log)
-    if not run(['git', 'pull', '--rebase']):
+    # --autostash: the live stack leaves operator artifacts dirty in the
+    # tree (leg_limits.yaml, new tuning_data/ bag dirs). A plain
+    # `pull --rebase` aborts with "cannot pull with rebase: unstaged
+    # changes"; autostash shelves them across the rebase and restores
+    # them after, so the profiler can self-push while the rig is running.
+    if not run(['git', 'pull', '--rebase', '--autostash']):
         return False, '\n'.join(log)
     if not run(['git', 'push']):
         return False, '\n'.join(log)
