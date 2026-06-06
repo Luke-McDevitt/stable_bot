@@ -1,0 +1,561 @@
+{
+  "schema_version": 1,
+  "timestamp_utc": "20260606T215156Z",
+  "label": "demo2_yolo2",
+  "git_sha": "b5ee0cb",
+  "depth_subsystem": "unknown",
+  "host": {
+    "ncpu": 4,
+    "duration_s": 25.0,
+    "busy_pct": 98.0,
+    "iowait_pct": 0.0,
+    "load1": {
+      "min": 10.3,
+      "mean": 11.2,
+      "max": 12.1
+    },
+    "arm_mhz": {
+      "min": 2300.0,
+      "mean": 2396.0,
+      "max": 2400.0
+    },
+    "temp_c": {
+      "min": 60.4,
+      "mean": 61.2,
+      "max": 62.6
+    },
+    "throttled_flags_final": {
+      "under_voltage_now": false,
+      "arm_freq_capped_now": false,
+      "throttled_now": false,
+      "soft_temp_limit_now": false,
+      "under_voltage_since_boot": false,
+      "arm_freq_capped_since_boot": false,
+      "throttled_since_boot": false,
+      "soft_temp_limit_since_boot": false
+    },
+    "mem": {
+      "total_mb": 15973.3,
+      "used_mb": 1146.0,
+      "avail_mb": 14827.3
+    },
+    "tracked_cores_used": 3.36,
+    "verdict": "COMPUTE-BOUND (cores saturated at full clock)"
+  },
+  "processes": [
+    {
+      "pid": 1787,
+      "node": "stewart_control_node",
+      "pct_core": 54.9,
+      "pct_machine": 13.7,
+      "rss_mb": 88.9,
+      "threads": 22,
+      "is_python": true
+    },
+    {
+      "pid": 1973,
+      "node": "rosbridge_websocket",
+      "pct_core": 53.9,
+      "pct_machine": 13.5,
+      "rss_mb": 88.3,
+      "threads": 20,
+      "is_python": true
+    },
+    {
+      "pid": 1788,
+      "node": "oak_driver",
+      "pct_core": 48.1,
+      "pct_machine": 12.0,
+      "rss_mb": 257.6,
+      "threads": 36,
+      "is_python": true
+    },
+    {
+      "pid": 1789,
+      "node": "platform_pose",
+      "pct_core": 39.1,
+      "pct_machine": 9.8,
+      "rss_mb": 126.8,
+      "threads": 21,
+      "is_python": true
+    },
+    {
+      "pid": 1791,
+      "node": "ball_kf",
+      "pct_core": 28.2,
+      "pct_machine": 7.0,
+      "rss_mb": 73.7,
+      "threads": 18,
+      "is_python": true
+    },
+    {
+      "pid": 1792,
+      "node": "ref_generator",
+      "pct_core": 26.5,
+      "pct_machine": 6.6,
+      "rss_mb": 74.1,
+      "threads": 18,
+      "is_python": true
+    },
+    {
+      "pid": 2122,
+      "node": "ros2 bag record",
+      "pct_core": 22.3,
+      "pct_machine": 5.6,
+      "rss_mb": 81.6,
+      "threads": 21,
+      "is_python": true
+    },
+    {
+      "pid": 1955,
+      "node": "xsens_mti_platform",
+      "pct_core": 20.6,
+      "pct_machine": 5.2,
+      "rss_mb": 39.5,
+      "threads": 20,
+      "is_python": false
+    },
+    {
+      "pid": 1790,
+      "node": "ball_localizer",
+      "pct_core": 20.0,
+      "pct_machine": 5.0,
+      "rss_mb": 88.0,
+      "threads": 18,
+      "is_python": true
+    },
+    {
+      "pid": 1786,
+      "node": "xsens_mti_base",
+      "pct_core": 14.9,
+      "pct_machine": 3.7,
+      "rss_mb": 40.3,
+      "threads": 20,
+      "is_python": false
+    },
+    {
+      "pid": 77,
+      "node": "[kworker/u9:0-brcmf_wq/mmc1:0001:1]",
+      "pct_core": 2.8,
+      "pct_machine": 0.7,
+      "rss_mb": 0.0,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 1793,
+      "node": "calibration_node",
+      "pct_core": 2.0,
+      "pct_machine": 0.5,
+      "rss_mb": 88.2,
+      "threads": 18,
+      "is_python": true
+    },
+    {
+      "pid": 174,
+      "node": "[kworker/0:3-events]",
+      "pct_core": 0.5,
+      "pct_machine": 0.1,
+      "rss_mb": 0.0,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 8,
+      "node": "[kworker/0:0-events]",
+      "pct_core": 0.4,
+      "pct_machine": 0.1,
+      "rss_mb": 0.0,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 11,
+      "node": "[kworker/u8:0-events_unbound]",
+      "pct_core": 0.4,
+      "pct_machine": 0.1,
+      "rss_mb": 0.0,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 16,
+      "node": "[ksoftirqd/0]",
+      "pct_core": 0.4,
+      "pct_machine": 0.1,
+      "rss_mb": 0.0,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 17,
+      "node": "[rcu_preempt]",
+      "pct_core": 0.3,
+      "pct_machine": 0.1,
+      "rss_mb": 0.0,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 1720,
+      "node": "gui_server",
+      "pct_core": 0.3,
+      "pct_machine": 0.1,
+      "rss_mb": 24.2,
+      "threads": 2,
+      "is_python": true
+    },
+    {
+      "pid": 2199,
+      "node": "profile_system.py",
+      "pct_core": 0.3,
+      "pct_machine": 0.1,
+      "rss_mb": 13.4,
+      "threads": 1,
+      "is_python": true
+    },
+    {
+      "pid": 327,
+      "node": "systemd-journald",
+      "pct_core": 0.1,
+      "pct_machine": 0.0,
+      "rss_mb": 18.6,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 1974,
+      "node": "rosapi",
+      "pct_core": 0.1,
+      "pct_machine": 0.0,
+      "rss_mb": 82.4,
+      "threads": 18,
+      "is_python": true
+    },
+    {
+      "pid": 33,
+      "node": "[kworker/3:0-events]",
+      "pct_core": 0.0,
+      "pct_machine": 0.0,
+      "rss_mb": 0.0,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 38,
+      "node": "[kworker/0:2-events]",
+      "pct_core": 0.0,
+      "pct_machine": 0.0,
+      "rss_mb": 0.0,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 61,
+      "node": "[kworker/2:3-events]",
+      "pct_core": 0.0,
+      "pct_machine": 0.0,
+      "rss_mb": 0.0,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 713,
+      "node": "avahi-daemon: running [stablebot.local]",
+      "pct_core": 0.0,
+      "pct_machine": 0.0,
+      "rss_mb": 3.6,
+      "threads": 1,
+      "is_python": false
+    },
+    {
+      "pid": 738,
+      "node": "rsyslogd",
+      "pct_core": 0.0,
+      "pct_machine": 0.0,
+      "rss_mb": 5.1,
+      "threads": 4,
+      "is_python": false
+    },
+    {
+      "pid": 847,
+      "node": "chronyd",
+      "pct_core": 0.0,
+      "pct_machine": 0.0,
+      "rss_mb": 3.1,
+      "threads": 1,
+      "is_python": false
+    }
+  ],
+  "pyspy": [
+    {
+      "node": "stewart_control_node",
+      "pid": 1787,
+      "total_samples": 3374,
+      "top": [
+        {
+          "function": "_recv_internal (can/interfaces/socketcan/socketcan.py:827)",
+          "own_pct": 17.3,
+          "samples": 584
+        },
+        {
+          "function": "_wait_for_ready_callbacks (rclpy/executors.py:865)",
+          "own_pct": 10.4,
+          "samples": 351
+        },
+        {
+          "function": "capture_message (can/interfaces/socketcan/socketcan.py:624)",
+          "own_pct": 8.2,
+          "samples": 278
+        },
+        {
+          "function": "_run (stewart_bringup/stewart_control_node.py:1038)",
+          "own_pct": 6.6,
+          "samples": 223
+        },
+        {
+          "function": "orientation_covariance (sensor_msgs/msg/_imu.py:254)",
+          "own_pct": 5.8,
+          "samples": 195
+        },
+        {
+          "function": "publish (rclpy/publisher.py:72)",
+          "own_pct": 4.7,
+          "samples": 160
+        },
+        {
+          "function": "_take_subscription (rclpy/executors.py:540)",
+          "own_pct": 4.4,
+          "samples": 149
+        },
+        {
+          "function": "_send_once (can/interfaces/socketcan/socketcan.py:889)",
+          "own_pct": 1.7,
+          "samples": 57
+        },
+        {
+          "function": "_tx_loop (stewart_bringup/stewart_control_node.py:712)",
+          "own_pct": 1.5,
+          "samples": 52
+        },
+        {
+          "function": "set_pos_targets (stewart_bringup/stewart_control_node.py:941)",
+          "own_pct": 1.5,
+          "samples": 49
+        },
+        {
+          "function": "angular_velocity_covariance (sensor_msgs/msg/_imu.py:299)",
+          "own_pct": 1.3,
+          "samples": 45
+        },
+        {
+          "function": "add_to_wait_set (rclpy/event_handler.py:177)",
+          "own_pct": 1.0,
+          "samples": 34
+        }
+      ]
+    },
+    {
+      "node": "rosbridge_websocket",
+      "pid": 1973,
+      "total_samples": 1887,
+      "top": [
+        {
+          "function": "send (rosbridge_library/protocol.py:316)",
+          "own_pct": 30.5,
+          "samples": 575
+        },
+        {
+          "function": "_write_to_self (asyncio/selector_events.py:152)",
+          "own_pct": 8.8,
+          "samples": 166
+        },
+        {
+          "function": "_take_subscription (rclpy/executors.py:540)",
+          "own_pct": 5.2,
+          "samples": 98
+        },
+        {
+          "function": "_read_from_self (asyncio/selector_events.py:132)",
+          "own_pct": 3.4,
+          "samples": 64
+        },
+        {
+          "function": "write_to_fd (tornado/iostream.py:1124)",
+          "own_pct": 2.8,
+          "samples": 53
+        },
+        {
+          "function": "_wait_for_ready_callbacks (rclpy/executors.py:865)",
+          "own_pct": 1.9,
+          "samples": 35
+        },
+        {
+          "function": "add_to_wait_set (rclpy/event_handler.py:176)",
+          "own_pct": 1.4,
+          "samples": 27
+        },
+        {
+          "function": "add_to_wait_set (rclpy/event_handler.py:177)",
+          "own_pct": 1.2,
+          "samples": 23
+        },
+        {
+          "function": "serialize (rosbridge_library/protocol.py:347)",
+          "own_pct": 1.0,
+          "samples": 19
+        },
+        {
+          "function": "trigger (rclpy/guard_condition.py:49)",
+          "own_pct": 0.9,
+          "samples": 17
+        },
+        {
+          "function": "__exit__ (contextlib.py:595)",
+          "own_pct": 0.9,
+          "samples": 17
+        },
+        {
+          "function": "__enter__ (rclpy/event_handler.py:181)",
+          "own_pct": 0.9,
+          "samples": 17
+        }
+      ]
+    },
+    {
+      "node": "oak_driver",
+      "pid": 1788,
+      "total_samples": 2815,
+      "top": [
+        {
+          "function": "_wait_for_ready_callbacks (rclpy/executors.py:865)",
+          "own_pct": 29.8,
+          "samples": 838
+        },
+        {
+          "function": "_worker (concurrent/futures/thread.py:89)",
+          "own_pct": 25.3,
+          "samples": 711
+        },
+        {
+          "function": "publish (rclpy/publisher.py:72)",
+          "own_pct": 6.3,
+          "samples": 178
+        },
+        {
+          "function": "yolo_v1_decode (stewart_vision/oak_driver_node.py:117)",
+          "own_pct": 4.7,
+          "samples": 131
+        },
+        {
+          "function": "await_or_execute (rclpy/executors.py:138)",
+          "own_pct": 2.0,
+          "samples": 57
+        },
+        {
+          "function": "add_to_wait_set (rclpy/event_handler.py:176)",
+          "own_pct": 1.9,
+          "samples": 54
+        },
+        {
+          "function": "data (sensor_msgs/msg/_compressed_image.py:202)",
+          "own_pct": 1.9,
+          "samples": 53
+        },
+        {
+          "function": "submit (concurrent/futures/thread.py:178)",
+          "own_pct": 1.7,
+          "samples": 49
+        },
+        {
+          "function": "_wrapfunc (numpy/core/fromnumeric.py:59)",
+          "own_pct": 1.5,
+          "samples": 41
+        },
+        {
+          "function": "add_to_wait_set (rclpy/event_handler.py:177)",
+          "own_pct": 1.5,
+          "samples": 41
+        },
+        {
+          "function": "__enter__ (rclpy/event_handler.py:181)",
+          "own_pct": 1.2,
+          "samples": 33
+        },
+        {
+          "function": "_tick_yolo (stewart_vision/oak_driver_node.py:2285)",
+          "own_pct": 0.9,
+          "samples": 24
+        }
+      ]
+    },
+    {
+      "node": "platform_pose",
+      "pid": 1789,
+      "total_samples": 1123,
+      "top": [
+        {
+          "function": "_on_image (stewart_vision/platform_pose_node.py:137)",
+          "own_pct": 77.1,
+          "samples": 866
+        },
+        {
+          "function": "_on_image (stewart_vision/platform_pose_node.py:129)",
+          "own_pct": 9.3,
+          "samples": 105
+        },
+        {
+          "function": "publish (rclpy/publisher.py:72)",
+          "own_pct": 3.7,
+          "samples": 42
+        },
+        {
+          "function": "_wait_for_ready_callbacks (rclpy/executors.py:865)",
+          "own_pct": 2.9,
+          "samples": 33
+        },
+        {
+          "function": "_on_image (stewart_vision/platform_pose_node.py:167)",
+          "own_pct": 2.3,
+          "samples": 26
+        },
+        {
+          "function": "_on_image (stewart_vision/platform_pose_node.py:164)",
+          "own_pct": 0.4,
+          "samples": 5
+        },
+        {
+          "function": "enter_context (contextlib.py:526)",
+          "own_pct": 0.3,
+          "samples": 3
+        },
+        {
+          "function": "add_to_wait_set (rclpy/event_handler.py:177)",
+          "own_pct": 0.3,
+          "samples": 3
+        },
+        {
+          "function": "add_to_wait_set (rclpy/event_handler.py:176)",
+          "own_pct": 0.3,
+          "samples": 3
+        },
+        {
+          "function": "_on_image (stewart_vision/platform_pose_node.py:189)",
+          "own_pct": 0.3,
+          "samples": 3
+        },
+        {
+          "function": "publish (rclpy/publisher.py:70)",
+          "own_pct": 0.3,
+          "samples": 3
+        },
+        {
+          "function": "_take_subscription (rclpy/executors.py:540)",
+          "own_pct": 0.3,
+          "samples": 3
+        }
+      ]
+    }
+  ],
+  "topics_hz": {}
+}
