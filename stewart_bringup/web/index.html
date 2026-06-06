@@ -2836,14 +2836,15 @@ function setupROSInterface() {
   topic.ball_v0 = new ROSLIB.Topic({
     ros, name: '/oak/ball/v0/rgb_pixel',
     messageType: 'geometry_msgs/msg/PointStamped' });
-  topic.ball_v0.subscribe(onBallV0Pixel);
+  _visDebugSubs.length = 0;   // fresh registry (also handles a reconnect)
+  _visDebugSub(topic.ball_v0, onBallV0Pixel);
   // Per-backend pixel topics — both run regardless of which is the
   // active controller source. GUI draws cv2 in blue, NN in emerald
   // so the operator can compare them visually.
   topic.ball_v0_cv2 = new ROSLIB.Topic({
     ros, name: '/oak/ball/v0/cv2_pixel',
     messageType: 'geometry_msgs/msg/PointStamped' });
-  topic.ball_v0_cv2.subscribe(m => onBallV0PerBackend('cv2', m));
+  _visDebugSub(topic.ball_v0_cv2, (m) => onBallV0PerBackend('cv2', m));
   // The "NN circle" toggle now reflects the V1 YOLO detector (which
   // superseded the V0.5c color-filter NN). Subscribe to yolo_pixel
   // and route through the existing onBallV0PerBackend('nn', ...) so
@@ -2851,7 +2852,7 @@ function setupROSInterface() {
   topic.ball_v0_nn = new ROSLIB.Topic({
     ros, name: '/oak/ball/v0/yolo_pixel',
     messageType: 'geometry_msgs/msg/PointStamped' });
-  topic.ball_v0_nn.subscribe(m => onBallV0PerBackend('nn', m));
+  _visDebugSub(topic.ball_v0_nn, (m) => onBallV0PerBackend('nn', m));
 
   // Localized ball position (on-platform-gated). The GUI overlay
   // gates on this so orange false positives off the side of the
@@ -2873,7 +2874,11 @@ function setupROSInterface() {
   topic.ball_depth_pixel = new ROSLIB.Topic({
     ros, name: '/oak/ball/depth/rgb_pixel',
     messageType: 'geometry_msgs/msg/PointStamped' });
-  topic.ball_depth_pixel.subscribe(onBallDepthPixel);
+  _visDebugSub(topic.ball_depth_pixel, onBallDepthPixel);
+  // All four Vision-Debug-exclusive streams registered — honor a
+  // collapsed panel on (re)connect (drop them now rather than waiting
+  // for the first toggle).
+  { const _vdp = _visDebugPanel(); if (_vdp) _syncVisDebugSubs(_vdp.open); }
 
   topic.ball_xy_depth = new ROSLIB.Topic({
     ros, name: '/ball_xy_depth',
@@ -4778,6 +4783,14 @@ function initVisionGUI() {
   }
 
   initDropVideoToggles();   // synced "drop live video while recording" checkboxes
+
+  // Vision Debug panel: gate its per-frame detection streams on open/close
+  // (collapsing it stops rosbridge serializing them — see _visDebugSub).
+  const _visDbgPanel = _visDebugPanel();
+  if (_visDbgPanel) {
+    _visDbgPanel.addEventListener('toggle',
+      () => _syncVisDebugSubs(_visDbgPanel.open));
+  }
 
   // --- Demo 1 (Orbit) ---
   $('d1-start-btn').addEventListener('click', startDemo1);
@@ -7085,6 +7098,34 @@ function _renderOneOverlay(ringId, dotId, latest, lastMs, xyLastMs, show, staleM
   dot.setAttribute('cx', latest.cx);
   dot.setAttribute('cy', latest.cy);
   dot.setAttribute('visibility', 'visible');
+}
+
+// --- Vision Debug subscription gating ---------------------------------
+// The per-frame detection streams registered via _visDebugSub feed ONLY
+// this overlay (renderBallOverlays) + the cv2/yolo latency readouts —
+// their state vars are read nowhere else (verified 2026-06-06) — so we
+// subscribe them only while the Vision Debug <details> panel is open.
+// Collapsing it stops rosbridge serializing ~3 per-frame streams to the
+// browser (that demo profile had rosbridge ~47%, nearly all `send`).
+// Eager-subscribe stays the baseline (behavior unchanged if panel
+// detection ever fails); we only UNSUBSCRIBE when collapsed. Shared
+// topics (ball_xy_mono, ball_state, platform_pose…) feed other panels
+// and are deliberately NOT gated here.
+const _visDebugSubs = [];
+function _visDebugSub(t, cb) {            // eager subscribe + register for gating
+  if (!t) return;
+  _visDebugSubs.push({ t, cb, on: true });
+  try { t.subscribe(cb); } catch (e) {}
+}
+function _syncVisDebugSubs(open) {        // match live subscriptions to panel state
+  _visDebugSubs.forEach((s) => {
+    if (open && !s.on) { try { s.t.subscribe(s.cb); s.on = true; } catch (e) {} }
+    else if (!open && s.on) { try { s.t.unsubscribe(s.cb); s.on = false; } catch (e) {} }
+  });
+}
+function _visDebugPanel() {
+  const a = document.getElementById('vis-live-video');
+  return a ? a.closest('details') : null;
 }
 
 function renderBallOverlays() {
