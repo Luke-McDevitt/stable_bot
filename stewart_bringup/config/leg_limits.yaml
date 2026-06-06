@@ -1,53 +1,53 @@
 axis_0:
-  min_pos_turns: 0.856032133102417
-  max_pos_turns: -2.143967866897583
-  rest_pos_turns: 0.806032133102417
-  homed_at: '2026-06-06T17:14:36+00:00'
+  min_pos_turns: -0.0006154477596282959
+  max_pos_turns: -3.0006154477596283
+  rest_pos_turns: -0.0506154477596283
+  homed_at: '2026-06-06T21:50:18+00:00'
   source: manual_endstop_capture
   rest_offset_turns: 0.05
   derived_endstop: true
   signed_stroke_turns: -3.0
 axis_1:
-  min_pos_turns: 0.8197892308235168
-  max_pos_turns: -2.180210769176483
-  rest_pos_turns: 0.7697892308235168
-  homed_at: '2026-06-06T17:14:36+00:00'
+  min_pos_turns: -0.0018649101257324219
+  max_pos_turns: -3.0018649101257324
+  rest_pos_turns: -0.051864910125732425
+  homed_at: '2026-06-06T21:50:18+00:00'
   source: manual_endstop_capture
   rest_offset_turns: 0.05
   derived_endstop: true
   signed_stroke_turns: -3.0
 axis_2:
-  min_pos_turns: 0.836693286895752
-  max_pos_turns: -2.163306713104248
-  rest_pos_turns: 0.7866932868957519
-  homed_at: '2026-06-06T17:14:36+00:00'
+  min_pos_turns: -6.67273998260498e-05
+  max_pos_turns: -3.000066727399826
+  rest_pos_turns: -0.05006672739982605
+  homed_at: '2026-06-06T21:50:18+00:00'
   source: manual_endstop_capture
   rest_offset_turns: 0.05
   derived_endstop: true
   signed_stroke_turns: -3.0
 axis_3:
-  min_pos_turns: 0.8253749012947083
-  max_pos_turns: -2.1746250987052917
-  rest_pos_turns: 0.7753749012947082
-  homed_at: '2026-06-06T17:14:36+00:00'
+  min_pos_turns: -0.0036231279373168945
+  max_pos_turns: -3.003623127937317
+  rest_pos_turns: -0.0536231279373169
+  homed_at: '2026-06-06T21:50:18+00:00'
   source: manual_endstop_capture
   rest_offset_turns: 0.05
   derived_endstop: true
   signed_stroke_turns: -3.0
 axis_4:
-  min_pos_turns: 0.8413291573524475
-  max_pos_turns: -2.1586708426475525
-  rest_pos_turns: 0.7913291573524475
-  homed_at: '2026-06-06T17:14:36+00:00'
+  min_pos_turns: 3.325939178466797e-05
+  max_pos_turns: -2.9999667406082153
+  rest_pos_turns: -0.049966740608215335
+  homed_at: '2026-06-06T21:50:18+00:00'
   source: manual_endstop_capture
   rest_offset_turns: 0.05
   derived_endstop: true
   signed_stroke_turns: -3.0
 axis_5:
-  min_pos_turns: 0.8301793336868286
-  max_pos_turns: -2.1698206663131714
-  rest_pos_turns: 0.7801793336868286
-  homed_at: '2026-06-06T17:14:36+00:00'
+  min_pos_turns: -0.0001798868179321289
+  max_pos_turns: -3.000179886817932
+  rest_pos_turns: -0.05017988681793213
+  homed_at: '2026-06-06T21:50:18+00:00'
   source: manual_endstop_capture
   rest_offset_turns: 0.05
   derived_endstop: true
