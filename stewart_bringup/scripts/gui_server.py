@@ -603,6 +603,31 @@ def _git_push_iva_bag(name):
     return True, '\n'.join(out_lines)
 
 
+def _other_recorder_running(this):
+    """Name of another bag recorder currently live, or None. `this` is the
+    recorder about to start ('iva'|'vision'|'demo') and is skipped.
+
+    Enforces one-bag-at-a-time. The three recorders (IVA / vision-debug /
+    demo-run) are independent processes with no coordination, so a
+    forgotten Record button could leave two `ros2 bag record` procs
+    overlapping. The 2026-06-06 demo profile caught exactly that — two
+    recorders ~34% of a core combined, the stray one a heavy vision-debug
+    bag (it records the RGB + depth-debug IMAGES) running through a demo.
+    They are intentionally NOT consolidated into one bag: the demo bag is
+    deliberately light (no image topics) so every demo records cheaply;
+    the vision bag's images are only wanted when debugging. (Read-only
+    poll of the other procs — no lock taken, so no cross-lock deadlock.)"""
+    for key, proc in (('iva', _iva_proc),
+                      ('vision', _vision_proc),
+                      ('demo', _demo_proc)):
+        if key == this:
+            continue
+        if proc is not None and proc.poll() is None:
+            return {'iva': 'IMU-vs-camera', 'vision': 'vision-debug',
+                    'demo': 'demo-run'}[key]
+    return None
+
+
 def _iva_start():
     """Spawn `ros2 bag record` as a subprocess. Returns
     (ok, msg, path).
@@ -611,6 +636,10 @@ def _iva_start():
     with _iva_lock:
         if _iva_proc is not None and _iva_proc.poll() is None:
             return False, 'already recording', _iva_path
+        busy = _other_recorder_running('iva')
+        if busy:
+            return False, (f'the {busy} recorder is already running — only '
+                           'one bag at a time. Stop it first.'), None
         ts = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
         out_dir = os.path.join(_iva_default_dir(),
                                f'{ts}_imu_vs_camera')
@@ -765,6 +794,10 @@ def _vision_start():
     with _vision_lock:
         if _vision_proc is not None and _vision_proc.poll() is None:
             return False, 'already recording', _vision_path
+        busy = _other_recorder_running('vision')
+        if busy:
+            return False, (f'the {busy} recorder is already running — only '
+                           'one bag at a time. Stop it first.'), None
         ts = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
         out_dir = os.path.join(_vision_default_dir(),
                                f'{ts}_vision_debug')
@@ -1285,6 +1318,10 @@ def _demo_start(label='demo_run', video_on=True):
     with _demo_lock:
         if _demo_proc is not None and _demo_proc.poll() is None:
             return False, 'already recording', _demo_path
+        busy = _other_recorder_running('demo')
+        if busy:
+            return False, (f'the {busy} recorder is already running — only '
+                           'one bag at a time. Stop it first.'), None
         ts = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
         out_dir = os.path.join(_iva_bags_root(),
                                f'{ts}_{safe_label}')
