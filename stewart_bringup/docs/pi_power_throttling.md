@@ -11,6 +11,34 @@ The host stats are now captured automatically: gui_server's `/system/stats`
 (GUI banner, red = throttling) and `<bag>/system_stats.jsonl` →
 `digest.summary.json.host`.
 
+## ✅ RESOLVED (2026-06-07): it was the BEC back-feeding the Pi rail
+
+The acute under-voltage was **not** (only) a weak Pi PSU — it was the **Castle
+BEC paralleled onto the Pi's 5 V rail (via the powered USB hub) fighting the
+USB‑C PSU**. Two unmanaged 5 V sources on one rail: the slightly-lower BEC
+**sank / back-fed current instead of contributing**, dragging the rail to
+`EXT5V_V = 4.88 V` even at idle, so transient load spikes sagged past the
+~4.6–4.8 V threshold → throttle. (This corrects the note below that the
+"OAK-on-the-BEC separate rail… helps" — it was *tied to the Pi 5 V through the
+hub*, not separate.)
+
+**Unplug the BEC from the Pi rail →** `EXT5V_V = 5.03 V`, `get_throttled = 0x0`,
+2.4 GHz steady, **zero throttling**, at 55–58 °C. The operator's USB‑C supply
+straight into the Pi's port is adequate **on its own**; the BEC was the problem.
+
+**Rule:** never parallel two unmanaged 5 V sources on the Pi rail. Power the Pi
+from ONE path (or proper ideal-diode OR-ing). If the BEC must stay for the OAK,
+keep its 5 V **off** the Pi's USB/hub 5 V — share only **ground** if CAN needs
+the reference (see "ground" caveat in the wiring notes).
+
+### Keep the clock pinned (operator wants max perf, doesn't care about idle draw)
+```bash
+echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+```
+Persist with `scripts/cpu_performance.service` (a oneshot that sets it on boot).
+Holds the stock 2.4 GHz so a load spike doesn't pay the DVFS ramp-up latency —
+*not* an overclock. Watch `temp` stays < 80 °C under long demos.
+
 ## TL;DR
 
 1. **It's under-voltage, not heat** (58 °C is cool; thermal limit is ~80–85 °C).
