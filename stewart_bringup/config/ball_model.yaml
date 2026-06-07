@@ -1,0 +1,10 @@
+# ball_model.yaml — fitted by fit_ball_forward_model.py.
+# Review, then Push model.yaml from the Physics Modeler panel.
+schema: ball_forward_model/v1
+dt: 0.01
+params:
+  alpha: 0.7142857142857143
+  c_roll: 126.45
+  c_visc: 0.0
+  breakaway_a: 323.73
+  v_eps: 1.0
