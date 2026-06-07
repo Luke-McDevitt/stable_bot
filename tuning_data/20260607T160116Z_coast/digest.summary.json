@@ -1,0 +1,20 @@
+{
+  "run_type": "model_data",
+  "campaign": "coast",
+  "duration_s": 27.2,
+  "ball_state_n": 4616,
+  "ball_state_hz": 184.4,
+  "median_dt_ms": 5.42,
+  "min_dt_ms": 0.004,
+  "max_dt_ms": 27.7,
+  "n_tiny_dt": 2105,
+  "n_gaps": 56,
+  "resampled_n": 1361,
+  "kf_speed_max": 463.2,
+  "kf_speed_med": 4.1,
+  "pos_speed_max": 636.5,
+  "pos_speed_med": 4.4,
+  "c_roll": 106.24,
+  "c_visc": 1.67711,
+  "fit_n": 234
+}
