@@ -60,11 +60,17 @@ def predict_lead(px: float, py: float, vx: float, vy: float, td_s: float,
 
 
 def load_ball_model(path: Optional[str]):
-    """Load a fitted forward-model artifact, or None if absent/unbuilt.
-
-    Phase 0 returns None (no artifact yet → const-velocity everywhere).
-    Phase 1 (`fit_ball_forward_model.py`) writes the artifact and this
-    returns a model object exposing `.integrate(...)`. Kept here so the
-    control node's load path is stable across phases.
-    """
-    return None
+    """Load a fitted forward-model artifact (ball_model.yaml), or None if
+    absent / unbuilt / unreadable. Returns a `BallForwardModel` exposing
+    `.integrate(px,py,vx,vy,td_s,tilt_history)`. None ⇒ constant-velocity
+    everywhere — the safe default until the Phase-1 fitter writes the file."""
+    import os
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        import yaml
+        from stewart_bringup._ball_model import BallForwardModel
+        with open(path) as f:
+            return BallForwardModel.from_dict(yaml.safe_load(f))
+    except Exception:
+        return None
