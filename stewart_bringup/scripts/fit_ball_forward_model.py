@@ -152,9 +152,9 @@ def read_breakaway_theta(bag_dir: str):
     return None, None
 
 
-def _find_latest(label: str):
+def _find_latest(label: str, tuning_dir: str):
     """Newest tuning_data bag whose name contains the campaign label."""
-    hits = sorted(glob.glob(os.path.join(TUNING_DIR, f'*{label}*')),
+    hits = sorted(glob.glob(os.path.join(tuning_dir, f'*{label}*')),
                   key=os.path.getmtime)
     return hits[-1] if hits else None
 
@@ -253,6 +253,9 @@ def main():
     ap.add_argument('--auto', action='store_true',
                     help='find the newest tuning_data bag of each campaign '
                          '(meas_noise / coast / breakaway) automatically')
+    ap.add_argument('--tuning-dir', default=None,
+                    help='dir to search for --auto campaign bags '
+                         '(default: <repo>/tuning_data)')
     ap.add_argument('--alpha', type=float, default=SOLID_ALPHA,
                     help='rolling coefficient (default 5/7 solid sphere)')
     ap.add_argument('--dt', type=float, default=0.01, help='integrator dt (s)')
@@ -261,10 +264,12 @@ def main():
 
     meas, coast, brk = a.meas, a.coast, a.breakaway
     if a.auto:
-        meas = meas or _find_latest('meas_noise')
-        coast = coast or _find_latest('coast')
-        brk = brk or _find_latest('breakaway')
-        print(f"--auto: meas={meas}\n        coast={coast}\n        brk={brk}")
+        tuning = a.tuning_dir or TUNING_DIR
+        meas = meas or _find_latest('meas_noise', tuning)
+        coast = coast or _find_latest('coast', tuning)
+        brk = brk or _find_latest('breakaway', tuning)
+        print(f"--auto (in {tuning}):\n  meas={meas}\n"
+              f"  coast={coast}\n  brk={brk}")
 
     if not any([meas, coast, brk, a.theta_s is not None]):
         ap.error("nothing to fit — give --meas-noise/--coast/--breakaway/"

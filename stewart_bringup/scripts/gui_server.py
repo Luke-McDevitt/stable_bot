@@ -916,10 +916,16 @@ def _run_fitter():
     fitter = os.path.join(_BRINGUP_DIR, 'scripts', 'fit_ball_forward_model.py')
     if not os.path.isfile(fitter):
         return False, f'fitter not found at {fitter}'
+    # Point the fitter at the SAME tuning_data the recorder writes and the
+    # SAME ball_model.yaml the Push button reads — _BRINGUP_DIR (ros2_ws/src)
+    # may differ from the repo, so don't let the fitter guess.
+    repo_dir = os.path.dirname(_iva_bags_root())          # ~/stable_bot_repo
+    tuning = _iva_bags_root()                             # …/tuning_data
+    out = os.path.join(repo_dir, 'stewart_bringup', 'config', 'ball_model.yaml')
     cmd = (
         'source /opt/ros/kilted/setup.bash && '
         'source ~/ros2_ws/install/local_setup.bash && '
-        f'python3 {fitter!r} --auto'
+        f'python3 {fitter!r} --auto --tuning-dir {tuning!r} --out {out!r}'
     )
     try:
         r = subprocess.run(['bash', '-c', cmd], capture_output=True,
