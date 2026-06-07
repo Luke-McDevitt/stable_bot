@@ -1344,11 +1344,14 @@ class StewartControlNode(Node):
         self.ball_track_gains['ref_stale_s'] = 2.0
         # Control-method A/B (Phase 0): the lead predictor is constant-
         # velocity (x + v·Td) when 0, the fitted forward model when 1 AND a
-        # model artifact is loaded. None loaded yet → flipping is currently a
-        # behaviour-neutral no-op. Flip live via the GUI demos dropdown
-        # (`set_control_method`); the value rides ball_track_gains → /status
-        # → digest, so every bag is labeled with the method used.
-        self.ball_track_gains.setdefault('use_model_predictor', 0)
+        # DEFAULT = model. Validated 2026-06-07 on a matched-distance demo-2
+        # A/B vs PID: overshoot 47%→13%, ITAE ~5× lower, settle ~2.5× faster.
+        # Flip live via the GUI demos dropdown (`set_control_method`); the value
+        # rides ball_track_gains → /status → digest so every bag is labeled.
+        # Safe default: if ball_model.yaml is absent (self._ball_model is None),
+        # predict_lead falls back to constant-velocity, so a missing model
+        # degrades to the old PID-with-const-vel behaviour automatically.
+        self.ball_track_gains.setdefault('use_model_predictor', 1)
         self._ball_model = load_ball_model(BALL_MODEL_PATH)
         # Last commanded ball-track tilt in the model's downhill frame (rad),
         # fed to the model predictor so it integrates the ball through the tilt
