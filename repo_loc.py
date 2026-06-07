@@ -258,7 +258,7 @@ def main():
     skipped = 0
     excluded_generated = 0
     for f in files:
-        rel = str(f.relative_to(repo))
+        rel = f.relative_to(repo).as_posix()   # forward slashes on Windows too
         if args.exclude_generated and is_generated(rel):
             excluded_generated += 1
             continue
