@@ -12,9 +12,9 @@
   "resampled_n": 1370,
   "kf_speed_max": 796.7,
   "kf_speed_med": 13.2,
-  "pos_speed_max": 641351.2,
-  "pos_speed_med": 35.7,
-  "c_roll": 1040.08,
-  "c_visc": 3.19096,
-  "fit_n": 237
+  "pos_speed_max": 989.6,
+  "pos_speed_med": 15.8,
+  "c_roll": 215.52,
+  "c_visc": 0.0,
+  "fit_n": 351
 }
