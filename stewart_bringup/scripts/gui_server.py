@@ -907,6 +907,33 @@ def _push_model_to_git():
     return True, '\n'.join(out)
 
 
+def _run_fitter():
+    """Run fit_ball_forward_model.py --auto on the Pi: reads the newest
+    meas-noise / coast / breakaway bags in tuning_data and writes
+    config/ball_model.yaml. Driven by the Physics Modeler 'Fit model' button.
+    Needs rosbag2_py, so it goes through the same sourced shell as the digests.
+    Returns (ok, stdout tail) — the operator reviews it, then hits Push."""
+    fitter = os.path.join(_BRINGUP_DIR, 'scripts', 'fit_ball_forward_model.py')
+    if not os.path.isfile(fitter):
+        return False, f'fitter not found at {fitter}'
+    cmd = (
+        'source /opt/ros/kilted/setup.bash && '
+        'source ~/ros2_ws/install/local_setup.bash && '
+        f'python3 {fitter!r} --auto'
+    )
+    try:
+        r = subprocess.run(['bash', '-c', cmd], capture_output=True,
+                           text=True, timeout=180)
+        ok = (r.returncode == 0)
+        out = (r.stdout or '').strip()
+        err = (r.stderr or '').strip()
+        return ok, (out + ('\n' + err if err else ''))[-4000:]
+    except subprocess.TimeoutExpired:
+        return False, 'fitter timed out after 180 s'
+    except Exception as e:
+        return False, f'fitter failed: {e}'
+
+
 def _push_ball_track_gains_to_git():
     """git add stewart_bringup/config/ball_track_gains.yaml +
     commit + pull --rebase + push. Auto-generates a commit
@@ -2920,6 +2947,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
                 return
             ok, msg = _push_vision_bag_to_git(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 500)
+            return
+        if self.path == '/model/fit':
+            ok, msg = _run_fitter()
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 500)
             return

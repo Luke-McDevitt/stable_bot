@@ -129,3 +129,60 @@ class BallForwardModel:
         d = d or {}
         return cls(params=BallParams.from_dict(d.get('params')),
                    dt=float(d.get('dt', 0.01)))
+
+
+# ----- identification (the fitter's math; pure + unit-tested) ----------------
+
+def fit_measurement_noise(px, py):
+    """Measurement noise R from a STILL-ball position series — the scatter
+    about the mean is the per-axis vision std (mm). Feeds the KF `R` tune.
+    Returns a dict or None."""
+    n = len(px)
+    if n < 10:
+        return None
+    mx = sum(px) / n
+    my = sum(py) / n
+    sx = (sum((x - mx) ** 2 for x in px) / (n - 1)) ** 0.5
+    sy = (sum((y - my) ** 2 for y in py) / (n - 1)) ** 0.5
+    return {'std_x_mm': round(sx, 3), 'std_y_mm': round(sy, 3),
+            'R_mm': round((sx + sy) / 2.0, 3), 'n': n}
+
+
+def fit_rolling_resistance(t_s, speed, v_floor=20.0):
+    """From a COASTING (level-plate) speed-vs-time series, fit
+    decel = c_roll + c_visc·v (Coulomb + viscous rolling resistance) by linear
+    regression of the finite-difference deceleration against speed. Ignores
+    the near-stop regime (< v_floor) where stiction, not rolling resistance,
+    dominates. Returns {'c_roll' (mm/s²), 'c_visc' (1/s), 'n'} or None."""
+    vs, ds = [], []
+    for i in range(len(t_s) - 1):
+        dt = t_s[i + 1] - t_s[i]
+        if dt <= 0:
+            continue
+        v = 0.5 * (speed[i] + speed[i + 1])
+        if v < v_floor:
+            continue
+        d = -(speed[i + 1] - speed[i]) / dt      # deceleration (positive)
+        if d <= 0:
+            continue                              # only the decelerating part
+        vs.append(v)
+        ds.append(d)
+    n = len(vs)
+    if n < 5:
+        return None
+    sv = sum(vs); sd = sum(ds)
+    svv = sum(v * v for v in vs)
+    svd = sum(vs[i] * ds[i] for i in range(n))
+    denom = n * svv - sv * sv
+    if abs(denom) < 1e-9:
+        return None
+    c_visc = (n * svd - sv * sd) / denom
+    c_roll = (sd - c_visc * sv) / n
+    return {'c_roll': round(max(0.0, c_roll), 2),
+            'c_visc': round(max(0.0, c_visc), 5), 'n': n}
+
+
+def breakaway_a_from_theta(theta_deg, alpha=SOLID_ALPHA):
+    """Stiction breakaway acceleration (mm/s²) from the measured breakaway
+    tilt θ_s (deg): the drive a stationary ball must overcome = α·g·sin(θ_s)."""
+    return alpha * G_MM_S2 * math.sin(math.radians(theta_deg))

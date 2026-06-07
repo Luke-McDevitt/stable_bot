@@ -1550,9 +1550,11 @@
           Breakaway (stiction θ_s)
         </summary>
         <p class="text-xs text-slate-500 mt-2 mb-2">
-          Arm, then Run: the platform slowly ramps tilt and records the exact
-          angle the ball breaks loose — keep a hand on the power. Hit Record
-          (Demo Run Bag) first if you want the full ramp saved for the fitter.
+          Arm, then Run: the platform ramps tilt at <b>Z</b> (held at your
+          current height — no slam) and records the exact angle the ball breaks
+          loose — keep a hand on the power. With <b>auto-record</b> on, the full
+          ramp is saved to a <span class="mono">breakaway</span> bag for the
+          fitter. <b>Disarm</b> or Stop halts it instantly.
         </p>
         <div class="grid grid-cols-2 gap-2 text-xs mb-2">
           <label>axis
@@ -1573,9 +1575,17 @@
             <input id="brk-vbreak" type="number" step="5" min="5" max="200" value="25"
                    class="mono w-full bg-slate-800 border border-slate-700 rounded px-2 py-1">
           </label>
+          <label>Z (mm) — hold height
+            <input id="brk-z" type="number" step="1" min="0" max="80" value="30"
+                   class="mono w-full bg-slate-800 border border-slate-700 rounded px-2 py-1">
+          </label>
+          <label class="flex items-center gap-1 self-end pb-1 normal-case">
+            <input id="brk-autorec" type="checkbox" checked> auto-record
+          </label>
         </div>
-        <div class="grid grid-cols-3 gap-2">
+        <div class="grid grid-cols-4 gap-2">
           <button id="brk-arm-btn" class="bg-emerald-700 hover:bg-emerald-600 rounded py-1 text-xs">Arm</button>
+          <button id="brk-disarm-btn" class="bg-rose-800 hover:bg-rose-700 rounded py-1 text-xs">Disarm</button>
           <button id="brk-run-btn" class="bg-blue-600 hover:bg-blue-500 rounded py-1 text-xs">Run</button>
           <button id="brk-stop-btn" class="bg-amber-600 hover:bg-amber-500 rounded py-1 text-xs">Stop</button>
         </div>
@@ -1607,9 +1617,17 @@
       </details>
 
       <div class="flex items-center gap-2 mt-2">
+        <button id="model-fit-btn" class="bg-indigo-700 hover:bg-indigo-600 rounded py-1 px-3 text-xs">Fit model (Pi)</button>
         <button id="model-push-btn" class="bg-purple-700 hover:bg-purple-600 rounded py-1 px-3 text-xs">Push model.yaml</button>
         <span id="model-push-status" class="text-xs mono text-slate-400"></span>
       </div>
+      <p class="text-xs text-slate-500 mt-1">
+        Fit reads the newest meas-noise / coast / breakaway bags on the Pi and
+        writes <span class="mono">ball_model.yaml</span>; review the numbers
+        below, then Push to ship it. (Raw bags stay on the Pi — only the small
+        YAML is pushed.)
+      </p>
+      <pre id="model-fit-out" class="text-xs mono text-slate-400 mt-1 whitespace-pre-wrap max-h-40 overflow-y-auto"></pre>
     </details>
 
     <!-- Auto-tune panel: hill-climbs the BALL_TRACK gains over a
@@ -4893,17 +4911,33 @@ function initVisionGUI() {
   if (_brkRun) {
     document.getElementById('brk-arm-btn').addEventListener('click',
       () => publishCmd({ cmd: 'activate' }));
-    _brkRun.addEventListener('click', () => {
-      publishCmd({ cmd: 'breakaway',
-        axis: document.getElementById('brk-axis').value,
+    document.getElementById('brk-disarm-btn').addEventListener('click',
+      () => { publishCmd({ cmd: 'deactivate' });
+              if (window._brkRecording) brkStopRecord(); });
+    _brkRun.addEventListener('click', async () => {
+      const st = document.getElementById('brk-status');
+      const axis = document.getElementById('brk-axis').value;
+      if (document.getElementById('brk-autorec').checked
+          && !window._brkRecording) {
+        try {
+          await fetch('/demo/start', { method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label: 'breakaway_' + axis,
+                                   video_on: false }) });
+          window._brkRecording = true;
+        } catch (e) { /* run unrecorded rather than block */ }
+      }
+      publishCmd({ cmd: 'breakaway', axis,
         ramp_deg_per_s: Number(document.getElementById('brk-ramp').value),
         max_tilt_deg: Number(document.getElementById('brk-max').value),
-        v_break_mm_s: Number(document.getElementById('brk-vbreak').value) });
-      const st = document.getElementById('brk-status');
+        v_break_mm_s: Number(document.getElementById('brk-vbreak').value),
+        z_mm: Number(document.getElementById('brk-z').value) });
+      window._brkWasRunning = true;
       if (st) st.textContent = 'ramping… (watch the ball)';
     });
     document.getElementById('brk-stop-btn').addEventListener('click',
-      () => publishCmd({ cmd: 'breakaway_stop' }));
+      () => { publishCmd({ cmd: 'breakaway_stop' });
+              if (window._brkRecording) brkStopRecord(); });
   }
   const _modelPush = document.getElementById('model-push-btn');
   if (_modelPush) {
@@ -4916,6 +4950,21 @@ function initVisionGUI() {
         if (st) st.textContent = (j.ok ? '✓ ' : '✗ ')
           + (j.message || '').split('\n').pop();
       } catch (e) { if (st) st.textContent = '✗ ' + e; }
+    });
+  }
+  const _modelFit = document.getElementById('model-fit-btn');
+  if (_modelFit) {
+    _modelFit.addEventListener('click', async () => {
+      const out = document.getElementById('model-fit-out');
+      _modelFit.disabled = true;
+      if (out) out.textContent =
+        'fitting on the Pi… (reads the newest meas-noise / coast / breakaway bags)';
+      try {
+        const r = await fetch('/model/fit', { method: 'POST' });
+        const j = await r.json();
+        if (out) out.textContent = j.message || '(no output)';
+      } catch (e) { if (out) out.textContent = '✗ ' + e; }
+      finally { _modelFit.disabled = false; }
     });
   }
   const _dcRec = document.getElementById('dc-rec-btn');
@@ -8180,14 +8229,32 @@ function syncControlMethodFromStatus(s) {
 
 // Reflect the breakaway campaign state from /status into the Physics
 // Modeler panel: live "ramping/idle" + the detected θ_s once the ball breaks.
+async function brkStopRecord() {
+  window._brkRecording = false;
+  try { await fetch('/demo/stop', { method: 'POST' }); } catch (e) { /* */ }
+}
+
 function syncBreakawayFromStatus(s) {
   if (!s) return;
   const st = document.getElementById('brk-status');
   const res = document.getElementById('brk-result');
+  // Seed Z from the current height once, so a run holds it (no slam to 30).
+  const zin = document.getElementById('brk-z');
+  if (zin && !zin.dataset.seeded && Array.isArray(s.current_xyz)
+      && s.current_xyz[2] != null) {
+    zin.value = Math.round(Number(s.current_xyz[2]));
+    zin.dataset.seeded = '1';
+  }
   if (st && ('breakaway_running' in s))
     st.textContent = s.breakaway_running ? 'ramping… (watch the ball)' : 'idle';
   if (res && s.breakaway_deg != null && s.breakaway_deg !== '')
     res.textContent = Number(s.breakaway_deg).toFixed(2) + '°';
+  // Auto-stop the recording when the ramp finishes (running true→false).
+  if (window._brkWasRunning && 'breakaway_running' in s
+      && !s.breakaway_running) {
+    window._brkWasRunning = false;
+    if (window._brkRecording) brkStopRecord();
+  }
 }
 
 function onOakConfig(cfg) {
