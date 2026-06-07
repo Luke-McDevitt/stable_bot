@@ -102,7 +102,7 @@ def _decel_points(t_s, speed, v_floor=20.0, max_decel=3000.0):
             continue
         v = 0.5 * (speed[i] + speed[i + 1])
         d = -(speed[i + 1] - speed[i]) / dt
-        if v >= v_floor and 0 < d <= max_decel:
+        if v >= v_floor and abs(d) <= max_decel:    # both signs (no rectify)
             vs.append(v)
             ds.append(d)
     return vs, ds
@@ -174,7 +174,7 @@ def _plot_still(bag, px, py, r):
         print(f"(plot failed: {e})", file=sys.stderr)
 
 
-def _plot_coast(bag, t_s, px, py, kf_speed, pos_speed, tg, vg, rr):
+def _plot_coast(bag, t_s, px, py, kf_speed, tg, vg, rr):
     if plt is None:
         return
     try:
@@ -187,12 +187,13 @@ def _plot_coast(bag, t_s, px, py, kf_speed, pos_speed, tg, vg, rr):
         a0.legend(fontsize=8)
         a0.grid(alpha=0.3)
         a1.plot(t_s, kf_speed, color='tab:red', lw=0.6, alpha=0.35,
-                label='KF |v| (raw, bursty)')
-        a1.plot(tg, vg, color='black', lw=1.4, label='resampled 50 Hz (fit input)')
+                label='KF velocity field (raw, spiky)')
+        a1.plot(tg, vg, color='black', lw=1.4,
+                label='from resampled position (fit input)')
         a1.set_ylim(0, max(1.0, 1.3 * (max(vg) if vg else 1.0)))
         a1.set_xlabel('t (s)')
         a1.set_ylabel('|v| (mm/s)')
-        a1.set_title('speed: raw KF vs de-bursted')
+        a1.set_title('speed: KF velocity vs position-derived')
         a1.legend(fontsize=8)
         a1.grid(alpha=0.3)
         vs, ds = _decel_points(tg, vg)
@@ -251,11 +252,17 @@ def main():
                if r else "meas-noise: fit failed")
     else:
         kf_speed = [math.hypot(vx[i], vy[i]) for i in range(n)]
-        pos_speed = _pos_speed(t_s, px, py)
         st = _series_stats(t_s)
-        # De-burst onto a uniform 50 Hz grid (median per bin) before fitting —
-        # this is what makes the fit immune to the KF's dual-publish bursts.
-        tg, vg = resample_uniform(t_s, kf_speed, 0.02)
+        # Resample the (clean) POSITION onto a 50 Hz grid, then derive speed
+        # from it. The KF velocity field is spiky even resampled; the position
+        # is smooth, so position-derived speed is the honest signal to fit.
+        tg, pxg = resample_uniform(t_s, px, 0.02)
+        _, pyg = resample_uniform(t_s, py, 0.02)
+        vg = [0.0]
+        for i in range(1, len(tg)):
+            ddt = tg[i] - tg[i - 1]
+            vg.append(math.hypot(pxg[i] - pxg[i - 1], pyg[i] - pyg[i - 1]) / ddt
+                      if ddt > 0 else 0.0)
         rr = fit_rolling_resistance(tg, vg)
         summary.update(
             ball_state_hz=st['hz'], median_dt_ms=st['median_dt_ms'],
@@ -264,18 +271,18 @@ def main():
             resampled_n=len(tg),
             kf_speed_max=round(max(kf_speed), 1),
             kf_speed_med=round(_med(kf_speed), 1),
-            pos_speed_max=round(max(pos_speed), 1),
-            pos_speed_med=round(_med(pos_speed), 1))
+            pos_speed_max=round(max(vg), 1) if vg else 0.0,
+            pos_speed_med=round(_med(vg), 1) if vg else 0.0)
         if rr:
             summary.update(c_roll=rr['c_roll'], c_visc=rr['c_visc'],
                            fit_n=rr['n'])
         else:
-            summary['reason'] = 'no clean decel after de-burst — flick a bit harder'
-        _plot_coast(a.bag, t_s, px, py, kf_speed, pos_speed, tg, vg, rr)
-        msg = (f"coast (resampled 50Hz): c_roll={rr['c_roll'] if rr else '—'} "
+            summary['reason'] = 'no usable coast samples'
+        _plot_coast(a.bag, t_s, px, py, kf_speed, tg, vg, rr)
+        msg = (f"coast (pos-derived 50Hz): c_roll={rr['c_roll'] if rr else '—'} "
                f"c_visc={rr['c_visc'] if rr else '—'} (n={rr['n'] if rr else 0})"
-               f" | raw {st['hz']}Hz min_dt {st['min_dt_ms']}ms "
-               f"tiny×{st['n_tiny_dt']} | kf|v|med {summary['kf_speed_med']}")
+               f" | {st['hz']}Hz tiny×{st['n_tiny_dt']} | "
+               f"pos|v|med {summary['pos_speed_med']} max {summary['pos_speed_max']}")
 
     with open(os.path.join(a.bag, 'digest.summary.json'), 'w',
               encoding='utf-8') as f:

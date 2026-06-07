@@ -167,9 +167,14 @@ def fit_rolling_resistance(t_s, speed, v_floor=20.0, max_decel_mm_s2=3000.0,
         v = 0.5 * (speed[i] + speed[i + 1])
         if v < v_floor:
             continue
-        d = -(speed[i + 1] - speed[i]) / dt      # deceleration (positive)
-        if d <= 0 or d > max_decel_mm_s2:
-            continue                  # decelerating part only; reject collisions
+        d = -(speed[i + 1] - speed[i]) / dt      # deceleration (+ = slowing)
+        # Keep BOTH signs. On a level coast the true decel is ≥0, so negative
+        # values are measurement noise that MUST be allowed to cancel in the
+        # regression — filtering to d>0 rectifies the noise into a large fake
+        # c_roll. Reject only |d| above the cap (a collision or a hard flick's
+        # acceleration), not the sign.
+        if abs(d) > max_decel_mm_s2:
+            continue
         vs.append(v)
         ds.append(d)
     n = len(vs)

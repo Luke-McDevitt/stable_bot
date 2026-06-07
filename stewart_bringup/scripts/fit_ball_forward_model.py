@@ -212,10 +212,17 @@ def fit(meas_bag, coast_bag, breakaway_bag, theta_s_deg, alpha, dt, out_path):
 
     if coast_bag:
         t_s, px, py, vx, vy = read_ball_state(coast_bag)
-        speed = [math.hypot(vx[i], vy[i]) for i in range(len(vx))]
-        # De-burst /ball_state (timer + event-driven dual publish) onto a
-        # uniform 50 Hz grid before differentiating — see resample_uniform.
-        tg, vg = resample_uniform(t_s, speed, 0.02)
+        # Resample the clean POSITION onto a 50 Hz grid (de-bursts /ball_state's
+        # timer+event dual publish) and derive speed from it — the KF velocity
+        # field is spiky even resampled. fit_rolling_resistance keeps both decel
+        # signs so the residual noise cancels instead of rectifying.
+        tg, pxg = resample_uniform(t_s, px, 0.02)
+        _, pyg = resample_uniform(t_s, py, 0.02)
+        vg = [0.0]
+        for i in range(1, len(tg)):
+            ddt = tg[i] - tg[i - 1]
+            vg.append(math.hypot(pxg[i] - pxg[i - 1], pyg[i] - pyg[i - 1]) / ddt
+                      if ddt > 0 else 0.0)
         r = fit_rolling_resistance(tg, vg)
         report['inputs']['coast_bag'] = coast_bag
         report['fit']['rolling_resistance'] = r

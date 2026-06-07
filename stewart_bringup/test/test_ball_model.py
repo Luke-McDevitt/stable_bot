@@ -122,6 +122,24 @@ def test_fit_rolling_resistance_needs_data():
     assert fit_rolling_resistance([0.0, 0.1], [100.0, 90.0]) is None
 
 
+def test_fit_rolling_resistance_no_noise_rectification():
+    # Heavy speed noise on a gentle coast. Filtering to only-decelerating
+    # points rectifies that noise into a hugely inflated c_roll (the real-data
+    # ~1000 bug); keeping both signs must keep the estimate near the true small
+    # value.
+    import random
+    rng = random.Random(11)
+    c_roll, c_visc, dt = 50.0, 0.15, 0.02
+    t, speed, v, tc = [], [], 350.0, 0.0
+    while v > 25.0 and len(speed) < 6000:
+        t.append(tc)
+        speed.append(max(0.0, v + rng.gauss(0.0, 8.0)))      # 8 mm/s noise
+        v -= (c_roll + c_visc * v) * dt
+        tc += dt
+    r = fit_rolling_resistance(t, speed)
+    assert r['c_roll'] < 300.0       # rectification would push this past ~500
+
+
 def test_fit_rolling_resistance_rejects_collisions():
     # a clean coast plus an edge-ring collision (full speed -> 0 in one frame):
     # the ~10^4 mm/s2 spike must be rejected, not allowed to wreck the fit.
