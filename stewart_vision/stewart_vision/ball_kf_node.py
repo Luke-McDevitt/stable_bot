@@ -145,21 +145,37 @@ class BallKFNode(Node):
 
     def _on_meas(self, msg: PointStamped):
         z = np.array([msg.point.x, msg.point.y])  # mm in platform frame
-        # Innovation + gating.
+        now_t = self.get_clock().now().nanoseconds * 1e-9
+        # Stale track? If vision dropped out — no accepted measurement within the
+        # publish-staleness window — the prediction has coasted on stale velocity
+        # and is no longer trustworthy, so a returning detection is ground truth,
+        # NOT an outlier. Re-acquire on it IMMEDIATELY instead of waiting out
+        # _gate_max_reject rejects: when detections are sparse during a dropout
+        # that wait stretches to seconds — the "had to nudge the ball to get it
+        # seen again" lockout. The gate only earns its keep on a fresh, confident
+        # track, where it suppresses the occasional false-positive detection.
+        stale = (self._last_meas_t is None
+                 or (now_t - self._last_meas_t) > self._meas_stale_s)
+        # Innovation + adaptive gate.
         y = z - self.H @ self.x
         S = self.H @ self.P @ self.H.T + self.R
         Sinv = np.linalg.inv(S)
         d2 = float(y @ Sinv @ y)                  # Mahalanobis², chi²(2 DOF)
-        if d2 > self._gate_chi2:
+        reacquire = stale
+        if (not stale) and d2 > self._gate_chi2:
             self._reject_streak += 1
             if self._reject_streak < self._gate_max_reject:
-                # Outlier (false-positive detection): drop it, keep predicting.
-                # NOTE: do NOT refresh _last_meas_t — if every detection is an
-                # outlier the staleness gate should still fire (ball lost).
+                # In-track outlier (false-positive detection): drop it, keep
+                # predicting. Do NOT refresh _last_meas_t — if every detection is
+                # an outlier the staleness branch above eventually fires and the
+                # next detection re-acquires.
                 return
-            # Too many rejects in a row → the ball genuinely moved or was
-            # replaced. Re-acquire: snap to the measurement, zero velocity,
-            # large uncertainty, then fall through to a (now-consistent) update.
+            # Persistent in-track rejects → the ball genuinely moved or was
+            # replaced → re-acquire.
+            reacquire = True
+        if reacquire:
+            # Snap to the measurement, zero velocity, large uncertainty, then
+            # fall through to a (now-consistent, zero-innovation) update.
             self.x = np.array([z[0], z[1], 0.0, 0.0])
             self.P = np.eye(4) * 1e3
             y = np.zeros(2)
@@ -174,7 +190,7 @@ class BallKFNode(Node):
         self.x = self.x + K @ y
         self.P = (np.eye(4) - K @ self.H) @ self.P
         self.have_meas = True
-        self._last_meas_t = self.get_clock().now().nanoseconds * 1e-9
+        self._last_meas_t = now_t
         # Event-driven publish: emit the fresh posterior immediately instead
         # of waiting up to one 100 Hz predict tick (cuts ≤10 ms off the
         # vision→control latency). The timer keeps publishing predictions
