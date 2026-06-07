@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""digest_model_bag.py — per-bag digest for the still (meas-noise) and coasting
+(rolling-resistance) data campaigns.
+
+This does NOT add precision over the fitter (it reuses the same unit-tested
+math in stewart_bringup._ball_model). Its value is per-bag QA: run it on a
+single bag to see that bag's number + a plot, so you can spot a bad take (ball
+not detected, never actually still, a dirty coast) BEFORE it pollutes the
+combined fit — and the number lands in the GUI data list.
+
+  meas-noise  → R (vision std, mm) from the still-ball scatter
+  coast       → c_roll (mm/s²) + c_visc (1/s) from the speed decay
+
+Writes digest.png + digest.summary.json next to the bag. The GUI 'digest'
+button routes meas-noise / coast / model_data bags here. RUNS ON THE PI.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PKG_PARENT = os.path.dirname(_HERE)
+if _PKG_PARENT not in sys.path:
+    sys.path.insert(0, _PKG_PARENT)
+
+from stewart_bringup._ball_model import (                # noqa: E402
+    fit_measurement_noise, fit_rolling_resistance,
+)
+
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+except Exception:                                        # pragma: no cover
+    plt = None
+
+try:
+    from rosbag2_py import SequentialReader, StorageOptions, ConverterOptions
+    from rclpy.serialization import deserialize_message
+    from geometry_msgs.msg import PoseStamped
+except Exception as e:                                    # pragma: no cover
+    print(f"ERROR: rosbag2_py / rclpy unavailable — run on the Pi. ({e})",
+          file=sys.stderr)
+    sys.exit(2)
+
+
+def _open_bag(bag_dir):
+    converter = ConverterOptions('', '')
+    try:
+        reader = SequentialReader()
+        reader.open(StorageOptions(uri=bag_dir, storage_id=''), converter)
+        return reader
+    except Exception as e_auto:
+        last = e_auto
+        for mf in sorted(p for p in os.listdir(bag_dir) if p.endswith('.mcap')):
+            try:
+                reader = SequentialReader()
+                reader.open(StorageOptions(uri=os.path.join(bag_dir, mf),
+                                           storage_id='mcap'), converter)
+                return reader
+            except Exception as e_file:
+                last = e_file
+        raise RuntimeError(f"could not open bag at {bag_dir}: {last}")
+
+
+def read_ball_state(bag_dir):
+    reader = _open_bag(bag_dir)
+    types = {t.name: t.type for t in reader.get_all_topics_and_types()}
+    t0 = None
+    t_s, px, py, vx, vy = [], [], [], [], []
+    while reader.has_next():
+        topic, raw, t_ns = reader.read_next()
+        if topic != '/ball_state' or types.get(topic) != \
+                'geometry_msgs/msg/PoseStamped':
+            continue
+        try:
+            m = deserialize_message(raw, PoseStamped)
+        except Exception:
+            continue
+        if t0 is None:
+            t0 = t_ns
+        t_s.append((t_ns - t0) * 1e-9)
+        px.append(float(m.pose.position.x))
+        py.append(float(m.pose.position.y))
+        vx.append(float(m.pose.orientation.x))
+        vy.append(float(m.pose.orientation.y))
+    return t_s, px, py, vx, vy
+
+
+def _decel_points(t_s, speed, v_floor=20.0):
+    """(v, decel) finite-difference points on the decelerating part — mirrors
+    fit_rolling_resistance's regression input, for the plot."""
+    vs, ds = [], []
+    for i in range(len(t_s) - 1):
+        dt = t_s[i + 1] - t_s[i]
+        if dt <= 0:
+            continue
+        v = 0.5 * (speed[i] + speed[i + 1])
+        d = -(speed[i + 1] - speed[i]) / dt
+        if v >= v_floor and d > 0:
+            vs.append(v)
+            ds.append(d)
+    return vs, ds
+
+
+def _plot_still(bag, px, py, r):
+    if plt is None:
+        return
+    try:
+        mx = sum(px) / len(px)
+        my = sum(py) / len(py)
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.scatter([x - mx for x in px], [y - my for y in py],
+                   s=6, alpha=0.4, color='tab:blue')
+        ax.set_aspect('equal')
+        ax.set_xlabel('x − mean (mm)')
+        ax.set_ylabel('y − mean (mm)')
+        ttl = 'still ball scatter'
+        if r:
+            ttl += (f"  —  R={r['R_mm']} mm "
+                    f"(σx {r['std_x_mm']}, σy {r['std_y_mm']}, n={r['n']})")
+        ax.set_title(ttl, fontsize=9)
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(os.path.join(bag, 'digest.png'), dpi=90)
+        plt.close(fig)
+    except Exception as e:
+        print(f"(plot failed: {e})", file=sys.stderr)
+
+
+def _plot_coast(bag, t_s, speed, rr):
+    if plt is None:
+        return
+    try:
+        fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4.5))
+        a1.plot(t_s, speed, color='tab:blue', lw=1)
+        a1.set_xlabel('t (s)')
+        a1.set_ylabel('|v| (mm/s)')
+        a1.set_title('coast: speed decay')
+        a1.grid(alpha=0.3)
+        vs, ds = _decel_points(t_s, speed)
+        a2.scatter(vs, ds, s=8, alpha=0.4, color='tab:gray', label='decel pts')
+        if rr and vs:
+            xs = [min(vs), max(vs)]
+            a2.plot(xs, [rr['c_roll'] + rr['c_visc'] * x for x in xs],
+                    color='tab:red',
+                    label=f"fit: c_roll={rr['c_roll']}, c_visc={rr['c_visc']}")
+        a2.set_xlabel('|v| (mm/s)')
+        a2.set_ylabel('deceleration (mm/s²)')
+        a2.set_title('rolling resistance = c_roll + c_visc·v')
+        a2.legend(fontsize=8)
+        a2.grid(alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(os.path.join(bag, 'digest.png'), dpi=90)
+        plt.close(fig)
+    except Exception as e:
+        print(f"(plot failed: {e})", file=sys.stderr)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('bag', help='meas-noise / coast bag directory')
+    a = ap.parse_args()
+
+    base = os.path.basename(a.bag.rstrip('/\\'))
+    campaign = ('meas_noise' if 'meas_noise' in base
+                else 'coast' if 'coast' in base else 'model_data')
+    t_s, px, py, vx, vy = read_ball_state(a.bag)
+    n = len(t_s)
+    dur = round(t_s[-1] - t_s[0], 1) if n >= 2 else None
+    summary = {'run_type': 'model_data', 'campaign': campaign,
+               'duration_s': dur, 'ball_state_n': n}
+
+    if n < 10:
+        summary['reason'] = f'only {n} /ball_state samples — ball detected?'
+        with open(os.path.join(a.bag, 'digest.summary.json'), 'w') as f:
+            json.dump(summary, f, indent=2)
+        print(f"model digest: too few ball samples ({n}) — {campaign}")
+        return
+
+    if campaign == 'meas_noise':
+        r = fit_measurement_noise(px, py)
+        if r:
+            summary.update(R_mm=r['R_mm'], std_x_mm=r['std_x_mm'],
+                           std_y_mm=r['std_y_mm'])
+        _plot_still(a.bag, px, py, r)
+        msg = (f"meas-noise: R={r['R_mm']} mm "
+               f"(σx {r['std_x_mm']}, σy {r['std_y_mm']}, n={r['n']})"
+               if r else "meas-noise: fit failed")
+    else:
+        speed = [math.hypot(vx[i], vy[i]) for i in range(n)]
+        rr = fit_rolling_resistance(t_s, speed)
+        if rr:
+            summary.update(c_roll=rr['c_roll'], c_visc=rr['c_visc'],
+                           fit_n=rr['n'])
+        _plot_coast(a.bag, t_s, speed, rr)
+        msg = (f"coast: c_roll={rr['c_roll']} mm/s², c_visc={rr['c_visc']} 1/s "
+               f"(n={rr['n']})" if rr
+               else "coast: not enough decelerating samples")
+
+    with open(os.path.join(a.bag, 'digest.summary.json'), 'w',
+              encoding='utf-8') as f:
+        json.dump(summary, f, indent=2)
+    print(msg)
+
+
+if __name__ == '__main__':
+    main()

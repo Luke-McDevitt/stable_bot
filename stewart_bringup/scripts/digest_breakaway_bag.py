@@ -181,8 +181,11 @@ def main():
         cmd_at_onset = interp_at(d['diag_ts'], [abs(x) for x in cmds],
                                  res['onset_t_corrected'])
 
+    dur = (round(d['ball_ts'][-1] - d['ball_ts'][0], 1)
+           if len(d['ball_ts']) >= 2 else None)
     summary = {
         'run_type': 'breakaway',
+        'duration_s': dur,
         'axis': axis,
         'direction': direction,
         'theta_s_deg': res.get('theta_s_deg'),

@@ -1288,8 +1288,18 @@ def _list_model_bags():
         if entry['has_summary']:
             try:
                 with open(js) as f:
-                    entry['summary'] = {
-                        'duration_s': json.load(f).get('duration_s')}
+                    s = json.load(f)
+                # Carry whichever post-digest metric this campaign produced so
+                # the GUI list can show it inline (θ_s / R / c_roll).
+                entry['summary'] = {
+                    'duration_s': s.get('duration_s'),
+                    'theta_s_deg': s.get('theta_s_deg'),
+                    'axis': s.get('axis'),
+                    'direction': s.get('direction'),
+                    'R_mm': s.get('R_mm'),
+                    'c_roll': s.get('c_roll'),
+                    'c_visc': s.get('c_visc'),
+                }
             except Exception:
                 pass
         out.append(entry)
@@ -1538,6 +1548,8 @@ def _digest_demo_bag(name):
         script = 'scripts/digest_latency_bench.py'
     elif 'breakaway' in base:
         script = 'scripts/digest_breakaway_bag.py'   # offline θ_s (IMU+latency)
+    elif 'meas_noise' in base or 'coast' in base or 'model_data' in base:
+        script = 'scripts/digest_model_bag.py'       # per-bag R / c_roll
     else:
         script = 'scripts/digest_demo_bag.py'
     analyzer = os.path.join(_BRINGUP_DIR, script)

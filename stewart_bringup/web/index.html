@@ -7198,6 +7198,18 @@ function _modelbagRenderBag(e) {
   let info = e.campaign || '?';
   if (s.duration_s != null) info += ` | ${Number(s.duration_s).toFixed(1)}s`;
   info += ` | ${(e.size_bytes / 1e6).toFixed(1)} MB | ${_modelbagAge(e.mtime)}`;
+  // Post-digest metric, by campaign (θ_s / R / c_roll). Until digested, nudge.
+  let metric;
+  if (s.theta_s_deg != null)
+    metric = `θ_s ${Number(s.theta_s_deg).toFixed(2)}°`
+      + (s.axis ? ` ${s.direction || ''}${s.axis}` : '');
+  else if (s.R_mm != null) metric = `R ${Number(s.R_mm).toFixed(2)} mm`;
+  else if (s.c_roll != null)
+    metric = `c_roll ${Number(s.c_roll).toFixed(0)}`
+      + (s.c_visc != null ? `, c_visc ${Number(s.c_visc).toFixed(2)}` : '');
+  const metricHtml = metric
+    ? ` | <span class="text-emerald-300">${metric}</span>`
+    : ' | <span class="text-slate-600">digest for metric</span>';
   const png = e.has_png
     ? `<a class="text-cyan-400 underline" target="_blank" href="/demo/bags/png?name=${encodeURIComponent(e.name)}">PNG</a>`
     : '<span class="text-slate-600">no PNG</span>';
@@ -7213,7 +7225,7 @@ function _modelbagRenderBag(e) {
         <button class="bg-red-800 hover:bg-red-700 px-2 rounded"
                 onclick="modelbagDelete('${e.name}')">del</button>
       </div>
-      <div class="text-slate-400 mt-0.5 mono">${info}</div>
+      <div class="text-slate-400 mt-0.5 mono">${info}${metricHtml}</div>
     </div>`;
 }
 function modelbagFetchBags() {
