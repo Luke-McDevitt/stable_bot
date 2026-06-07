@@ -177,6 +177,39 @@ def _find_latest(label: str, tuning_dir: str):
     return hits[-1] if hits else None
 
 
+def _find_all(label: str, tuning_dir: str):
+    """All tuning_data bags whose name contains the campaign label, oldest
+    first."""
+    return sorted(glob.glob(os.path.join(tuning_dir, f'*{label}*')),
+                  key=os.path.getmtime)
+
+
+def fit_one_coast(bag_dir: str):
+    """Read one coast bag → {c_roll, c_visc, n} via the resampled-POSITION
+    speed and the no-rectification regression (see _ball_model). None if the
+    bag has no usable decay."""
+    t_s, px, py, vx, vy = read_ball_state(bag_dir)
+    if len(t_s) < 10:
+        return None
+    tg, pxg = resample_uniform(t_s, px, 0.02)
+    _, pyg = resample_uniform(t_s, py, 0.02)
+    vg = [0.0]
+    for i in range(1, len(tg)):
+        ddt = tg[i] - tg[i - 1]
+        vg.append(math.hypot(pxg[i] - pxg[i - 1], pyg[i] - pyg[i - 1]) / ddt
+                  if ddt > 0 else 0.0)
+    return fit_rolling_resistance(tg, vg)
+
+
+def _median(xs):
+    s = sorted(xs)
+    n = len(s)
+    if not n:
+        return None
+    m = n // 2
+    return s[m] if n % 2 else 0.5 * (s[m - 1] + s[m])
+
+
 # ----- validation ------------------------------------------------------------
 
 def validate_coast(bag_dir: str, params: BallParams):
@@ -210,36 +243,55 @@ def fit(meas_bag, coast_bag, breakaway_bag, theta_s_deg, alpha, dt, out_path):
             print(f"  meas-noise: R≈{r['R_mm']} mm "
                   f"(σx {r['std_x_mm']}, σy {r['std_y_mm']}, n={r['n']})")
 
-    if coast_bag:
-        t_s, px, py, vx, vy = read_ball_state(coast_bag)
-        # Resample the clean POSITION onto a 50 Hz grid (de-bursts /ball_state's
-        # timer+event dual publish) and derive speed from it — the KF velocity
-        # field is spiky even resampled. fit_rolling_resistance keeps both decel
-        # signs so the residual noise cancels instead of rectifying.
-        tg, pxg = resample_uniform(t_s, px, 0.02)
-        _, pyg = resample_uniform(t_s, py, 0.02)
-        vg = [0.0]
-        for i in range(1, len(tg)):
-            ddt = tg[i] - tg[i - 1]
-            vg.append(math.hypot(pxg[i] - pxg[i - 1], pyg[i] - pyg[i - 1]) / ddt
-                      if ddt > 0 else 0.0)
-        r = fit_rolling_resistance(tg, vg)
-        report['inputs']['coast_bag'] = coast_bag
-        report['fit']['rolling_resistance'] = r
-        if r:
-            params.c_roll = r['c_roll']
-            params.c_visc = r['c_visc']
-            print(f"  coasting:   c_roll={r['c_roll']} mm/s², "
-                  f"c_visc={r['c_visc']} 1/s (n={r['n']})")
-        else:
-            print("  coasting:   not enough decelerating samples — skipped")
+    # Coast: fit every run and take the MEDIAN c_roll/c_visc. Deceleration is
+    # a 2nd derivative of position, so a single run's value wobbles ~±20%;
+    # the median over runs is robust to that AND to a bad take (too-short run,
+    # a flick that bounced). Need n>=50 points to trust a run.
+    coast_bags = ([coast_bag] if isinstance(coast_bag, str)
+                  else list(coast_bag or []))
+    per_run = []
+    for b in coast_bags:
+        r = fit_one_coast(b)
+        if r and r.get('n', 0) >= 50:
+            per_run.append((os.path.basename(b), r))
+            print(f"  coasting:   {os.path.basename(b)}  "
+                  f"c_roll={r['c_roll']} c_visc={r['c_visc']} (n={r['n']})")
+        elif r:
+            print(f"  coasting:   {os.path.basename(b)}  "
+                  f"SKIP (only n={r.get('n')} pts)")
+    if per_run:
+        params.c_roll = round(_median([r['c_roll'] for _, r in per_run]), 2)
+        params.c_visc = round(_median([r['c_visc'] for _, r in per_run]), 5)
+        report['inputs']['coast_bags'] = [name for name, _ in per_run]
+        report['fit']['rolling_resistance'] = {
+            'c_roll_median': params.c_roll, 'c_visc_median': params.c_visc,
+            'n_runs': len(per_run),
+            'c_roll_per_run': [r['c_roll'] for _, r in per_run]}
+        print(f"  coasting:   → MEDIAN c_roll={params.c_roll} mm/s², "
+              f"c_visc={params.c_visc} 1/s over {len(per_run)} runs")
+    elif coast_bags:
+        print("  coasting:   no usable coast runs (need n>=50) — skipped")
 
-    # breakaway: explicit θ_s wins; else read it from a breakaway bag
+    # breakaway: explicit θ_s wins; else take the MEDIAN θ_s over all breakaway
+    # runs (same per-run spread as coast; median is robust to the plate-warp
+    # variation between spots and to a no-breakaway run).
     if theta_s_deg is None and breakaway_bag:
-        theta_s_deg, axis = read_breakaway_theta(breakaway_bag)
-        report['inputs']['breakaway_bag'] = breakaway_bag
-        if theta_s_deg is not None:
-            report['fit']['breakaway_axis'] = axis
+        brk_bags = ([breakaway_bag] if isinstance(breakaway_bag, str)
+                    else list(breakaway_bag or []))
+        thetas = []
+        for b in brk_bags:
+            th, _ax = read_breakaway_theta(b)
+            if th is not None:
+                thetas.append(th)
+                print(f"  breakaway:  {os.path.basename(b)}  θ_s={th}°")
+        if thetas:
+            theta_s_deg = round(_median(thetas), 3)
+            report['inputs']['breakaway_bags'] = [os.path.basename(b)
+                                                  for b in brk_bags]
+            report['fit']['theta_s_per_run'] = sorted(thetas)
+            if len(thetas) > 1:
+                print(f"  breakaway:  → MEDIAN θ_s={theta_s_deg}° "
+                      f"over {len(thetas)} runs")
     if theta_s_deg is not None:
         params.breakaway_a = round(breakaway_a_from_theta(theta_s_deg, alpha), 2)
         report['fit']['theta_s_deg'] = theta_s_deg
@@ -247,8 +299,8 @@ def fit(meas_bag, coast_bag, breakaway_bag, theta_s_deg, alpha, dt, out_path):
         print(f"  breakaway:  θ_s={theta_s_deg}° → "
               f"breakaway_a={params.breakaway_a} mm/s²")
 
-    if coast_bag:
-        v = validate_coast(coast_bag, params)
+    if coast_bags:
+        v = validate_coast(coast_bags[-1], params)
         report['validation']['coast_replay'] = v
         if v:
             print(f"  validate:   coast-replay RMS {v['rms_mm']} mm "
@@ -294,10 +346,11 @@ def main():
     if a.auto:
         tuning = a.tuning_dir or TUNING_DIR
         meas = meas or _find_latest('meas_noise', tuning)
-        coast = coast or _find_latest('coast', tuning)
-        brk = brk or _find_latest('breakaway', tuning)
+        coast = coast or _find_all('coast', tuning)        # ALL → median
+        brk = brk or _find_all('breakaway', tuning)        # ALL → median
         print(f"--auto (in {tuning}):\n  meas={meas}\n"
-              f"  coast={coast}\n  brk={brk}")
+              f"  coast={len(coast) if isinstance(coast, list) else coast} run(s)"
+              f"\n  brk={len(brk) if isinstance(brk, list) else brk} run(s)")
 
     if not any([meas, coast, brk, a.theta_s is not None]):
         ap.error("nothing to fit — give --meas-noise/--coast/--breakaway/"
