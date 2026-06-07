@@ -1560,13 +1560,17 @@
           it instantly. The readout below is a live estimate — <b>digest</b>
           the saved bag (in “previous runs”) for the precise θ_s, recomputed
           offline from the IMU tilt at the latency-corrected instant the ball
-          moved. Pair a + and − run from the same spot: (θ⁺+θ⁻)/2 cancels the
-          plate's local slope.
+          moved. <b>Toward center</b> rolls an edge-placed ball inward, off the
+          retaining ring (the clean way to test edge spots); for a fixed axis,
+          pair a + and − run from one spot and (θ⁺+θ⁻)/2 cancels the plate's
+          local slope.
         </p>
         <div class="grid grid-cols-2 gap-2 text-xs mb-2">
           <label>axis
             <select id="brk-axis" class="mono w-full bg-slate-800 border border-slate-700 rounded px-1 py-0.5">
-              <option value="pitch" selected>pitch (+)</option>
+              <option value="center" selected>→ toward center</option>
+              <option value="edge">→ toward edge</option>
+              <option value="pitch">pitch (+)</option>
               <option value="-pitch">pitch (−)</option>
               <option value="roll">roll (+)</option>
               <option value="-roll">roll (−)</option>
@@ -7207,9 +7211,13 @@ function _modelbagRenderBag(e) {
   else if (s.c_roll != null)
     metric = `c_roll ${Number(s.c_roll).toFixed(0)}`
       + (s.c_visc != null ? `, c_visc ${Number(s.c_visc).toFixed(2)}` : '');
-  const metricHtml = metric
-    ? ` | <span class="text-emerald-300">${metric}</span>`
-    : ' | <span class="text-slate-600">digest for metric</span>';
+  let metricHtml;
+  if (metric)
+    metricHtml = ` | <span class="text-emerald-300">${metric}</span>`;
+  else if (e.has_summary)            // digested, but no usable result
+    metricHtml = ` | <span class="text-amber-400">${s.reason || 'no result'}</span>`;
+  else
+    metricHtml = ' | <span class="text-slate-600">digest for metric</span>';
   const png = e.has_png
     ? `<a class="text-cyan-400 underline" target="_blank" href="/demo/bags/png?name=${encodeURIComponent(e.name)}">PNG</a>`
     : '<span class="text-slate-600">no PNG</span>';

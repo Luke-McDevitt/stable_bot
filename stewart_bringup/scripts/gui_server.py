@@ -594,7 +594,7 @@ def _git_push_iva_bag(name):
     # surfaced a confusing "rejected" message to the operator any
     # time a concurrent push had landed (observed 2026-05-01 when an
     # IVA sweep collided with a code commit pushed seconds earlier).
-    if not _run(['git', 'pull', '--rebase']):
+    if not _run(['git', 'pull', '--rebase', '--autostash']):
         return False, '\n'.join(out_lines)
     if not _run(['git', 'push']):
         return False, '\n'.join(out_lines)
@@ -1002,7 +1002,7 @@ def _push_ball_track_gains_to_git():
             return False, '\n'.join(out_lines)
     # Pull --rebase before push to handle concurrent pushes
     # (same race-handling as the bag push helpers).
-    if not _run(['git', 'pull', '--rebase']):
+    if not _run(['git', 'pull', '--rebase', '--autostash']):
         return False, '\n'.join(out_lines)
     if not _run(['git', 'push']):
         return False, '\n'.join(out_lines)
@@ -1101,7 +1101,7 @@ def _push_vision_bag_to_git(name):
     # "fetch first" rejection surfaces as a confusing GUI error
     # any time someone else has pushed in the seconds before this
     # call (observed 2026-05-01 with an IVA-sweep collision).
-    if not _run(['git', 'pull', '--rebase']):
+    if not _run(['git', 'pull', '--rebase', '--autostash']):
         return False, '\n'.join(out_lines)
     if not _run(['git', 'push']):
         return False, '\n'.join(out_lines)
@@ -1299,6 +1299,7 @@ def _list_model_bags():
                     'R_mm': s.get('R_mm'),
                     'c_roll': s.get('c_roll'),
                     'c_visc': s.get('c_visc'),
+                    'reason': s.get('reason'),
                 }
             except Exception:
                 pass
@@ -1683,7 +1684,7 @@ def _push_demo_bag_to_git(name):
     # "fetch first" rejection surfaces as a confusing GUI error
     # any time someone else has pushed in the seconds before this
     # call (observed 2026-05-01 with an IVA-sweep collision).
-    if not _run(['git', 'pull', '--rebase']):
+    if not _run(['git', 'pull', '--rebase', '--autostash']):
         return False, '\n'.join(out_lines)
     if not _run(['git', 'push']):
         return False, '\n'.join(out_lines)

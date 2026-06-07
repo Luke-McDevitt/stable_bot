@@ -2875,10 +2875,14 @@ class StewartControlNode(Node):
         # operator can break the ball loose in either direction from the same
         # spot (the two-direction pair lets the offline digest cancel the
         # plate's local slope: θ_s ≈ (θ⁺+θ⁻)/2).
+        # pitch/roll ramp a fixed platform axis (± via a leading '-'); center/
+        # edge ramp along the ball's RADIAL line so it rolls toward (center) or
+        # away from (edge) the platform middle — toward-center keeps an
+        # edge-placed ball off the retaining ring, the cleanest breakaway there.
         axis_raw = str(d.get('axis', 'pitch')).lower().strip()
         sign = -1.0 if (axis_raw.startswith('-') or 'neg' in axis_raw) else 1.0
         axis = axis_raw.lstrip('-').replace('neg_', '').replace('neg', '')
-        if axis not in ('pitch', 'roll'):
+        if axis not in ('pitch', 'roll', 'center', 'edge'):
             axis = 'pitch'
         ramp = float(max(0.1, min(float(d.get('ramp_deg_per_s', 0.5)), 4.0)))
         max_tilt = float(max(1.0, min(float(d.get('max_tilt_deg', 6.0)), 8.0)))
@@ -2894,8 +2898,9 @@ class StewartControlNode(Node):
         self._breakaway_result = None
         threading.Thread(target=self._breakaway_run, args=(params,),
                          daemon=True).start()
-        dirn = '+' if sign > 0 else '−'
-        return True, (f"breakaway started: {dirn}{axis} ramp {ramp:.1f}deg/s "
+        label = axis if axis in ('center', 'edge') else (
+            ('+' if sign > 0 else '−') + axis)
+        return True, (f"breakaway started: {label} ramp {ramp:.1f}deg/s "
                       f"to {max_tilt:.1f}deg, break at {v_break:.0f}mm/s")
 
     def _breakaway_run(self, params):
@@ -2916,6 +2921,9 @@ class StewartControlNode(Node):
         max_tilt = params['max_tilt']
         v_break = params['v_break']
         min_travel = params['min_travel']
+        radial = axis in ('center', 'edge')
+        ps = float(self.ball_track_gains.get('pitch_sign', 1.0))
+        rs = float(self.ball_track_gains.get('roll_sign', 1.0))
         level_was_on = bool(self.level_enabled)
         result = None
         try:
@@ -2923,13 +2931,34 @@ class StewartControlNode(Node):
                 self._stop_level_loop()
             self._do_set_pose(0.0, 0.0, z, 0.0, 0.0, 0.0)   # level baseline
             time.sleep(1.0)                                 # "still" segment
+            # Radial runs fix their tilt direction from where the (settled)
+            # ball sits, using the proven ball-track sign convention so
+            # "center" rolls it inward and "edge" outward.
+            ux = uy = rdir = 0.0
+            if radial:
+                bx = by = None
+                if (self.last_ball_state is not None and
+                        (time.monotonic() - self.last_ball_state_t) < 0.5):
+                    bx, by = self.last_ball_state[0], self.last_ball_state[1]
+                r0 = math.hypot(bx, by) if bx is not None else 0.0
+                if r0 < 20.0:
+                    self.get_logger().warn(
+                        f"[breakaway] {axis} run needs the ball clearly "
+                        f"off-centre (r={r0:.0f}mm) — aborting")
+                    return
+                ux, uy = bx / r0, by / r0
+                rdir = 1.0 if axis == 'center' else -1.0
             px0 = py0 = None                # rest reference (first valid frame)
             candidate_tilt = None           # tilt at first motion above v_break
             t0 = time.monotonic()
             while self._breakaway_running:
                 tilt_deg = min(max_tilt, ramp * (time.monotonic() - t0))
-                p_cmd = sign * tilt_deg if axis == 'pitch' else 0.0
-                r_cmd = sign * tilt_deg if axis == 'roll' else 0.0
+                if radial:
+                    p_cmd = ps * ux * tilt_deg * rdir
+                    r_cmd = rs * uy * tilt_deg * rdir
+                else:
+                    p_cmd = sign * tilt_deg if axis == 'pitch' else 0.0
+                    r_cmd = sign * tilt_deg if axis == 'roll' else 0.0
                 self._do_set_pose(0.0, 0.0, z, r_cmd, p_cmd, 0.0)
                 speed = 0.0
                 disp = 0.0

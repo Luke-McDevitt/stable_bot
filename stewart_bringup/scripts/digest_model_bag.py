@@ -189,6 +189,8 @@ def main():
         if r:
             summary.update(R_mm=r['R_mm'], std_x_mm=r['std_x_mm'],
                            std_y_mm=r['std_y_mm'])
+        else:
+            summary['reason'] = 'noise fit failed'
         _plot_still(a.bag, px, py, r)
         msg = (f"meas-noise: R={r['R_mm']} mm "
                f"(σx {r['std_x_mm']}, σy {r['std_y_mm']}, n={r['n']})"
@@ -199,6 +201,8 @@ def main():
         if rr:
             summary.update(c_roll=rr['c_roll'], c_visc=rr['c_visc'],
                            fit_n=rr['n'])
+        else:
+            summary['reason'] = 'no clean decel — re-flick harder'
         _plot_coast(a.bag, t_s, speed, rr)
         msg = (f"coast: c_roll={rr['c_roll']} mm/s², c_visc={rr['c_visc']} 1/s "
                f"(n={rr['n']})" if rr
