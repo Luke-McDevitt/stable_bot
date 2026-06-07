@@ -148,12 +148,16 @@ def fit_measurement_noise(px, py):
             'R_mm': round((sx + sy) / 2.0, 3), 'n': n}
 
 
-def fit_rolling_resistance(t_s, speed, v_floor=20.0):
+def fit_rolling_resistance(t_s, speed, v_floor=20.0, max_decel_mm_s2=3000.0):
     """From a COASTING (level-plate) speed-vs-time series, fit
     decel = c_roll + c_visc·v (Coulomb + viscous rolling resistance) by linear
     regression of the finite-difference deceleration against speed. Ignores
     the near-stop regime (< v_floor) where stiction, not rolling resistance,
-    dominates. Returns {'c_roll' (mm/s²), 'c_visc' (1/s), 'n'} or None."""
+    dominates, AND rejects decelerations above `max_decel_mm_s2` as collisions
+    — a ball hitting the edge ring crashes from full speed to 0 in one frame
+    (10⁴–10⁷ mm/s²), which would otherwise dominate the fit, whereas real
+    rolling resistance on a level plate is at most a few hundred mm/s².
+    Returns {'c_roll' (mm/s²), 'c_visc' (1/s), 'n'} or None."""
     vs, ds = [], []
     for i in range(len(t_s) - 1):
         dt = t_s[i + 1] - t_s[i]
@@ -163,8 +167,8 @@ def fit_rolling_resistance(t_s, speed, v_floor=20.0):
         if v < v_floor:
             continue
         d = -(speed[i + 1] - speed[i]) / dt      # deceleration (positive)
-        if d <= 0:
-            continue                              # only the decelerating part
+        if d <= 0 or d > max_decel_mm_s2:
+            continue                  # decelerating part only; reject collisions
         vs.append(v)
         ds.append(d)
     n = len(vs)

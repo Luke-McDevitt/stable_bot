@@ -91,9 +91,10 @@ def read_ball_state(bag_dir):
     return t_s, px, py, vx, vy
 
 
-def _decel_points(t_s, speed, v_floor=20.0):
+def _decel_points(t_s, speed, v_floor=20.0, max_decel=3000.0):
     """(v, decel) finite-difference points on the decelerating part — mirrors
-    fit_rolling_resistance's regression input, for the plot."""
+    fit_rolling_resistance's regression input (incl. the collision reject), for
+    the plot."""
     vs, ds = [], []
     for i in range(len(t_s) - 1):
         dt = t_s[i + 1] - t_s[i]
@@ -101,7 +102,7 @@ def _decel_points(t_s, speed, v_floor=20.0):
             continue
         v = 0.5 * (speed[i] + speed[i + 1])
         d = -(speed[i + 1] - speed[i]) / dt
-        if v >= v_floor and d > 0:
+        if v >= v_floor and 0 < d <= max_decel:
             vs.append(v)
             ds.append(d)
     return vs, ds

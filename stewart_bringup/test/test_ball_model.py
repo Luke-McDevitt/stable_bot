@@ -121,6 +121,22 @@ def test_fit_rolling_resistance_needs_data():
     assert fit_rolling_resistance([0.0, 0.1], [100.0, 90.0]) is None
 
 
+def test_fit_rolling_resistance_rejects_collisions():
+    # a clean coast plus an edge-ring collision (full speed -> 0 in one frame):
+    # the ~10^4 mm/s2 spike must be rejected, not allowed to wreck the fit.
+    c_roll, c_visc, dt = 250.0, 0.8, 0.01
+    t, speed, v, tc = [], [], 900.0, 0.0
+    while v > 30.0 and len(speed) < 2000:
+        t.append(tc); speed.append(v)
+        v -= (c_roll + c_visc * v) * dt
+        tc += dt
+    t.append(tc); speed.append(600.0); tc += dt     # ball re-flicked into wall
+    t.append(tc); speed.append(0.0)                  # 600 -> 0: ~60000 mm/s2
+    r = fit_rolling_resistance(t, speed)
+    assert abs(r['c_roll'] - c_roll) < 40.0          # collision didn't dominate
+    assert abs(r['c_visc'] - c_visc) < 0.15
+
+
 def test_breakaway_a_from_theta_gates_ball_accel():
     # θ_s → breakaway_a is exactly the stiction threshold at that tilt
     a = breakaway_a_from_theta(5.0)
