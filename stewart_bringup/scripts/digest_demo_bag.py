@@ -76,12 +76,14 @@ try:
     from stewart_bringup._latency import (
         actuation_latency, host_latency_correlation, quat_to_roll_pitch_deg,
         read_system_stats, read_system_stats_series)
+    from stewart_bringup._demo_metrics import segment_gotos, step_metrics
 except ImportError:
     sys.path.insert(
         0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from stewart_bringup._latency import (
         actuation_latency, host_latency_correlation, quat_to_roll_pitch_deg,
         read_system_stats, read_system_stats_series)
+    from stewart_bringup._demo_metrics import segment_gotos, step_metrics
 
 
 def _parse_control_cmd(raw: str) -> dict:
@@ -704,6 +706,29 @@ def digest(bag_dir: str):
 
     settling = _settling_time_s(err_t_s, err_mag) if err_mag.size else None
 
+    # Per-goto step-response metrics (overshoot, rise/settle, path adherence,
+    # oscillation) — the right language for an identical start→target A/B
+    # between controllers. One entry per goto segment; a place-and-send run
+    # yields one. See stewart_bringup/_demo_metrics.py.
+    step_mx = []
+    if state_t.size and ref_t.size:
+        st_t_all = (state_t - t0) * 1e-9
+        ref_t_s = ((ref_t - t0) * 1e-9).tolist()
+        ref_pts = [(float(r[0]), float(r[1])) for r in ref_xy]
+        for gt0, gt1, tgt in segment_gotos(ref_t_s, ref_pts):
+            ts, xs, ys = [], [], []
+            for i in range(state_t.size):
+                tt = float(st_t_all[i])
+                if (gt0 <= tt <= gt1 and np.isfinite(state_xy[i, 0])
+                        and np.isfinite(state_xy[i, 1])):
+                    ts.append(tt)
+                    xs.append(float(state_xy[i, 0]))
+                    ys.append(float(state_xy[i, 1]))
+            if len(ts) >= 5:
+                seg = step_metrics(ts, xs, ys, tgt[0], tgt[1], tol_mm=15.0)
+                if seg:
+                    step_mx.append(seg)
+
     label = _demo_label_from_dir(bag_dir)
     gains_at_record = _gains_at_record(status_d)
     # Full run-config snapshot (caps the GUI sets live) + measured leg
@@ -887,6 +912,9 @@ def digest(bag_dir: str):
         'error_x_mm': _stats(err_xy[:, 0]) if err_xy.size else {'n': 0},
         'error_y_mm': _stats(err_xy[:, 1]) if err_xy.size else {'n': 0},
         'settling_time_s': settling,
+        # Per-goto step response (overshoot / rise / settle / path / oscillation)
+        # — the A/B metrics for identical start→target moves.
+        'step_metrics': step_mx,
         'platform_pose_z_mm': _stats(pose_z),
         'latency_breakdown': latency_breakdown,
         'oak_latency_ms': _stats(lat_ms),
@@ -937,6 +965,14 @@ def digest(bag_dir: str):
               f"p95={ey['p95']:+.1f}")
     if settling is not None:
         print(f"  settling_time_s: {settling:.2f}")
+    for i, m in enumerate(step_mx):
+        print(f"  goto[{i}] {m['distance_mm']:.0f}mm: "
+              f"overshoot={m['overshoot_pct']:.1f}% "
+              f"rise={m['rise_s']}s settle={m['settle_s']}s "
+              f"ss_err={m['steady_state_err_mm']:.1f}mm "
+              f"settled_rms={m['settled_rms_mm']:.1f}mm "
+              f"max_lat={m['max_lateral_mm']:.0f}mm "
+              f"path={m['path_ratio']:.2f}x rev={m['reversals']}")
     if host_latency:
         print(f"  cpu<->latency ({host_latency['n_windows']} win): "
               f"{host_latency['interpretation']}")
