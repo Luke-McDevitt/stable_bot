@@ -77,20 +77,31 @@ def find_rest_position(ts, px, py, baseline_s=0.8):
     return _median(xs), _median(ys)
 
 
-def find_motion_onset(ts, px, py, px0, py0, min_travel_mm=25.0, noise_mm=4.0):
+def find_motion_onset(ts, px, py, px0, py0, min_travel_mm=25.0, noise_mm=4.0,
+                      speed=None, v_still_mm_s=15.0):
     """Find when the ball STARTED the motion that carried it `min_travel_mm`
-    from rest — robust to wobble. Confirm at the first sample past min_travel,
-    then walk back to the last sample still within `noise_mm` of rest (the true
-    onset). Returns (onset_t, confirm_t, peak_disp_mm) or None if it never
-    travelled far enough (a pure wobble)."""
+    from rest. Confirm at the first sample past min_travel, then walk back to
+    the last time the ball was at REST.
+
+    With `speed` (the KF |v| series) supplied, "rest" means |v| < v_still — so
+    an early nudge that STALLS into a plateau (displaced from rest but no longer
+    moving, e.g. a ball settling against the edge ring) is treated as rest and
+    is NOT mistaken for the breakaway onset; the walk-back stops at the start of
+    the final, sustained roll. Without speed it falls back to the position noise
+    band (only valid when motion is monotonic). Returns
+    (onset_t, confirm_t, peak_disp_mm) or None (never travelled far enough)."""
     n = len(ts)
     disp = [math.hypot(px[i] - px0, py[i] - py0) for i in range(n)]
     confirm = next((i for i in range(n) if disp[i] >= min_travel_mm), None)
     if confirm is None:
         return None
     j = confirm
-    while j > 0 and disp[j] > noise_mm:
-        j -= 1
+    if speed is not None and len(speed) == n:
+        while j > 0 and speed[j] >= v_still_mm_s:
+            j -= 1
+    else:
+        while j > 0 and disp[j] > noise_mm:
+            j -= 1
     return ts[j], ts[confirm], max(disp)
 
 
@@ -104,6 +115,7 @@ def _baseline_median(ts, vs, baseline_s):
 
 def analyze_breakaway(ball_ts, px, py, ball_lat,
                       imu_ts, imu_roll, imu_pitch,
+                      ball_speed=None,
                       min_travel_mm=25.0, noise_mm=4.0, baseline_s=0.8):
     """Full extraction → result dict.
 
@@ -120,7 +132,7 @@ def analyze_breakaway(ball_ts, px, py, ball_lat,
     rest = find_rest_position(ball_ts, px, py, baseline_s)
     px0, py0 = rest
     onset = find_motion_onset(ball_ts, px, py, px0, py0,
-                              min_travel_mm, noise_mm)
+                              min_travel_mm, noise_mm, speed=ball_speed)
     if onset is None:
         return {'ok': False,
                 'reason': f'ball never travelled {min_travel_mm:.0f} mm'}

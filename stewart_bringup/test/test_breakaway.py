@@ -67,6 +67,32 @@ def test_find_motion_onset_finds_real_motion():
     assert peak > 25.0
 
 
+def test_onset_ignores_early_stall_with_speed():
+    # Ball nudges to ~8 mm at t≈1 s (settling against the edge ring), STALLS
+    # there for seconds, then really rolls past min_travel at t≈5 s. KF speed
+    # tells the plateau (≈0) from the final roll, so the onset must be the late
+    # roll — this is the edge-run bug that read the early nudge's low tilt.
+    ts = [i * 0.02 for i in range(400)]            # 8 s @ 50 Hz
+    px, py, spd = [], [], []
+    for t in ts:
+        if t < 1.0:
+            x, v = 50.0, 0.0                       # at rest
+        elif t < 1.3:
+            x, v = 50.0 + 27.0 * (t - 1.0), 27.0   # quick nudge to ~8 mm
+        elif t < 5.0:
+            x, v = 58.0, 0.0                       # STALL / plateau
+        else:
+            x, v = 58.0 + 300.0 * (t - 5.0), 300.0  # real roll
+        px.append(x); py.append(20.0); spd.append(v)
+    onset_t, _, peak = find_motion_onset(
+        ts, px, py, 50.0, 20.0, min_travel_mm=25.0, speed=spd)
+    assert onset_t >= 4.8 and peak > 25.0          # the late roll, not the nudge
+    # without speed the position-band walk-back is fooled back to the nudge
+    onset_nospeed, _, _ = find_motion_onset(
+        ts, px, py, 50.0, 20.0, min_travel_mm=25.0)
+    assert onset_nospeed < 2.0                     # the bug the speed path fixes
+
+
 def _synth_run(latency=0.15, true_theta=2.0, ramp_dps=0.5):
     """Synthesise a breakaway: pitch ramps at ramp_dps starting at t=1 s; the
     ball really breaks when pitch hits true_theta (real time), but is SEEN

@@ -74,7 +74,8 @@ def read_bag(bag_dir):
     reader = _open_bag(bag_dir)
     types = {t.name: t.type for t in reader.get_all_topics_and_types()}
     t0 = None
-    d = dict(ball_ts=[], px=[], py=[], lat=[], imu_ts=[], roll=[], pitch=[],
+    d = dict(ball_ts=[], px=[], py=[], lat=[], vx=[], vy=[],
+             imu_ts=[], roll=[], pitch=[],
              diag_ts=[], pcmd=[], rcmd=[], disp=[])
     while reader.has_next():
         topic, raw, t_ns = reader.read_next()
@@ -89,6 +90,8 @@ def read_bag(bag_dir):
                 d['px'].append(float(m.pose.position.x))
                 d['py'].append(float(m.pose.position.y))
                 d['lat'].append(float(m.pose.orientation.z))
+                d['vx'].append(float(m.pose.orientation.x))
+                d['vy'].append(float(m.pose.orientation.y))
             elif topic == '/platform/imu/data' and tt == 'sensor_msgs/msg/Imu':
                 q = deserialize_message(raw, Imu).orientation
                 r, p = quat_to_roll_pitch_deg(q.w, q.x, q.y, q.z)
@@ -142,13 +145,16 @@ def _plot(bag, d, res, axis, min_travel):
         if d['imu_ts']:
             a2.plot(d['imu_ts'], d['roll'], color='tab:purple', label='IMU roll')
             a2.plot(d['imu_ts'], d['pitch'], color='tab:red', label='IMU pitch')
-        if d['diag_ts'] and axis:
-            a2.plot(d['diag_ts'], d['pcmd'] if axis == 'pitch' else d['rcmd'],
-                    color='gray', ls=':', label='commanded')
+        if d['diag_ts']:
+            cmd_mag = [math.hypot(d['pcmd'][i], d['rcmd'][i])
+                       for i in range(len(d['diag_ts']))]
+            a2.plot(d['diag_ts'], cmd_mag, color='gray', ls=':',
+                    label='commanded |tilt|')
         if res.get('ok'):
             a2.axvline(res['onset_t_corrected'], color='tab:green', ls='--')
-            a2.set_title(f"θ_s = {res['theta_s_deg']}°  "
-                         f"(IMU tilt change at corrected onset)")
+            a2.set_title(f"θ_s = {res['theta_s_deg']}°  =  "
+                         f"hypot(Δroll {res['d_roll_deg']}°, "
+                         f"Δpitch {res['d_pitch_deg']}°)")
         a2.set_xlabel('t (s)')
         a2.set_ylabel('tilt (deg)')
         a2.legend(fontsize=8)
@@ -172,13 +178,26 @@ def main():
     a = ap.parse_args()
 
     d = read_bag(a.bag)
+    speed = [math.hypot(d['vx'][i], d['vy'][i]) for i in range(len(d['vx']))]
     res = analyze_breakaway(d['ball_ts'], d['px'], d['py'], d['lat'],
                             d['imu_ts'], d['roll'], d['pitch'],
+                            ball_speed=speed,
                             min_travel_mm=a.min_travel, noise_mm=a.noise)
-    axis, direction, cmds = _axis_direction(d)
+    axis, direction, _cmds = _axis_direction(d)
+    # Radial (center/edge) runs tilt BOTH pitch and roll, so label them by the
+    # run mode (from the bag name), not the dominant single axis. θ_s is the
+    # magnitude of the combined Δroll/Δpitch either way — compare it against
+    # the COMBINED commanded magnitude, not one component.
+    base = os.path.basename(a.bag.rstrip('/\\'))
+    if 'center' in base:
+        axis, direction = 'center', None
+    elif 'edge' in base:
+        axis, direction = 'edge', None
     cmd_at_onset = None
-    if res.get('ok') and cmds and d['diag_ts']:
-        cmd_at_onset = interp_at(d['diag_ts'], [abs(x) for x in cmds],
+    if res.get('ok') and d['diag_ts']:
+        cmd_mag = [math.hypot(d['pcmd'][i], d['rcmd'][i])
+                   for i in range(len(d['diag_ts']))]
+        cmd_at_onset = interp_at(d['diag_ts'], cmd_mag,
                                  res['onset_t_corrected'])
 
     dur = (round(d['ball_ts'][-1] - d['ball_ts'][0], 1)
@@ -189,6 +208,8 @@ def main():
         'axis': axis,
         'direction': direction,
         'theta_s_deg': res.get('theta_s_deg'),
+        'd_roll_deg': res.get('d_roll_deg'),
+        'd_pitch_deg': res.get('d_pitch_deg'),
         'commanded_tilt_at_onset_deg': (round(cmd_at_onset, 3)
                                         if cmd_at_onset is not None else None),
         'latency_s': res.get('latency_s'),
