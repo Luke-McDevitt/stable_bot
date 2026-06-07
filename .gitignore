@@ -54,3 +54,8 @@ tuning_data/auto_tune_*/bag/metadata.yaml
 # IS what trained models are reproducible from. Raw JPEGs are
 # transient and don't belong in git.
 training_data/v1/
+
+# Fitter report sidecar — regenerable, written next to ball_model.yaml. Only
+# the .yaml is pushed (via the GUI Push button); the .fit.json stays local and
+# must not trip pi_deploy.sh's source-change gate.
+stewart_bringup/config/*.fit.json
