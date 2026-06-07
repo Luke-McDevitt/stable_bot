@@ -1,0 +1,14 @@
+[Unit]
+Description=Pin Pi 5 CPU governor to performance (stock max clock, no DVFS down-clock)
+# Real-time control loop: hold 2.4 GHz so a load spike doesn't pay the DVFS
+# ramp-up latency. We don't care about idle power draw on this rig.
+# See docs/power_and_throttling.md.
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor'
+
+[Install]
+WantedBy=multi-user.target
