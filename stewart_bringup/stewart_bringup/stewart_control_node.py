@@ -65,6 +65,8 @@ from jugglebot_interfaces.srv import (
 )
 from jugglebot_interfaces.msg import LevelDiag
 
+from stewart_bringup._ball_predictor import predict_lead, load_ball_model
+
 
 # ---------------- Constants -------------------------------------------
 def _find_stewart_bringup_dir():
@@ -83,6 +85,9 @@ LEVEL_CAL_PATH = os.path.join(_BRINGUP_DIR, 'config/platform_level.yaml')
 LEVEL_GAINS_PATH = os.path.join(_BRINGUP_DIR, 'config/level_gains.yaml')
 BALL_TRACK_GAINS_PATH = os.path.join(_BRINGUP_DIR,
                                      'config/ball_track_gains.yaml')
+# Fitted ball forward-model artifact (Phase 1). Absent today → the lead
+# predictor stays constant-velocity; see _ball_predictor.load_ball_model.
+BALL_MODEL_PATH = os.path.join(_BRINGUP_DIR, 'config/ball_model.yaml')
 BAGS_DIR = os.path.expanduser('~/stable_bot_bags')
 # Last-commanded pose persisted across restarts so the GUI Z sliders read
 # the operator's last setpoint instead of 0 on a fresh GUI load. Holds the
@@ -1331,6 +1336,14 @@ class StewartControlNode(Node):
         # Loop-internal knobs not part of the editable set.
         self.ball_track_gains['state_stale_s'] = 0.5
         self.ball_track_gains['ref_stale_s'] = 2.0
+        # Control-method A/B (Phase 0): the lead predictor is constant-
+        # velocity (x + v·Td) when 0, the fitted forward model when 1 AND a
+        # model artifact is loaded. None loaded yet → flipping is currently a
+        # behaviour-neutral no-op. Flip live via the GUI demos dropdown
+        # (`set_control_method`); the value rides ball_track_gains → /status
+        # → digest, so every bag is labeled with the method used.
+        self.ball_track_gains.setdefault('use_model_predictor', 0)
+        self._ball_model = load_ball_model(BALL_MODEL_PATH)
         self.ball_track_enabled = False
         self.ball_track_thread = None
         self.ball_track_stop = threading.Event()
@@ -2492,6 +2505,19 @@ class StewartControlNode(Node):
                 v = max(0.1, min(float(d.get('value', 1.0)), self.hard_max_vel))
                 self.soft_max_vel = v
                 ok, reply_msg = True, f"soft_max_vel = {v:.3f}"
+            elif cmd == 'set_control_method':
+                # PID (constant-velocity lead) ⇄ physics-model predictor.
+                # Targeted single-flag set (does not touch other gains).
+                want_model = (str(d.get('value', 'pid')).lower() == 'model')
+                self.ball_track_gains['use_model_predictor'] = (
+                    1 if want_model else 0)
+                if want_model and self._ball_model is None:
+                    ok, reply_msg = True, ("control_method=model (NO model "
+                                           "artifact yet → still constant-"
+                                           "velocity)")
+                else:
+                    ok, reply_msg = True, (
+                        f"control_method={'model' if want_model else 'pid'}")
             elif cmd == 'enable_level':
                 want = bool(d.get('enable', True))
                 ok, reply_msg = self._do_enable_level(want)
@@ -4340,6 +4366,17 @@ class StewartControlNode(Node):
         self.get_logger().info(
             f"auto-level engaged for {duration_s:.1f}s")
 
+    def _predict_lead(self, px, py, vx, vy, td_s):
+        """Lead-position predictor for BALL_TRACK. Constant-velocity today;
+        the fitted forward model when use_model_predictor is set AND a model
+        artifact is loaded (Phase 1). Pure logic in _ball_predictor; see
+        docs/physics_model_implementation_plan.md."""
+        method = ('model'
+                  if self.ball_track_gains.get('use_model_predictor', 0)
+                  else 'const_vel')
+        return predict_lead(px, py, vx, vy, td_s, method=method,
+                            model=self._ball_model)
+
     def _ball_track_run(self):
         """Closed-loop ball-position controller — spec §9, milestone #10.
         Reads /ball_state (KF posterior) and /ball_ref (target),
@@ -4624,8 +4661,12 @@ class StewartControlNode(Node):
                     # off the lead position so the FSM sees "where
                     # the ball will be when our tilt command actually
                     # takes effect".
-                    px_lead = px + vx * latency_s
-                    py_lead = py + vy * latency_s
+                    if self.ball_track_gains.get('use_model_predictor', 0):
+                        px_lead, py_lead = self._predict_lead(
+                            px, py, vx, vy, latency_s)
+                    else:
+                        px_lead = px + vx * latency_s
+                        py_lead = py + vy * latency_s
                     ex_lead = px_lead - rx
                     ey_lead = py_lead - ry
                     err_mag = math.hypot(ex_lead, ey_lead)
@@ -4704,8 +4745,18 @@ class StewartControlNode(Node):
                     # matter; but on transients we don't want the
                     # integrator chasing the lookahead position).
                     latency_s = float(g.get('control_latency_s', 0.10))
-                    ex_lead = ex + edot_x * latency_s
-                    ey_lead = ey + edot_y * latency_s
+                    if self.ball_track_gains.get('use_model_predictor', 0):
+                        # Model predicts the ball's displacement over Td; the
+                        # error lead is current error + that displacement
+                        # (identical to the const-vel form below for a static
+                        # reference). px/py/vx/vy are in scope from the loop.
+                        px_lead, py_lead = self._predict_lead(
+                            px, py, vx, vy, latency_s)
+                        ex_lead = ex + (px_lead - px)
+                        ey_lead = ey + (py_lead - py)
+                    else:
+                        ex_lead = ex + edot_x * latency_s
+                        ey_lead = ey + edot_y * latency_s
 
                     integ_x = max(-max_tilt, min(max_tilt,
                                                  integ_x + ex * period))

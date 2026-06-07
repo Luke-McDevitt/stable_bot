@@ -868,6 +868,12 @@ def digest(bag_dir: str):
         'duration_s': duration_s,
         'topic_counts': dict(sorted(data['counts'].items())),
         'gains_at_record': gains_at_record,
+        # PID (constant-velocity lead) vs the physics-model predictor — rides
+        # ball_track_gains.use_model_predictor, so it labels every bag for the
+        # control-method A/B with zero new topics (physics plan §8/§13).
+        'control_method': ('model'
+                           if (gains_at_record or {}).get('use_model_predictor')
+                           else 'pid'),
         'run_config': run_config,
         'leg_current': leg_current,
         'host': host,
@@ -934,6 +940,7 @@ def digest(bag_dir: str):
     if host_latency:
         print(f"  cpu<->latency ({host_latency['n_windows']} win): "
               f"{host_latency['interpretation']}")
+    print(f"  control_method: {summary['control_method']}")
     # Vision health — what camera/detector rates were achieved during
     # this run, and what the see→Pi latency looked like. These are
     # the numbers the user (and Claude) want at a glance to decide

@@ -611,6 +611,16 @@
         </select>
         <span id="demo-ball-source-status" class="text-xs mono"></span>
       </div>
+      <div class="flex items-center gap-2 text-xs text-slate-400 mb-2">
+        <span>control method:</span>
+        <select id="demo-control-method"
+                class="bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-xs"
+                title="Lead predictor for BALL_TRACK. PID = constant-velocity lead (x + v·Td, today's controller). Physics model = forward-integrate the fitted dynamics over the dead time (Phase 1; until a model is trained this falls back to PID, so flipping is a no-op for now). Publishes set_control_method; rides ball_track_gains → /status → digest so every bag is labeled with the method used.">
+          <option value="pid" selected>PID (const-velocity lead)</option>
+          <option value="model">Physics model (Phase 1)</option>
+        </select>
+        <span id="demo-control-method-status" class="text-xs mono"></span>
+      </div>
     </div>
 
     <!-- Demo 1: Orbit (closed-loop, spec v8 §11.2.1) — hidden -->
@@ -4783,6 +4793,17 @@ function initVisionGUI() {
   }
 
   initDropVideoToggles();   // synced "drop live video while recording" checkboxes
+
+  // Control-method dropdown (PID const-velocity lead ⇄ physics-model
+  // predictor). Targeted set_control_method so it doesn't disturb other gains.
+  const _cmEl = document.getElementById('demo-control-method');
+  if (_cmEl) {
+    _cmEl.addEventListener('change', () => {
+      publishCmd({ cmd: 'set_control_method', value: _cmEl.value });
+      const st = document.getElementById('demo-control-method-status');
+      if (st) st.textContent = _cmEl.value === 'model' ? '→ model' : '→ pid';
+    });
+  }
 
   // Vision Debug panel: gate its per-frame detection streams on open/close
   // (collapsing it stops rosbridge serializing them — see _visDebugSub).
