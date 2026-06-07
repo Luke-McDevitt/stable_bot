@@ -1,0 +1,17 @@
+{
+  "run_type": "breakaway",
+  "duration_s": 36.7,
+  "axis": "center",
+  "direction": null,
+  "theta_s_deg": 3.764,
+  "d_roll_deg": -2.379,
+  "d_pitch_deg": -2.916,
+  "commanded_tilt_at_onset_deg": 3.763,
+  "latency_s": 0.2108,
+  "peak_travel_mm": 31.7,
+  "ok": true,
+  "reason": null,
+  "method": "IMU tilt change at latency-corrected displacement onset, referenced to the settled baseline",
+  "ball_state_n": 6406,
+  "imu_n": 14032
+}
