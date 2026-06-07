@@ -3,7 +3,19 @@
   "campaign": "coast",
   "duration_s": 27.7,
   "ball_state_n": 4704,
-  "c_roll": 0.0,
-  "c_visc": 1828.88971,
-  "fit_n": 492
+  "ball_state_hz": 185.3,
+  "median_dt_ms": 5.4,
+  "min_dt_ms": 0.004,
+  "max_dt_ms": 337.5,
+  "n_tiny_dt": 2168,
+  "n_gaps": 52,
+  "kf_speed_max": 796.7,
+  "kf_speed_med": 13.2,
+  "pos_speed_max": 641351.2,
+  "pos_speed_med": 35.7,
+  "c_roll": 1451.61,
+  "c_visc": 1.66215,
+  "fit_n": 70,
+  "c_roll_pos": 1600.72,
+  "c_visc_pos": 0.0
 }
