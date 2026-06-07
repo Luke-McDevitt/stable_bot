@@ -2163,7 +2163,12 @@ class StewartControlNode(Node):
                             'stiction_ramp_timeout_s',
                             'stiction_moving_hyst_ticks',
                             'stiction_pos_delta_mm',
-                            'tilt_slew_up_deg_per_s')},
+                            'tilt_slew_up_deg_per_s',
+                            # the A/B control-method flag — MUST be exposed or
+                            # syncControlMethodFromStatus reads undefined and
+                            # snaps the demos dropdown back to PID every poll
+                            # (and the digest mislabels the method).
+                            'use_model_predictor')},
                 'algorithm': str(
                     self.ball_track_gains.get('algorithm', 'pid')),
             },
