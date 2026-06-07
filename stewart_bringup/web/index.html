@@ -1614,6 +1614,12 @@
           <button id="dc-stop-btn" class="bg-slate-600 hover:bg-slate-500 rounded py-1 px-3 text-xs">Stop</button>
         </div>
         <div id="dc-status" class="text-xs text-slate-400 mono min-h-4"></div>
+        <div class="flex items-center justify-between mt-2 mb-1">
+          <span class="text-xs uppercase text-slate-500">previous runs (meas-noise / coast / breakaway)</span>
+          <button id="modelbag-refresh-btn" class="text-xs text-cyan-400 underline">refresh</button>
+        </div>
+        <div id="model-bags-list" class="text-xs space-y-1 max-h-52 overflow-y-auto pr-1"></div>
+        <div id="modelbag-status" class="text-xs text-slate-400 mono mt-1 whitespace-pre-wrap"></div>
       </details>
 
       <div class="flex items-center gap-2 mt-2">
@@ -4991,7 +4997,11 @@ function initVisionGUI() {
         if (st) st.textContent = j.ok ? '✓ saved on Pi (for the fitter)'
           : '✗ ' + (j.message || '');
       } catch (e) { if (st) st.textContent = '✗ ' + e; }
+      setTimeout(modelbagFetchBags, 1500);
     });
+    const _mbRefresh = document.getElementById('modelbag-refresh-btn');
+    if (_mbRefresh) _mbRefresh.addEventListener('click', modelbagFetchBags);
+    modelbagFetchBags();
   }
 
   // Vision Debug panel: gate its per-frame detection streams on open/close
@@ -7159,6 +7169,86 @@ function latbenchDelete(name) {
     }).catch(e => _latbenchStatus('delete failed: ' + e));
 }
 
+// --- Physics Modeler data bags (meas-noise / coast / breakaway; its own
+//     list, reusing the /demo/bags/{digest,push,delete} endpoints by name) --
+function _modelbagAge(mtime) {
+  if (!mtime) return '';
+  const dt = Date.now() / 1000 - mtime;
+  if (dt < 90) return Math.round(dt) + 's ago';
+  if (dt < 5400) return Math.round(dt / 60) + 'm ago';
+  if (dt < 172800) return Math.round(dt / 3600) + 'h ago';
+  return Math.round(dt / 86400) + 'd ago';
+}
+function _modelbagRenderBag(e) {
+  const s = e.summary || {};
+  let info = e.campaign || '?';
+  if (s.duration_s != null) info += ` | ${Number(s.duration_s).toFixed(1)}s`;
+  info += ` | ${(e.size_bytes / 1e6).toFixed(1)} MB | ${_modelbagAge(e.mtime)}`;
+  const png = e.has_png
+    ? `<a class="text-cyan-400 underline" target="_blank" href="/demo/bags/png?name=${encodeURIComponent(e.name)}">PNG</a>`
+    : '<span class="text-slate-600">no PNG</span>';
+  return `
+    <div class="border-b border-slate-700 pb-1">
+      <div class="flex items-center gap-2">
+        <span class="flex-1 truncate text-slate-300" title="${e.name}">${e.name}</span>
+        ${png}
+        <button class="bg-emerald-700 hover:bg-emerald-600 px-2 rounded"
+                onclick="modelbagDigest('${e.name}')">digest</button>
+        <button class="bg-blue-700 hover:bg-blue-600 px-2 rounded"
+                onclick="modelbagPush('${e.name}')">push</button>
+        <button class="bg-red-800 hover:bg-red-700 px-2 rounded"
+                onclick="modelbagDelete('${e.name}')">del</button>
+      </div>
+      <div class="text-slate-400 mt-0.5 mono">${info}</div>
+    </div>`;
+}
+function modelbagFetchBags() {
+  const out = document.getElementById('model-bags-list');
+  if (!out) return;
+  fetch('/model/bags').then(r => r.json()).then(j => {
+    const entries = j.entries || [];
+    out.innerHTML = entries.length
+      ? entries.map(_modelbagRenderBag).join('')
+      : '<div class="text-slate-500">no data bags yet — record one above</div>';
+  }).catch(e => { out.innerText = 'failed to fetch /model/bags: ' + e; });
+}
+function _modelbagStatus(t) {
+  const e = document.getElementById('modelbag-status');
+  if (e) e.textContent = t;
+}
+function modelbagDigest(name) {
+  _modelbagStatus(`digesting ${name}…`);
+  fetch('/demo/bags/digest', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }) })
+    .then(r => r.json()).then(j => {
+      _modelbagStatus(`${j.ok ? '✓' : '✗'} digest ${name}\n`
+        + (j.message || '').slice(-700));
+      modelbagFetchBags();
+    }).catch(e => _modelbagStatus('digest failed: ' + e));
+}
+function modelbagPush(name) {
+  _modelbagStatus(`pushing ${name}…`);
+  fetch('/demo/bags/push', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }) })
+    .then(r => r.json()).then(j => {
+      _modelbagStatus(`${j.ok ? '✓' : '✗'} push ${name}\n`
+        + (j.message || '').slice(-500));
+      modelbagFetchBags();
+    }).catch(e => _modelbagStatus('push failed: ' + e));
+}
+function modelbagDelete(name) {
+  if (!confirm(`Delete data bag "${name}"?`)) return;
+  fetch('/demo/bags/delete', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }) })
+    .then(r => r.json()).then(j => {
+      _modelbagStatus(j.message || (j.ok ? 'deleted' : 'failed'));
+      modelbagFetchBags();
+    }).catch(e => _modelbagStatus('delete failed: ' + e));
+}
+
 // Auto-abort on /odrive_errors. The error topic is already
 // subscribed elsewhere — extend the existing JSON-shape detection.
 function _ivaSweepCheckOdriveErrors(nodes) {
@@ -8232,6 +8322,7 @@ function syncControlMethodFromStatus(s) {
 async function brkStopRecord() {
   window._brkRecording = false;
   try { await fetch('/demo/stop', { method: 'POST' }); } catch (e) { /* */ }
+  setTimeout(modelbagFetchBags, 1500);
 }
 
 function syncBreakawayFromStatus(s) {

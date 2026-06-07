@@ -1242,6 +1242,61 @@ def _list_demo_bags():
     return out
 
 
+# Physics-model data campaigns. A bag belongs here if its name carries one of
+# these labels (set by the recorder / breakaway auto-record). Kept separate
+# from the demo-run list so the Modeler panel shows only modeling data.
+_MODEL_BAG_LABELS = ('meas_noise', 'coast', 'breakaway', 'model_data')
+
+
+def _list_model_bags():
+    """Enumerate the physics-model data-collection bags (meas-noise / coasting
+    / breakaway / model_data) under tuning_data — the Physics Modeler panel's
+    own list. Same entry shape as _list_demo_bags so the GUI renders them the
+    same way and reuses the /demo/bags/{digest,push,delete} endpoints by name."""
+    root = _iva_bags_root()
+    out = []
+    if not os.path.isdir(root):
+        return out
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return out
+    for name in entries:
+        if 'vision_debug' in name:
+            continue
+        campaign = next((lbl for lbl in _MODEL_BAG_LABELS if lbl in name), None)
+        if campaign is None:
+            continue
+        full = os.path.join(root, name)
+        if not os.path.isdir(full):
+            continue
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        png = os.path.join(full, 'digest.png')
+        js = os.path.join(full, 'digest.summary.json')
+        entry = {
+            'name': name,
+            'path': full,
+            'mtime': st.st_mtime,
+            'size_bytes': _iva_dir_size(full),
+            'has_png': os.path.isfile(png),
+            'has_summary': os.path.isfile(js),
+            'campaign': campaign,
+        }
+        if entry['has_summary']:
+            try:
+                with open(js) as f:
+                    entry['summary'] = {
+                        'duration_s': json.load(f).get('duration_s')}
+            except Exception:
+                pass
+        out.append(entry)
+    out.sort(key=lambda e: e['mtime'], reverse=True)
+    return out
+
+
 def _resolve_demo_bag_path(name):
     if '/' in name or '\\' in name or name.startswith('.'):
         return None
@@ -2032,6 +2087,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == '/demo/bags':
             self._send_json({'demo_dir': _iva_bags_root(),
                              'entries': _list_demo_bags()})
+            return
+        if self.path == '/model/bags':
+            self._send_json({'demo_dir': _iva_bags_root(),
+                             'entries': _list_model_bags()})
             return
         if self.path == '/system/stats':
             # Pi host load for the GUI banner: load avg, temp, freq, throttle.
