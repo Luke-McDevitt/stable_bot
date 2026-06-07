@@ -2494,6 +2494,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         'message': f'commit failed: {commit.stderr.strip()}',
                     }, 500)
                     return
+                # Reconcile with the remote (stashing any runtime-dirty tracked
+                # files) so the push is robust to remote-ahead AND local edits.
+                pull = subprocess.run(
+                    ['git', '-C', repo, 'pull', '--rebase', '--autostash'],
+                    capture_output=True, text=True, timeout=30)
+                if pull.returncode != 0:
+                    self._send_json({
+                        'ok': False,
+                        'message': f'pull --rebase: {pull.stderr.strip()}',
+                    }, 500)
+                    return
                 push = subprocess.run(
                     ['git', '-C', repo, 'push'],
                     capture_output=True, text=True, timeout=30)
@@ -2633,7 +2644,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     }, 500)
                     return
                 pull = subprocess.run(
-                    ['git', '-C', repo, 'pull', '--rebase'],
+                    ['git', '-C', repo, 'pull', '--rebase', '--autostash'],
                     capture_output=True, text=True, timeout=30)
                 if pull.returncode != 0:
                     self._send_json({
@@ -2776,7 +2787,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     }, 500)
                     return
                 pull = subprocess.run(
-                    ['git', '-C', repo, 'pull', '--rebase'],
+                    ['git', '-C', repo, 'pull', '--rebase', '--autostash'],
                     capture_output=True, text=True, timeout=30)
                 if pull.returncode != 0:
                     self._send_json({
@@ -2933,7 +2944,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # meantime. The just-staged auto_tune session lives
                 # only in the index, so a rebase is non-destructive.
                 pull = subprocess.run(
-                    ['git', '-C', repo, 'pull', '--rebase'],
+                    ['git', '-C', repo, 'pull', '--rebase', '--autostash'],
                     capture_output=True, text=True, timeout=30)
                 if pull.returncode != 0:
                     self._send_json({
