@@ -1,0 +1,162 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260607T174509Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 0.42228377800000005,
+  "topic_counts": {
+    "/ball_ref": 0,
+    "/ball_state": 68,
+    "/ball_track/diagnostic": 27,
+    "/control_result": 0,
+    "/latency_bench/diag": 0,
+    "/leg_currents": 3,
+    "/leg_encoders": 2,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/v0/diagnostic": 4,
+    "/oak/ball/v0/rgb_pixel": 5,
+    "/oak/config": 0,
+    "/oak/health": 0,
+    "/oak/latency_ms": 1,
+    "/odrive_errors": 1,
+    "/platform_rpy": 7,
+    "/status": 1
+  },
+  "gains_at_record": {
+    "kp": 0.016,
+    "kd": 0.02,
+    "ki": 0.0,
+    "max_tilt_deg": 1.2,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 100.0,
+    "stiction_v_threshold_mm_s": 61.0,
+    "stiction_break_s": 0.25,
+    "brake_tilt_deg": 9.0,
+    "control_latency_s": 0.2,
+    "kd_v_tau_s": 0.35,
+    "stiction_ramp_start_deg": 2.0,
+    "stiction_ramp_max_deg": 6.0,
+    "stiction_ramp_rate_deg_per_s": 0.25,
+    "stiction_ramp_timeout_s": 25.0,
+    "stiction_moving_hyst_ticks": 3.0,
+    "stiction_pos_delta_mm": 12.0,
+    "tilt_slew_up_deg_per_s": 100.0,
+    "algorithm": "pid"
+  },
+  "control_method": "pid",
+  "run_config": {
+    "soft_max_vel_tps": 2.0,
+    "hard_max_vel_tps": 4.0,
+    "leg_current_cap_a": 6.0
+  },
+  "leg_current": {
+    "measured_peak_a": 1.78,
+    "measured_p95_a": 1.75,
+    "per_leg_peak_a": [
+      0.81,
+      1.63,
+      1.75,
+      1.78,
+      1.51,
+      1.41
+    ],
+    "cap_a": 6.0,
+    "headroom_a": 4.22,
+    "saturation_fraction": 0.0
+  },
+  "host": {
+    "gui_video_on": false,
+    "cpu_pct": null,
+    "iowait_pct": null,
+    "temp_c": null,
+    "load1": null,
+    "freq_mhz": null,
+    "throttled_now": false,
+    "throttled_ever": false,
+    "n_samples": 0
+  },
+  "host_latency_correlation": null,
+  "next_step": {
+    "suggestion": "no recommendation (no gains snapshot or no /ball_state data in bag)",
+    "suggested_gains": {},
+    "rationale": []
+  },
+  "ball_state_n": 68,
+  "ball_ref_n": 0,
+  "mono_n": 0,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 0
+  },
+  "error_x_mm": {
+    "n": 0
+  },
+  "error_y_mm": {
+    "n": 0
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 0
+  },
+  "latency_breakdown": {
+    "vision_detector_ms": null,
+    "vision_source": "/oak/health.v0_lat_ms (windowed detector latency)",
+    "vision_pipeline": {
+      "capture_to_state_fresh_ms": 158.8,
+      "capture_to_state_min_ms": 140.6,
+      "capture_to_state_p50_ms": 186.1,
+      "capture_to_state_p90_ms": 216.2,
+      "capture_to_detect_ms": null,
+      "detect_to_state_ms": null,
+      "n": 68,
+      "note": "capture\u2192state from /ball_state.orientation.z; p10=fresh pipeline, p50/p90=staleness; detect\u2192state = localizer+KF = fresh \u2212 v0_lat."
+    },
+    "actuation": null,
+    "see_to_move_est_ms": null,
+    "note": "vision_detector = capture\u2192detect (host); vision_pipeline splits capture\u2192state (Part-2 orientation.z) into detect\u2192state = localizer+KF; actuation = cmd-tilt\u2192IMU cross-correlation (feeder ZOH + leg slew + mechanical); see_to_move = capture\u2192state fresh + actuation."
+  },
+  "oak_latency_ms": {
+    "n": 1,
+    "mean": 52.319000244140625,
+    "std": 0.0,
+    "rms": 52.319000244140625,
+    "p50": 52.319000244140625,
+    "p95": 52.319000244140625,
+    "min": 52.319000244140625,
+    "max": 52.319000244140625
+  },
+  "oak_health": {
+    "n": 0,
+    "v0_arr_hz": {
+      "n": 0
+    },
+    "v0_pub_hz": {
+      "n": 0
+    },
+    "jpeg_hz": {
+      "n": 0
+    },
+    "pose_hz": {
+      "n": 0
+    },
+    "jpeg_lat_ms": {
+      "n": 0
+    },
+    "v0_lat_ms": {
+      "n": 0
+    }
+  },
+  "oak_config": null,
+  "markers_visible": {
+    "n": 0,
+    "mean": null,
+    "min": null,
+    "max": null
+  }
+}
