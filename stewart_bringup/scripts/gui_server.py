@@ -864,6 +864,49 @@ def _vision_status():
         }
 
 
+def _push_model_to_git():
+    """git add + commit + pull --rebase --autostash + push the fitted
+    config/ball_model.yaml. Driven by the Physics Modeler panel's
+    'Push model' button so a fit can be shared / reverted via git."""
+    repo_dir = os.path.dirname(_iva_bags_root())   # ~/stable_bot_repo
+    rel = 'stewart_bringup/config/ball_model.yaml'
+    path = os.path.join(repo_dir, rel)
+    if not os.path.isfile(path):
+        return False, f'no ball_model.yaml yet ({rel}) — fit a model first'
+    if not os.path.isdir(os.path.join(repo_dir, '.git')):
+        return False, f'not a git repo: {repo_dir}'
+    out = []
+
+    def _run(cmd):
+        try:
+            r = subprocess.run(cmd, cwd=repo_dir, capture_output=True,
+                               text=True, timeout=120)
+            out.append(('OK' if r.returncode == 0 else 'FAILED')
+                       + ': ' + ' '.join(cmd))
+            if r.returncode != 0 and r.stderr.strip():
+                out.append(r.stderr.strip())
+            return r.returncode == 0
+        except Exception as e:
+            out.append(f'FAILED: {" ".join(cmd)}: {e}')
+            return False
+
+    if not _run(['git', 'add', '-f', rel]):
+        return False, '\n'.join(out)
+    if subprocess.run(['git', 'diff', '--cached', '--quiet'],
+                      cwd=repo_dir).returncode == 0:
+        out.append('(nothing to commit — model already in HEAD)')
+        return True, '\n'.join(out)
+    if not _run(['git', 'commit', '-m',
+                 'Fitted ball forward model (ball_model.yaml)']):
+        return False, '\n'.join(out)
+    if not _run(['git', 'pull', '--rebase', '--autostash']):
+        return False, '\n'.join(out)
+    if not _run(['git', 'push']):
+        return False, '\n'.join(out)
+    out.append('✓ pushed ball_model.yaml to origin')
+    return True, '\n'.join(out)
+
+
 def _push_ball_track_gains_to_git():
     """git add stewart_bringup/config/ball_track_gains.yaml +
     commit + pull --rebase + push. Auto-generates a commit
@@ -2877,6 +2920,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({'ok': False, 'message': 'bad JSON'}, 400)
                 return
             ok, msg = _push_vision_bag_to_git(name)
+            self._send_json({'ok': ok, 'message': msg},
+                            status=200 if ok else 500)
+            return
+        if self.path == '/model/push':
+            ok, msg = _push_model_to_git()
             self._send_json({'ok': ok, 'message': msg},
                             status=200 if ok else 500)
             return

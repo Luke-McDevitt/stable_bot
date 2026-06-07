@@ -1226,6 +1226,12 @@ class StewartControlNode(Node):
         # Bench run state (mirrors homing_running for /status + re-entrancy).
         self._latency_bench_thread = None
         self._latency_bench_running = False
+        # Breakaway-ID campaign (Phase 1): a slow tilt ramp that finds the
+        # stiction breakaway angle θ_s by watching the ball break loose. Same
+        # safety envelope as the latency step. _breakaway_result = last θ_s
+        # (deg) or None; surfaced in /status for the Physics Modeler panel.
+        self._breakaway_running = False
+        self._breakaway_result = None
         self.pub_homing_out = self.create_publisher(
             String, 'homing_output', 100)
         # Topic-based command bus. Primary path the GUI uses because
@@ -2117,6 +2123,8 @@ class StewartControlNode(Node):
             'level_enabled': bool(self.level_enabled),
             'homing_running': bool(homing_alive),
             'latency_step_running': bool(self._latency_bench_running),
+            'breakaway_running': bool(self._breakaway_running),
+            'breakaway_deg': self._breakaway_result,
             'soft_max_vel_turns_per_sec': float(self.soft_max_vel),
             'hard_max_vel_turns_per_sec': float(self.hard_max_vel),
             'leg_current_a': float(self.leg_current_a),
@@ -2428,6 +2436,7 @@ class StewartControlNode(Node):
                 # Halt any running Latency Bench step first so its thread
                 # stops commanding tilts the instant the operator disarms.
                 self._latency_bench_running = False
+                self._breakaway_running = False
                 self._disarm_internal()
                 ok, reply_msg = True, "all 6 disarmed"
             elif cmd == 'arm_leg':
@@ -2518,6 +2527,11 @@ class StewartControlNode(Node):
                 else:
                     ok, reply_msg = True, (
                         f"control_method={'model' if want_model else 'pid'}")
+            elif cmd == 'breakaway':
+                ok, reply_msg = self._do_breakaway(d)
+            elif cmd == 'breakaway_stop':
+                self._breakaway_running = False
+                ok, reply_msg = True, "breakaway stop requested"
             elif cmd == 'enable_level':
                 want = bool(d.get('enable', True))
                 ok, reply_msg = self._do_enable_level(want)
@@ -2844,6 +2858,96 @@ class StewartControlNode(Node):
             self._last_pose_save = time.monotonic()
         except Exception:
             pass
+
+    def _do_breakaway(self, d):
+        """Launch a breakaway-ID run: slowly ramp tilt from level until the
+        ball breaks loose, recording the tilt at which it starts to move (the
+        stiction breakaway θ_s — the 'needs a startup ramp' angle). Daemon
+        thread; SAME safety envelope as _do_latency_step (requires arm, caps
+        tilt + rate, returns to level on exit, halts on disarm)."""
+        if self._latency_bench_running or self._breakaway_running:
+            return False, "a bench / breakaway run is already active"
+        if not self.armed:
+            return False, "not armed"
+        if self.limits is None:
+            return False, "no leg_limits.yaml"
+        axis = str(d.get('axis', 'pitch')).lower()
+        if axis not in ('pitch', 'roll'):
+            axis = 'pitch'
+        ramp = float(max(0.2, min(float(d.get('ramp_deg_per_s', 1.0)), 4.0)))
+        max_tilt = float(max(1.0, min(float(d.get('max_tilt_deg', 6.0)), 8.0)))
+        v_break = float(max(5.0, min(float(d.get('v_break_mm_s', 25.0)), 200.0)))
+        z = float(max(0.0, min(float(d.get('z_mm', 30.0)), 80.0)))
+        params = dict(axis=axis, ramp=ramp, max_tilt=max_tilt,
+                      v_break=v_break, z=z)
+        self._breakaway_running = True
+        self._breakaway_result = None
+        threading.Thread(target=self._breakaway_run, args=(params,),
+                         daemon=True).start()
+        return True, (f"breakaway started: {axis} ramp {ramp:.1f}deg/s to "
+                      f"{max_tilt:.1f}deg, break at {v_break:.0f}mm/s")
+
+    def _breakaway_run(self, params):
+        """Daemon: ramp tilt up at a constant rate, watching the ball speed;
+        the tilt at which |v| first crosses v_break is the breakaway θ_s.
+        Publishes [t, pitch_cmd, roll_cmd, phase, ball_speed] on
+        /latency_bench/diag throughout (phase 1=ramping, 2=broke loose) so a
+        recording captures the full ramp for the fitter. Always returns to
+        level + rest on exit, even on error or disarm."""
+        axis = params['axis']
+        z = params['z']
+        ramp = params['ramp']
+        max_tilt = params['max_tilt']
+        v_break = params['v_break']
+        level_was_on = bool(self.level_enabled)
+        result = None
+        try:
+            if level_was_on:
+                self._stop_level_loop()
+            self._do_set_pose(0.0, 0.0, z, 0.0, 0.0, 0.0)   # level baseline
+            time.sleep(1.0)                                 # "still" segment
+            t0 = time.monotonic()
+            while self._breakaway_running:
+                tilt_deg = min(max_tilt, ramp * (time.monotonic() - t0))
+                p_cmd = tilt_deg if axis == 'pitch' else 0.0
+                r_cmd = tilt_deg if axis == 'roll' else 0.0
+                self._do_set_pose(0.0, 0.0, z, r_cmd, p_cmd, 0.0)
+                speed = 0.0
+                if (self.last_ball_state is not None
+                        and (time.monotonic() - self.last_ball_state_t) < 0.5):
+                    _, _, vx, vy = self.last_ball_state
+                    speed = math.hypot(vx, vy)
+                broke = speed >= v_break and tilt_deg > 0.3
+                m = Float32MultiArray()
+                m.data = [float(time.monotonic() - t0), float(p_cmd),
+                          float(r_cmd), float(2.0 if broke else 1.0),
+                          float(speed)]
+                self.pub_latency_bench.publish(m)
+                if broke:
+                    result = round(tilt_deg, 2)
+                    self.get_logger().info(
+                        f"[breakaway] ball broke loose at {tilt_deg:.2f}deg "
+                        f"({axis}), speed {speed:.0f} mm/s")
+                    break
+                if tilt_deg >= max_tilt:
+                    self.get_logger().warn(
+                        f"[breakaway] reached max {max_tilt:.1f}deg, no breakaway")
+                    break
+                time.sleep(0.02)                            # ~50 Hz
+            self._breakaway_result = result
+        except Exception as e:
+            self.get_logger().warn(f"breakaway error: {e}")
+        finally:
+            try:
+                self._do_set_pose(0.0, 0.0, z, 0.0, 0.0, 0.0)
+            except Exception:
+                pass
+            if level_was_on:
+                try:
+                    self._do_enable_level(True)
+                except Exception:
+                    pass
+            self._breakaway_running = False
 
     def _do_latency_step(self, d):
         """Validate + launch a Latency Bench tilt-step run in a daemon

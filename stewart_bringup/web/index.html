@@ -1531,6 +1531,64 @@
   <!-- RIGHT COLUMN: homing + errors -->
   <section class="lg:col-span-1 space-y-4">
 
+    <!-- Physics Modeler (Phase 1): data-collection campaigns for the ball
+         forward model + the model push. See
+         docs/physics_model_implementation_plan.md. -->
+    <details id="physmodel-panel" open
+             class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+      <summary class="cursor-pointer select-none">
+        <span class="text-sm uppercase text-slate-400">Physics Modeler</span>
+      </summary>
+      <p class="text-xs text-slate-500 mt-2 mb-2">
+        Collect data → fit the ball forward model → A/B it vs PID (the demos
+        "control method" dropdown loads the fitted
+        <span class="mono">ball_model.yaml</span>).
+      </p>
+
+      <details class="bg-slate-900 rounded p-3 border border-slate-700 mb-2">
+        <summary class="cursor-pointer select-none text-xs uppercase text-slate-400">
+          Breakaway (stiction θ_s)
+        </summary>
+        <p class="text-xs text-slate-500 mt-2 mb-2">
+          Arm, then Run: the platform slowly ramps tilt and records the exact
+          angle the ball breaks loose — keep a hand on the power. Hit Record
+          (Demo Run Bag) first if you want the full ramp saved for the fitter.
+        </p>
+        <div class="grid grid-cols-2 gap-2 text-xs mb-2">
+          <label>axis
+            <select id="brk-axis" class="mono w-full bg-slate-800 border border-slate-700 rounded px-1 py-0.5">
+              <option value="pitch" selected>pitch</option>
+              <option value="roll">roll</option>
+            </select>
+          </label>
+          <label>ramp (°/s)
+            <input id="brk-ramp" type="number" step="0.1" min="0.2" max="4" value="1.0"
+                   class="mono w-full bg-slate-800 border border-slate-700 rounded px-2 py-1">
+          </label>
+          <label>max tilt (°)
+            <input id="brk-max" type="number" step="0.5" min="1" max="8" value="6"
+                   class="mono w-full bg-slate-800 border border-slate-700 rounded px-2 py-1">
+          </label>
+          <label>v break (mm/s)
+            <input id="brk-vbreak" type="number" step="5" min="5" max="200" value="25"
+                   class="mono w-full bg-slate-800 border border-slate-700 rounded px-2 py-1">
+          </label>
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <button id="brk-arm-btn" class="bg-emerald-700 hover:bg-emerald-600 rounded py-1 text-xs">Arm</button>
+          <button id="brk-run-btn" class="bg-blue-600 hover:bg-blue-500 rounded py-1 text-xs">Run</button>
+          <button id="brk-stop-btn" class="bg-amber-600 hover:bg-amber-500 rounded py-1 text-xs">Stop</button>
+        </div>
+        <div id="brk-status" class="text-xs text-slate-400 mt-2 mono min-h-4">idle</div>
+        <div class="text-xs mt-1 mono">breakaway θ_s: <span id="brk-result" class="text-emerald-300">—</span></div>
+      </details>
+
+      <div class="flex items-center gap-2 mt-2">
+        <button id="model-push-btn" class="bg-purple-700 hover:bg-purple-600 rounded py-1 px-3 text-xs">Push model.yaml</button>
+        <span id="model-push-status" class="text-xs mono text-slate-400"></span>
+      </div>
+    </details>
+
     <!-- Auto-tune panel: hill-climbs the BALL_TRACK gains over a
          sequence of random goto trials. Operator pre-reqs: armed,
          ball detector running, foam ring around platform. See
@@ -3140,6 +3198,7 @@ function setupROSInterface() {
       syncDemo2ZFromStatus(s);
       syncBtGainsFromStatus(s);
       syncControlMethodFromStatus(s);
+      syncBreakawayFromStatus(s);
       $('status-box').innerText = Object.entries(s).map(([k,v])=>
         `${k.padEnd(28)} ${JSON.stringify(v)}`).join('\n');
       updateLevelButtons(!!s.level_enabled);
@@ -4803,6 +4862,37 @@ function initVisionGUI() {
       publishCmd({ cmd: 'set_control_method', value: _cmEl.value });
       const st = document.getElementById('demo-control-method-status');
       if (st) st.textContent = _cmEl.value === 'model' ? '→ model' : '→ pid';
+    });
+  }
+
+  // --- Physics Modeler: breakaway campaign + model push ---
+  const _brkRun = document.getElementById('brk-run-btn');
+  if (_brkRun) {
+    document.getElementById('brk-arm-btn').addEventListener('click',
+      () => publishCmd({ cmd: 'activate' }));
+    _brkRun.addEventListener('click', () => {
+      publishCmd({ cmd: 'breakaway',
+        axis: document.getElementById('brk-axis').value,
+        ramp_deg_per_s: Number(document.getElementById('brk-ramp').value),
+        max_tilt_deg: Number(document.getElementById('brk-max').value),
+        v_break_mm_s: Number(document.getElementById('brk-vbreak').value) });
+      const st = document.getElementById('brk-status');
+      if (st) st.textContent = 'ramping… (watch the ball)';
+    });
+    document.getElementById('brk-stop-btn').addEventListener('click',
+      () => publishCmd({ cmd: 'breakaway_stop' }));
+  }
+  const _modelPush = document.getElementById('model-push-btn');
+  if (_modelPush) {
+    _modelPush.addEventListener('click', async () => {
+      const st = document.getElementById('model-push-status');
+      if (st) st.textContent = 'pushing…';
+      try {
+        const r = await fetch('/model/push', { method: 'POST' });
+        const j = await r.json();
+        if (st) st.textContent = (j.ok ? '✓ ' : '✗ ')
+          + (j.message || '').split('\n').pop();
+      } catch (e) { if (st) st.textContent = '✗ ' + e; }
     });
   }
 
@@ -8037,6 +8127,18 @@ function syncControlMethodFromStatus(s) {
   if (el.value !== want) el.value = want;
   const st = document.getElementById('demo-control-method-status');
   if (st) st.textContent = '';                      // confirmed → clear the arrow
+}
+
+// Reflect the breakaway campaign state from /status into the Physics
+// Modeler panel: live "ramping/idle" + the detected θ_s once the ball breaks.
+function syncBreakawayFromStatus(s) {
+  if (!s) return;
+  const st = document.getElementById('brk-status');
+  const res = document.getElementById('brk-result');
+  if (st && ('breakaway_running' in s))
+    st.textContent = s.breakaway_running ? 'ramping… (watch the ball)' : 'idle';
+  if (res && s.breakaway_deg != null && s.breakaway_deg !== '')
+    res.textContent = Number(s.breakaway_deg).toFixed(2) + '°';
 }
 
 function onOakConfig(cfg) {
