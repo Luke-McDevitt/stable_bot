@@ -1350,6 +1350,11 @@ class StewartControlNode(Node):
         # → digest, so every bag is labeled with the method used.
         self.ball_track_gains.setdefault('use_model_predictor', 0)
         self._ball_model = load_ball_model(BALL_MODEL_PATH)
+        # Last commanded ball-track tilt in the model's downhill frame (rad),
+        # fed to the model predictor so it integrates the ball through the tilt
+        # that's actually in flight over the dead time. (0,0)=level until the
+        # first BALL_TRACK tick. See _predict_lead and the capture by _do_set_pose.
+        self._last_cmd_tilt = (0.0, 0.0)
         self.ball_track_enabled = False
         self.ball_track_thread = None
         self.ball_track_stop = threading.Event()
@@ -4546,15 +4551,19 @@ class StewartControlNode(Node):
             f"auto-level engaged for {duration_s:.1f}s")
 
     def _predict_lead(self, px, py, vx, vy, td_s):
-        """Lead-position predictor for BALL_TRACK. Constant-velocity today;
-        the fitted forward model when use_model_predictor is set AND a model
-        artifact is loaded (Phase 1). Pure logic in _ball_predictor; see
+        """Lead-position predictor for BALL_TRACK. Constant-velocity unless
+        use_model_predictor is set AND a model artifact is loaded, in which case
+        the fitted model forward-integrates the ball through the LAST commanded
+        tilt (held over the dead time — the command that's in flight while the
+        camera lag plays out). The predictor's own guard bounds the result, so
+        a bad model can't escape the constant-velocity envelope. See
         docs/physics_model_implementation_plan.md."""
         method = ('model'
                   if self.ball_track_gains.get('use_model_predictor', 0)
                   else 'const_vel')
         return predict_lead(px, py, vx, vy, td_s, method=method,
-                            model=self._ball_model)
+                            model=self._ball_model,
+                            tilt_history=[self._last_cmd_tilt])
 
     def _ball_track_run(self):
         """Closed-loop ball-position controller — spec §9, milestone #10.
@@ -5149,6 +5158,14 @@ class StewartControlNode(Node):
                 z_comp = (px * math.sin(pitch_rad)
                           - py * math.sin(roll_rad))
                 z_cmd = z_hold + z_comp
+
+            # Remember this commanded tilt in the model's downhill frame for
+            # the NEXT tick's lead predictor (it's the command in flight while
+            # the camera lag plays out). tx = -pitch_sign·θ_pitch: the
+            # pitch_sign² cancellation makes a +x error correctly predict −x
+            # acceleration. Level (0,0) on the stale branch — tilt is already 0.
+            self._last_cmd_tilt = (-ps * math.radians(tilt_pitch),
+                                   -rs * math.radians(tilt_roll))
 
             # Command. allow_large=True so the small soft-limit guard
             # in _do_set_pose doesn't reject these tilts (spec §9 hard
