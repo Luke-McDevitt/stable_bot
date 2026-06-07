@@ -83,6 +83,15 @@ Environment=OAK_FORCE_V1_ARCH=v8
 # fallback detector unusable. The real RGB throttling fix was
 # elsewhere (XLinkOut/ImageManip non-blocking + cv2 skip when YOLO
 # is the active backend).
+# Ball KF noise tuning (2026-06-07, from estimate_kf_noise.py over 251k
+# still-ball samples / 650 windows): R measured at 0.516 mm (was assuming
+# 1.0); sigma_a dropped 5000->1500 (the ball accelerates ≤~975 mm/s² even at
+# 8° tilt, so 5000 made the velocity chase vision noise). Innovation gating
+# (default chi²=16) drops the 1.15% false-positive detections. Re-run
+# estimate_kf_noise.py after deploy — the at-rest |v| jitter (was 9 mm/s)
+# should fall. Tune live without rebuild via these envs.
+Environment=BALL_KF_R_MM=0.516
+Environment=BALL_KF_SIGMA_A=1500
 ExecStart=/bin/bash -c 'source /opt/ros/kilted/setup.bash && \
                         source /home/sorak/ros2_ws/install/local_setup.bash && \
                         exec ros2 launch stewart_bringup stewart_gui_launch.py'
