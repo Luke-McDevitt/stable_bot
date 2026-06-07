@@ -148,7 +148,8 @@ def fit_measurement_noise(px, py):
             'R_mm': round((sx + sy) / 2.0, 3), 'n': n}
 
 
-def fit_rolling_resistance(t_s, speed, v_floor=20.0, max_decel_mm_s2=3000.0):
+def fit_rolling_resistance(t_s, speed, v_floor=20.0, max_decel_mm_s2=3000.0,
+                           min_dt_s=0.005):
     """From a COASTING (level-plate) speed-vs-time series, fit
     decel = c_roll + c_visc·v (Coulomb + viscous rolling resistance) by linear
     regression of the finite-difference deceleration against speed. Ignores
@@ -161,8 +162,8 @@ def fit_rolling_resistance(t_s, speed, v_floor=20.0, max_decel_mm_s2=3000.0):
     vs, ds = [], []
     for i in range(len(t_s) - 1):
         dt = t_s[i + 1] - t_s[i]
-        if dt <= 0:
-            continue
+        if dt < min_dt_s:
+            continue          # skip near-duplicate timestamps (Δv/~0 = huge)
         v = 0.5 * (speed[i] + speed[i + 1])
         if v < v_floor:
             continue

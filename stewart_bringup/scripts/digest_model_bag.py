@@ -98,7 +98,7 @@ def _decel_points(t_s, speed, v_floor=20.0, max_decel=3000.0):
     vs, ds = [], []
     for i in range(len(t_s) - 1):
         dt = t_s[i + 1] - t_s[i]
-        if dt <= 0:
+        if dt < 0.005:                  # skip near-duplicate timestamps
             continue
         v = 0.5 * (speed[i] + speed[i + 1])
         d = -(speed[i + 1] - speed[i]) / dt
@@ -106,6 +106,47 @@ def _decel_points(t_s, speed, v_floor=20.0, max_decel=3000.0):
             vs.append(v)
             ds.append(d)
     return vs, ds
+
+
+def _med(xs):
+    s = sorted(xs)
+    n = len(s)
+    if not n:
+        return 0.0
+    m = n // 2
+    return s[m] if n % 2 else 0.5 * (s[m - 1] + s[m])
+
+
+def _series_stats(t_s):
+    """Sample-timing diagnostics. A tiny dt (near-duplicate timestamps) makes
+    the finite-difference deceleration explode (Δv / ~0 = huge), and a large
+    gap is a detection dropout — both masquerade as bogus 'decel' spikes."""
+    dts = [t_s[i + 1] - t_s[i]
+           for i in range(len(t_s) - 1) if t_s[i + 1] > t_s[i]]
+    if not dts:
+        return dict(hz=0.0, median_dt_ms=0.0, min_dt_ms=0.0, max_dt_ms=0.0,
+                    n_tiny_dt=0, n_gaps=0)
+    md = _med(dts)
+    return dict(
+        hz=round(1.0 / md, 1) if md > 0 else 0.0,
+        median_dt_ms=round(md * 1e3, 2),
+        min_dt_ms=round(min(dts) * 1e3, 3),
+        max_dt_ms=round(max(dts) * 1e3, 1),
+        n_tiny_dt=sum(1 for d in dts if d < 0.005),   # <5 ms ≈ dup timestamps
+        n_gaps=sum(1 for d in dts if d > 3 * md),      # dropouts
+    )
+
+
+def _pos_speed(t_s, px, py):
+    """Speed from finite-differencing the KF POSITION — an independent check on
+    the KF velocity field (orientation.x/y). If this is smooth while the KF
+    speed is spiky, the velocity field (not the ball motion) is the culprit."""
+    sp = [0.0]
+    for i in range(1, len(t_s)):
+        dt = t_s[i] - t_s[i - 1]
+        sp.append(math.hypot(px[i] - px[i - 1], py[i] - py[i - 1]) / dt
+                  if dt > 0 else 0.0)
+    return sp
 
 
 def _plot_still(bag, px, py, r):
@@ -133,26 +174,37 @@ def _plot_still(bag, px, py, r):
         print(f"(plot failed: {e})", file=sys.stderr)
 
 
-def _plot_coast(bag, t_s, speed, rr):
+def _plot_coast(bag, t_s, px, py, kf_speed, pos_speed, rr):
     if plt is None:
         return
     try:
-        fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4.5))
-        a1.plot(t_s, speed, color='tab:blue', lw=1)
+        fig, (a0, a1, a2) = plt.subplots(1, 3, figsize=(15, 4.5))
+        a0.plot(t_s, px, color='tab:blue', lw=1, label='x')
+        a0.plot(t_s, py, color='tab:orange', lw=1, label='y')
+        a0.set_xlabel('t (s)')
+        a0.set_ylabel('position (mm)')
+        a0.set_title('ball position (is it a clean coast?)')
+        a0.legend(fontsize=8)
+        a0.grid(alpha=0.3)
+        a1.plot(t_s, kf_speed, color='tab:red', lw=1, label='KF |v|')
+        a1.plot(t_s, pos_speed, color='tab:green', lw=0.8, alpha=0.7,
+                label='position-derived |v|')
         a1.set_xlabel('t (s)')
         a1.set_ylabel('|v| (mm/s)')
-        a1.set_title('coast: speed decay')
+        a1.set_title('KF velocity vs position-derived')
+        a1.legend(fontsize=8)
         a1.grid(alpha=0.3)
-        vs, ds = _decel_points(t_s, speed)
-        a2.scatter(vs, ds, s=8, alpha=0.4, color='tab:gray', label='decel pts')
+        vs, ds = _decel_points(t_s, kf_speed)
+        a2.scatter(vs, ds, s=8, alpha=0.4, color='tab:gray',
+                   label='decel pts (post-cap)')
         if rr and vs:
             xs = [min(vs), max(vs)]
             a2.plot(xs, [rr['c_roll'] + rr['c_visc'] * x for x in xs],
                     color='tab:red',
-                    label=f"fit: c_roll={rr['c_roll']}, c_visc={rr['c_visc']}")
+                    label=f"fit c_roll={rr['c_roll']}, c_visc={rr['c_visc']}")
         a2.set_xlabel('|v| (mm/s)')
-        a2.set_ylabel('deceleration (mm/s²)')
-        a2.set_title('rolling resistance = c_roll + c_visc·v')
+        a2.set_ylabel('decel (mm/s²)')
+        a2.set_title('rolling resistance fit')
         a2.legend(fontsize=8)
         a2.grid(alpha=0.3)
         fig.tight_layout()
@@ -197,17 +249,34 @@ def main():
                f"(σx {r['std_x_mm']}, σy {r['std_y_mm']}, n={r['n']})"
                if r else "meas-noise: fit failed")
     else:
-        speed = [math.hypot(vx[i], vy[i]) for i in range(n)]
-        rr = fit_rolling_resistance(t_s, speed)
+        kf_speed = [math.hypot(vx[i], vy[i]) for i in range(n)]
+        pos_speed = _pos_speed(t_s, px, py)
+        st = _series_stats(t_s)
+        rr = fit_rolling_resistance(t_s, kf_speed)            # on KF velocity
+        rr_pos = fit_rolling_resistance(t_s, pos_speed)       # on position diff
+        summary.update(
+            ball_state_hz=st['hz'], median_dt_ms=st['median_dt_ms'],
+            min_dt_ms=st['min_dt_ms'], max_dt_ms=st['max_dt_ms'],
+            n_tiny_dt=st['n_tiny_dt'], n_gaps=st['n_gaps'],
+            kf_speed_max=round(max(kf_speed), 1),
+            kf_speed_med=round(_med(kf_speed), 1),
+            pos_speed_max=round(max(pos_speed), 1),
+            pos_speed_med=round(_med(pos_speed), 1))
         if rr:
             summary.update(c_roll=rr['c_roll'], c_visc=rr['c_visc'],
                            fit_n=rr['n'])
-        else:
-            summary['reason'] = 'no clean decel — re-flick harder'
-        _plot_coast(a.bag, t_s, speed, rr)
-        msg = (f"coast: c_roll={rr['c_roll']} mm/s², c_visc={rr['c_visc']} 1/s "
-               f"(n={rr['n']})" if rr
-               else "coast: not enough decelerating samples")
+        if rr_pos:
+            summary.update(c_roll_pos=rr_pos['c_roll'],
+                           c_visc_pos=rr_pos['c_visc'])
+        if not rr and not rr_pos:
+            summary['reason'] = 'no clean decel points after collision-reject'
+        _plot_coast(a.bag, t_s, px, py, kf_speed, pos_speed, rr)
+        msg = (f"coast: KF c_roll={rr['c_roll'] if rr else '—'} | "
+               f"pos c_roll={rr_pos['c_roll'] if rr_pos else '—'} | "
+               f"{st['hz']}Hz med_dt {st['median_dt_ms']}ms "
+               f"min_dt {st['min_dt_ms']}ms tiny×{st['n_tiny_dt']} "
+               f"gaps×{st['n_gaps']} | kf|v|max {summary['kf_speed_max']} "
+               f"pos|v|max {summary['pos_speed_max']}")
 
     with open(os.path.join(a.bag, 'digest.summary.json'), 'w',
               encoding='utf-8') as f:
