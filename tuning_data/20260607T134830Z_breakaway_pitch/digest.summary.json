@@ -1,0 +1,758 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260607T134830Z_breakaway_pitch",
+  "demo_label": "unknown",
+  "demo_mode": null,
+  "demo_params": null,
+  "duration_s": 58.888795366000004,
+  "topic_counts": {
+    "/ball_ref": 0,
+    "/ball_state": 9787,
+    "/ball_track/diagnostic": 0,
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 4230,
+    "/ball_xy_mono/lat": 1578,
+    "/control_cmd": 12,
+    "/control_result": 0,
+    "/latency_bench/diag": 2058,
+    "/leg_currents": 1148,
+    "/leg_encoders": 1148,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/v0/diagnostic": 1654,
+    "/oak/ball/v0/rgb_pixel": 1655,
+    "/oak/config": 12,
+    "/oak/health": 12,
+    "/oak/latency_ms": 523,
+    "/odrive_errors": 115,
+    "/platform/imu/data": 22103,
+    "/platform_pose": 540,
+    "/platform_pose/markers_visible": 540,
+    "/platform_rpy": 1149,
+    "/status": 115
+  },
+  "gains_at_record": {
+    "kp": 0.016,
+    "kd": 0.02,
+    "ki": 0.0,
+    "max_tilt_deg": 1.2,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 100.0,
+    "stiction_v_threshold_mm_s": 61.0,
+    "stiction_break_s": 0.25,
+    "brake_tilt_deg": 9.0,
+    "control_latency_s": 0.2,
+    "kd_v_tau_s": 0.35,
+    "stiction_ramp_start_deg": 2.0,
+    "stiction_ramp_max_deg": 6.0,
+    "stiction_ramp_rate_deg_per_s": 0.25,
+    "stiction_ramp_timeout_s": 25.0,
+    "stiction_moving_hyst_ticks": 3.0,
+    "stiction_pos_delta_mm": 12.0,
+    "tilt_slew_up_deg_per_s": 100.0,
+    "algorithm": "pid"
+  },
+  "control_method": "pid",
+  "run_config": {
+    "soft_max_vel_tps": 2.0,
+    "hard_max_vel_tps": 4.0,
+    "leg_current_cap_a": 6.0
+  },
+  "leg_current": {
+    "measured_peak_a": 5.73,
+    "measured_p95_a": 3.45,
+    "per_leg_peak_a": [
+      4.9,
+      4.61,
+      4.74,
+      5.27,
+      4.78,
+      5.73
+    ],
+    "cap_a": 6.0,
+    "headroom_a": 0.27,
+    "saturation_fraction": 0.002
+  },
+  "host": {
+    "gui_video_on": false,
+    "cpu_pct": {
+      "mean": 98.3,
+      "max": 99.5
+    },
+    "iowait_pct": {
+      "mean": 0.0,
+      "max": 0.0
+    },
+    "temp_c": {
+      "mean": 56.5,
+      "max": 58.4
+    },
+    "load1": {
+      "mean": 10.9,
+      "max": 11.8
+    },
+    "freq_mhz": {
+      "mean": 2396.6,
+      "max": 2400.0
+    },
+    "throttled_now": true,
+    "throttled_ever": true,
+    "n_samples": 58
+  },
+  "host_latency_correlation": {
+    "n_windows": 58,
+    "window_s": 1.0,
+    "headline_r": 0.004,
+    "headline_vs": "load1",
+    "pearson_r_load1_vs_lat_p95": 0.004,
+    "pearson_r_cpu_vs_lat_p95": 0.221,
+    "pearson_r_load1_vs_lat_p50": 0.003,
+    "pearson_r_cpu_vs_lat_p50": 0.452,
+    "lat_p95_ms_range": [
+      204.1,
+      262.1
+    ],
+    "load1_range": [
+      10.14,
+      11.79
+    ],
+    "cpu_pct_range": [
+      96.2,
+      99.5
+    ],
+    "interpretation": "WEAK (r=+0.00 vs load1): latency largely decoupled from host load \u2014 the loop is not feeling the CPU (enough headroom on this axis).",
+    "windows": [
+      {
+        "t": 1780840114.028,
+        "cpu_pct": 97.2,
+        "load1": 10.98,
+        "lat_p50_ms": 176.3,
+        "lat_p95_ms": 229.9,
+        "n": 159
+      },
+      {
+        "t": 1780840115.034,
+        "cpu_pct": 98.5,
+        "load1": 10.98,
+        "lat_p50_ms": 191.6,
+        "lat_p95_ms": 262.1,
+        "n": 152
+      },
+      {
+        "t": 1780840116.037,
+        "cpu_pct": 98.0,
+        "load1": 10.58,
+        "lat_p50_ms": 183.8,
+        "lat_p95_ms": 218.1,
+        "n": 123
+      },
+      {
+        "t": 1780840117.042,
+        "cpu_pct": 99.2,
+        "load1": 10.58,
+        "lat_p50_ms": 183.3,
+        "lat_p95_ms": 230.6,
+        "n": 160
+      },
+      {
+        "t": 1780840118.044,
+        "cpu_pct": 98.2,
+        "load1": 10.58,
+        "lat_p50_ms": 177.2,
+        "lat_p95_ms": 216.9,
+        "n": 171
+      },
+      {
+        "t": 1780840119.073,
+        "cpu_pct": 98.3,
+        "load1": 10.58,
+        "lat_p50_ms": 186.1,
+        "lat_p95_ms": 225.0,
+        "n": 166
+      },
+      {
+        "t": 1780840120.074,
+        "cpu_pct": 98.8,
+        "load1": 10.58,
+        "lat_p50_ms": 178.0,
+        "lat_p95_ms": 223.2,
+        "n": 166
+      },
+      {
+        "t": 1780840121.078,
+        "cpu_pct": 98.2,
+        "load1": 10.14,
+        "lat_p50_ms": 179.2,
+        "lat_p95_ms": 230.6,
+        "n": 168
+      },
+      {
+        "t": 1780840122.08,
+        "cpu_pct": 98.5,
+        "load1": 10.14,
+        "lat_p50_ms": 184.9,
+        "lat_p95_ms": 225.0,
+        "n": 166
+      },
+      {
+        "t": 1780840123.083,
+        "cpu_pct": 98.8,
+        "load1": 10.14,
+        "lat_p50_ms": 188.6,
+        "lat_p95_ms": 229.4,
+        "n": 168
+      },
+      {
+        "t": 1780840124.092,
+        "cpu_pct": 98.2,
+        "load1": 10.14,
+        "lat_p50_ms": 172.1,
+        "lat_p95_ms": 218.7,
+        "n": 174
+      },
+      {
+        "t": 1780840125.094,
+        "cpu_pct": 98.8,
+        "load1": 10.14,
+        "lat_p50_ms": 193.1,
+        "lat_p95_ms": 230.2,
+        "n": 168
+      },
+      {
+        "t": 1780840126.101,
+        "cpu_pct": 97.8,
+        "load1": 10.29,
+        "lat_p50_ms": 178.6,
+        "lat_p95_ms": 221.7,
+        "n": 161
+      },
+      {
+        "t": 1780840127.107,
+        "cpu_pct": 99.5,
+        "load1": 10.29,
+        "lat_p50_ms": 188.4,
+        "lat_p95_ms": 228.6,
+        "n": 169
+      },
+      {
+        "t": 1780840128.108,
+        "cpu_pct": 98.8,
+        "load1": 10.29,
+        "lat_p50_ms": 174.1,
+        "lat_p95_ms": 212.6,
+        "n": 172
+      },
+      {
+        "t": 1780840129.129,
+        "cpu_pct": 97.7,
+        "load1": 10.29,
+        "lat_p50_ms": 177.8,
+        "lat_p95_ms": 218.2,
+        "n": 171
+      },
+      {
+        "t": 1780840130.14,
+        "cpu_pct": 98.0,
+        "load1": 10.29,
+        "lat_p50_ms": 184.9,
+        "lat_p95_ms": 222.8,
+        "n": 165
+      },
+      {
+        "t": 1780840131.143,
+        "cpu_pct": 98.8,
+        "load1": 10.58,
+        "lat_p50_ms": 182.9,
+        "lat_p95_ms": 226.3,
+        "n": 167
+      },
+      {
+        "t": 1780840132.144,
+        "cpu_pct": 98.7,
+        "load1": 10.58,
+        "lat_p50_ms": 181.8,
+        "lat_p95_ms": 219.5,
+        "n": 170
+      },
+      {
+        "t": 1780840133.146,
+        "cpu_pct": 98.2,
+        "load1": 10.58,
+        "lat_p50_ms": 172.6,
+        "lat_p95_ms": 217.3,
+        "n": 171
+      },
+      {
+        "t": 1780840134.162,
+        "cpu_pct": 98.5,
+        "load1": 10.58,
+        "lat_p50_ms": 179.1,
+        "lat_p95_ms": 219.0,
+        "n": 166
+      },
+      {
+        "t": 1780840135.168,
+        "cpu_pct": 98.5,
+        "load1": 10.58,
+        "lat_p50_ms": 177.6,
+        "lat_p95_ms": 213.8,
+        "n": 164
+      },
+      {
+        "t": 1780840136.171,
+        "cpu_pct": 98.7,
+        "load1": 11.42,
+        "lat_p50_ms": 186.7,
+        "lat_p95_ms": 226.7,
+        "n": 161
+      },
+      {
+        "t": 1780840137.173,
+        "cpu_pct": 98.5,
+        "load1": 11.42,
+        "lat_p50_ms": 180.8,
+        "lat_p95_ms": 228.1,
+        "n": 168
+      },
+      {
+        "t": 1780840138.176,
+        "cpu_pct": 98.5,
+        "load1": 11.42,
+        "lat_p50_ms": 174.7,
+        "lat_p95_ms": 213.8,
+        "n": 174
+      },
+      {
+        "t": 1780840139.185,
+        "cpu_pct": 97.2,
+        "load1": 11.42,
+        "lat_p50_ms": 178.5,
+        "lat_p95_ms": 227.2,
+        "n": 172
+      },
+      {
+        "t": 1780840140.187,
+        "cpu_pct": 99.0,
+        "load1": 11.42,
+        "lat_p50_ms": 180.5,
+        "lat_p95_ms": 207.5,
+        "n": 166
+      },
+      {
+        "t": 1780840141.188,
+        "cpu_pct": 98.0,
+        "load1": 11.79,
+        "lat_p50_ms": 179.9,
+        "lat_p95_ms": 217.4,
+        "n": 168
+      },
+      {
+        "t": 1780840142.192,
+        "cpu_pct": 98.5,
+        "load1": 11.79,
+        "lat_p50_ms": 185.3,
+        "lat_p95_ms": 213.7,
+        "n": 171
+      },
+      {
+        "t": 1780840143.194,
+        "cpu_pct": 97.7,
+        "load1": 11.79,
+        "lat_p50_ms": 177.9,
+        "lat_p95_ms": 239.1,
+        "n": 175
+      },
+      {
+        "t": 1780840144.214,
+        "cpu_pct": 98.5,
+        "load1": 11.79,
+        "lat_p50_ms": 186.3,
+        "lat_p95_ms": 224.8,
+        "n": 161
+      },
+      {
+        "t": 1780840145.215,
+        "cpu_pct": 98.5,
+        "load1": 11.79,
+        "lat_p50_ms": 189.5,
+        "lat_p95_ms": 227.9,
+        "n": 169
+      },
+      {
+        "t": 1780840146.215,
+        "cpu_pct": 98.8,
+        "load1": 11.56,
+        "lat_p50_ms": 182.8,
+        "lat_p95_ms": 216.5,
+        "n": 169
+      },
+      {
+        "t": 1780840147.216,
+        "cpu_pct": 98.0,
+        "load1": 11.56,
+        "lat_p50_ms": 172.4,
+        "lat_p95_ms": 215.3,
+        "n": 176
+      },
+      {
+        "t": 1780840148.223,
+        "cpu_pct": 98.0,
+        "load1": 11.56,
+        "lat_p50_ms": 183.9,
+        "lat_p95_ms": 234.4,
+        "n": 173
+      },
+      {
+        "t": 1780840149.233,
+        "cpu_pct": 98.2,
+        "load1": 11.56,
+        "lat_p50_ms": 183.6,
+        "lat_p95_ms": 225.5,
+        "n": 162
+      },
+      {
+        "t": 1780840150.236,
+        "cpu_pct": 98.8,
+        "load1": 11.56,
+        "lat_p50_ms": 175.3,
+        "lat_p95_ms": 215.2,
+        "n": 164
+      },
+      {
+        "t": 1780840151.237,
+        "cpu_pct": 98.0,
+        "load1": 11.28,
+        "lat_p50_ms": 185.8,
+        "lat_p95_ms": 228.0,
+        "n": 164
+      },
+      {
+        "t": 1780840152.238,
+        "cpu_pct": 98.0,
+        "load1": 11.28,
+        "lat_p50_ms": 183.8,
+        "lat_p95_ms": 222.2,
+        "n": 171
+      },
+      {
+        "t": 1780840153.241,
+        "cpu_pct": 98.5,
+        "load1": 11.28,
+        "lat_p50_ms": 181.0,
+        "lat_p95_ms": 224.3,
+        "n": 161
+      },
+      {
+        "t": 1780840154.248,
+        "cpu_pct": 97.0,
+        "load1": 11.28,
+        "lat_p50_ms": 173.4,
+        "lat_p95_ms": 209.9,
+        "n": 173
+      },
+      {
+        "t": 1780840155.249,
+        "cpu_pct": 98.0,
+        "load1": 11.28,
+        "lat_p50_ms": 180.6,
+        "lat_p95_ms": 231.0,
+        "n": 164
+      },
+      {
+        "t": 1780840156.254,
+        "cpu_pct": 98.0,
+        "load1": 10.93,
+        "lat_p50_ms": 173.4,
+        "lat_p95_ms": 215.7,
+        "n": 174
+      },
+      {
+        "t": 1780840157.258,
+        "cpu_pct": 98.2,
+        "load1": 10.93,
+        "lat_p50_ms": 185.9,
+        "lat_p95_ms": 237.1,
+        "n": 166
+      },
+      {
+        "t": 1780840158.261,
+        "cpu_pct": 98.8,
+        "load1": 10.93,
+        "lat_p50_ms": 180.8,
+        "lat_p95_ms": 220.7,
+        "n": 170
+      },
+      {
+        "t": 1780840159.272,
+        "cpu_pct": 98.2,
+        "load1": 10.93,
+        "lat_p50_ms": 180.3,
+        "lat_p95_ms": 223.9,
+        "n": 170
+      },
+      {
+        "t": 1780840160.273,
+        "cpu_pct": 97.8,
+        "load1": 10.93,
+        "lat_p50_ms": 189.0,
+        "lat_p95_ms": 231.4,
+        "n": 168
+      },
+      {
+        "t": 1780840161.277,
+        "cpu_pct": 97.0,
+        "load1": 10.62,
+        "lat_p50_ms": 174.3,
+        "lat_p95_ms": 215.6,
+        "n": 170
+      },
+      {
+        "t": 1780840162.28,
+        "cpu_pct": 98.2,
+        "load1": 10.62,
+        "lat_p50_ms": 172.3,
+        "lat_p95_ms": 212.5,
+        "n": 168
+      },
+      {
+        "t": 1780840163.281,
+        "cpu_pct": 99.0,
+        "load1": 10.62,
+        "lat_p50_ms": 199.7,
+        "lat_p95_ms": 244.3,
+        "n": 158
+      },
+      {
+        "t": 1780840164.299,
+        "cpu_pct": 98.0,
+        "load1": 10.62,
+        "lat_p50_ms": 183.7,
+        "lat_p95_ms": 233.3,
+        "n": 171
+      },
+      {
+        "t": 1780840165.303,
+        "cpu_pct": 98.8,
+        "load1": 10.62,
+        "lat_p50_ms": 183.6,
+        "lat_p95_ms": 224.2,
+        "n": 165
+      },
+      {
+        "t": 1780840166.306,
+        "cpu_pct": 98.8,
+        "load1": 10.57,
+        "lat_p50_ms": 171.1,
+        "lat_p95_ms": 214.7,
+        "n": 168
+      },
+      {
+        "t": 1780840167.306,
+        "cpu_pct": 98.5,
+        "load1": 10.57,
+        "lat_p50_ms": 193.8,
+        "lat_p95_ms": 228.7,
+        "n": 161
+      },
+      {
+        "t": 1780840168.309,
+        "cpu_pct": 98.7,
+        "load1": 10.57,
+        "lat_p50_ms": 179.0,
+        "lat_p95_ms": 239.6,
+        "n": 173
+      },
+      {
+        "t": 1780840169.317,
+        "cpu_pct": 96.2,
+        "load1": 10.57,
+        "lat_p50_ms": 167.9,
+        "lat_p95_ms": 204.1,
+        "n": 168
+      },
+      {
+        "t": 1780840170.32,
+        "cpu_pct": 99.0,
+        "load1": 10.57,
+        "lat_p50_ms": 188.5,
+        "lat_p95_ms": 231.0,
+        "n": 166
+      },
+      {
+        "t": 1780840171.326,
+        "cpu_pct": 98.0,
+        "load1": 10.36,
+        "lat_p50_ms": 178.1,
+        "lat_p95_ms": 210.3,
+        "n": 172
+      }
+    ]
+  },
+  "next_step": {
+    "suggestion": "no recommendation (no gains snapshot or no /ball_state data in bag)",
+    "suggested_gains": {},
+    "rationale": []
+  },
+  "ball_state_n": 9787,
+  "ball_ref_n": 0,
+  "mono_n": 4230,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 0
+  },
+  "error_x_mm": {
+    "n": 0
+  },
+  "error_y_mm": {
+    "n": 0
+  },
+  "settling_time_s": null,
+  "platform_pose_z_mm": {
+    "n": 540,
+    "mean": 887.0743461563588,
+    "std": 1.46538865025235,
+    "rms": 887.075556518512,
+    "p50": 886.6680315284402,
+    "p95": 889.7143984216654,
+    "min": 884.1985551654323,
+    "max": 891.0250008432364
+  },
+  "latency_breakdown": {
+    "vision_detector_ms": 50.2,
+    "vision_source": "/oak/health.v0_lat_ms (windowed detector latency)",
+    "vision_pipeline": {
+      "capture_to_state_fresh_ms": 163.7,
+      "capture_to_state_min_ms": 137.7,
+      "capture_to_state_p50_ms": 180.7,
+      "capture_to_state_p90_ms": 215.4,
+      "capture_to_detect_ms": 50.2,
+      "detect_to_state_ms": 113.5,
+      "n": 9787,
+      "note": "capture\u2192state from /ball_state.orientation.z; p10=fresh pipeline, p50/p90=staleness; detect\u2192state = localizer+KF = fresh \u2212 v0_lat.",
+      "capture_to_localizer_in_ms": 149.6,
+      "capture_to_mono_out_ms": 157.7,
+      "stage_split_ms": {
+        "transport_to_localizer": 99.5,
+        "localizer_tick_reproject": 8.1,
+        "kf_mono_to_state": 6.0
+      }
+    },
+    "actuation": null,
+    "see_to_move_est_ms": null,
+    "note": "vision_detector = capture\u2192detect (host); vision_pipeline splits capture\u2192state (Part-2 orientation.z) into detect\u2192state = localizer+KF; actuation = cmd-tilt\u2192IMU cross-correlation (feeder ZOH + leg slew + mechanical); see_to_move = capture\u2192state fresh + actuation."
+  },
+  "oak_latency_ms": {
+    "n": 523,
+    "mean": 62.763105213756084,
+    "std": 14.407776055202438,
+    "rms": 64.39558515092382,
+    "p50": 59.64099884033203,
+    "p95": 87.44039764404296,
+    "min": 37.03300094604492,
+    "max": 129.1199951171875
+  },
+  "oak_health": {
+    "n": 12,
+    "v0_arr_hz": {
+      "n": 12,
+      "mean": 28.953683376312256,
+      "std": 0.6142670228801032,
+      "rms": 28.96019863590612,
+      "p50": 29.183231353759766,
+      "p95": 29.61668758392334,
+      "min": 27.80736541748047,
+      "max": 29.673526763916016
+    },
+    "v0_pub_hz": {
+      "n": 12,
+      "mean": 28.953763643900555,
+      "std": 0.6284794974107663,
+      "rms": 28.96058382742867,
+      "p50": 29.183231353759766,
+      "p95": 29.61668758392334,
+      "min": 27.697797775268555,
+      "max": 29.673526763916016
+    },
+    "jpeg_hz": {
+      "n": 12,
+      "mean": 9.183971166610718,
+      "std": 0.07626922549293141,
+      "rms": 9.184287853932624,
+      "p50": 9.193581581115723,
+      "p95": 9.274938249588013,
+      "min": 9.018510818481445,
+      "max": 9.33533000946045
+    },
+    "pose_hz": {
+      "n": 12,
+      "mean": 9.16796882947286,
+      "std": 0.1841679669171001,
+      "rms": 9.169818444125507,
+      "p50": 9.191458225250244,
+      "p95": 9.442395639419555,
+      "min": 8.938081741333008,
+      "max": 9.46567440032959
+    },
+    "jpeg_lat_ms": {
+      "n": 12,
+      "mean": 60.88666598002116,
+      "std": 11.96938568422731,
+      "rms": 62.05201276204062,
+      "p50": 58.5369987487793,
+      "p95": 79.39899826049803,
+      "min": 46.334999084472656,
+      "max": 86.35099792480469
+    },
+    "v0_lat_ms": {
+      "n": 12,
+      "mean": 50.18974908192953,
+      "std": 6.936617320553768,
+      "rms": 50.666829116877366,
+      "p50": 48.53700065612793,
+      "p95": 61.779598426818836,
+      "min": 40.308998107910156,
+      "max": 67.86699676513672
+    }
+  },
+  "oak_config": {
+    "rgb_fps": 60,
+    "mono_fps": 15,
+    "jpeg_quality": 50,
+    "focus_mode": "manual",
+    "focus_pos": 130,
+    "exp_us": 8000,
+    "iso": 1600,
+    "v0_backend": "v1_yolo",
+    "v0_blob": null,
+    "v1_blob": "v1_yolov8n_320.blob",
+    "v1_arch": "v8",
+    "nn_conf_min": 0.00430000014603138,
+    "v1_yolo_conf_min": 0.3,
+    "jpeg_fps": 10,
+    "hsv_lo": [
+      5,
+      100,
+      60
+    ],
+    "hsv_hi": [
+      22,
+      255,
+      255
+    ],
+    "enable_depth": false,
+    "mask_v0_to_platform": true,
+    "usb_speed": "super",
+    "rgb_w": 960,
+    "rgb_h": 540
+  },
+  "markers_visible": {
+    "n": 540,
+    "mean": 8.0,
+    "min": 7,
+    "max": 9
+  }
+}
