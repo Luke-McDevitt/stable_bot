@@ -2871,7 +2871,13 @@ class StewartControlNode(Node):
             return False, "not armed"
         if self.limits is None:
             return False, "no leg_limits.yaml"
-        axis = str(d.get('axis', 'pitch')).lower()
+        # Axis accepts a leading '-' (or 'neg') to ramp the OTHER way, so the
+        # operator can break the ball loose in either direction from the same
+        # spot (the two-direction pair lets the offline digest cancel the
+        # plate's local slope: θ_s ≈ (θ⁺+θ⁻)/2).
+        axis_raw = str(d.get('axis', 'pitch')).lower().strip()
+        sign = -1.0 if (axis_raw.startswith('-') or 'neg' in axis_raw) else 1.0
+        axis = axis_raw.lstrip('-').replace('neg_', '').replace('neg', '')
         if axis not in ('pitch', 'roll'):
             axis = 'pitch'
         ramp = float(max(0.1, min(float(d.get('ramp_deg_per_s', 0.5)), 4.0)))
@@ -2882,14 +2888,15 @@ class StewartControlNode(Node):
         # loose — guards against a momentary wobble being read as breakaway.
         min_travel = float(max(5.0, min(float(d.get('min_travel_mm', 25.0)),
                                         150.0)))
-        params = dict(axis=axis, ramp=ramp, max_tilt=max_tilt,
+        params = dict(axis=axis, sign=sign, ramp=ramp, max_tilt=max_tilt,
                       v_break=v_break, z=z, min_travel=min_travel)
         self._breakaway_running = True
         self._breakaway_result = None
         threading.Thread(target=self._breakaway_run, args=(params,),
                          daemon=True).start()
-        return True, (f"breakaway started: {axis} ramp {ramp:.1f}deg/s to "
-                      f"{max_tilt:.1f}deg, break at {v_break:.0f}mm/s")
+        dirn = '+' if sign > 0 else '−'
+        return True, (f"breakaway started: {dirn}{axis} ramp {ramp:.1f}deg/s "
+                      f"to {max_tilt:.1f}deg, break at {v_break:.0f}mm/s")
 
     def _breakaway_run(self, params):
         """Daemon: ramp tilt up at a constant rate, watching the ball. The
@@ -2903,6 +2910,7 @@ class StewartControlNode(Node):
         AND turns the level-hold back ON (for easy ball reset between runs),
         even on error or disarm."""
         axis = params['axis']
+        sign = params.get('sign', 1.0)
         z = params['z']
         ramp = params['ramp']
         max_tilt = params['max_tilt']
@@ -2920,8 +2928,8 @@ class StewartControlNode(Node):
             t0 = time.monotonic()
             while self._breakaway_running:
                 tilt_deg = min(max_tilt, ramp * (time.monotonic() - t0))
-                p_cmd = tilt_deg if axis == 'pitch' else 0.0
-                r_cmd = tilt_deg if axis == 'roll' else 0.0
+                p_cmd = sign * tilt_deg if axis == 'pitch' else 0.0
+                r_cmd = sign * tilt_deg if axis == 'roll' else 0.0
                 self._do_set_pose(0.0, 0.0, z, r_cmd, p_cmd, 0.0)
                 speed = 0.0
                 disp = 0.0

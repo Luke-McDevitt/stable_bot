@@ -1533,9 +1533,13 @@ def _digest_demo_bag(name):
     # gets the tilt-step actuation digest; everything else gets the demo
     # tracking digest. Both write digest.png + digest.summary.json, so the
     # push path is identical.
-    script = ('scripts/digest_latency_bench.py'
-              if 'latency_bench' in os.path.basename(full)
-              else 'scripts/digest_demo_bag.py')
+    base = os.path.basename(full)
+    if 'latency_bench' in base:
+        script = 'scripts/digest_latency_bench.py'
+    elif 'breakaway' in base:
+        script = 'scripts/digest_breakaway_bag.py'   # offline θ_s (IMU+latency)
+    else:
+        script = 'scripts/digest_demo_bag.py'
     analyzer = os.path.join(_BRINGUP_DIR, script)
     if not os.path.isfile(analyzer):
         return False, f"analyzer not found at {analyzer}"

@@ -122,9 +122,23 @@ def read_ball_state(bag_dir: str):
 
 
 def read_breakaway_theta(bag_dir: str):
-    """θ_s (deg) from a breakaway bag: the commanded tilt on the first
-    /latency_bench/diag row flagged phase≥2 (ball broke loose). Returns
-    (theta_deg, axis) or (None, None) if no breakaway was captured."""
+    """θ_s (deg) for a breakaway bag. Prefers the OFFLINE digest's precise
+    value (digest.summary.json from digest_breakaway_bag.py — IMU tilt at the
+    latency-corrected motion onset); falls back to the live /latency_bench/diag
+    (7th element = start angle, else the commanded tilt at phase≥2). Returns
+    (theta_deg, axis) or (None, None)."""
+    summ = os.path.join(bag_dir, 'digest.summary.json')
+    if os.path.isfile(summ):
+        try:
+            with open(summ) as f:
+                s = json.load(f)
+            if (s.get('run_type') == 'breakaway' and s.get('ok')
+                    and s.get('theta_s_deg')):
+                print(f"  [breakaway] using digested θ_s "
+                      f"{s['theta_s_deg']}° (IMU+latency offline)")
+                return round(float(s['theta_s_deg']), 3), s.get('axis')
+        except Exception:
+            pass
     reader = _open_bag(bag_dir)
     types = {t.name: t.type for t in reader.get_all_topics_and_types()}
     max_tilt = 0.0
