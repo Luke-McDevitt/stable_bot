@@ -1,0 +1,9 @@
+{
+  "run_type": "model_data",
+  "campaign": "meas_noise",
+  "duration_s": 62.0,
+  "ball_state_n": 10811,
+  "R_mm": 0.12,
+  "std_x_mm": 0.098,
+  "std_y_mm": 0.143
+}
