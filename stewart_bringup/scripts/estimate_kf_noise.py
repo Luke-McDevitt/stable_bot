@@ -104,6 +104,11 @@ def main():
     wins_all = []                   # pooled still windows (same time base)
     win_v = []                      # posterior |v| inside still windows
     for bag in a.bags:
+        if not os.path.isdir(bag):
+            print(f"  {bag}: not a directory (shell glob didn't match? run "
+                  f"from the dir that holds tuning_data/, or use full paths) "
+                  f"— skip")
+            continue
         mt, mx, my, st, sx, sy, sv = _read(bag)
         if not mt or not st:
             print(f"  {os.path.basename(bag)}: no /ball_xy_mono or /ball_state")
