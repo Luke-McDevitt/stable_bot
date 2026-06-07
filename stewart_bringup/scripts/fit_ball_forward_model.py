@@ -46,7 +46,7 @@ if _PKG_PARENT not in sys.path:
 from stewart_bringup._ball_model import (          # noqa: E402
     BallParams, BallForwardModel, SOLID_ALPHA,
     fit_measurement_noise, fit_rolling_resistance, breakaway_a_from_theta,
-    simulate,
+    resample_uniform, simulate,
 )
 
 try:
@@ -213,7 +213,10 @@ def fit(meas_bag, coast_bag, breakaway_bag, theta_s_deg, alpha, dt, out_path):
     if coast_bag:
         t_s, px, py, vx, vy = read_ball_state(coast_bag)
         speed = [math.hypot(vx[i], vy[i]) for i in range(len(vx))]
-        r = fit_rolling_resistance(t_s, speed)
+        # De-burst /ball_state (timer + event-driven dual publish) onto a
+        # uniform 50 Hz grid before differentiating — see resample_uniform.
+        tg, vg = resample_uniform(t_s, speed, 0.02)
+        r = fit_rolling_resistance(tg, vg)
         report['inputs']['coast_bag'] = coast_bag
         report['fit']['rolling_resistance'] = r
         if r:

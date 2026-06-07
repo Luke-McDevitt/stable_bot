@@ -28,7 +28,7 @@ if _PKG_PARENT not in sys.path:
     sys.path.insert(0, _PKG_PARENT)
 
 from stewart_bringup._ball_model import (                # noqa: E402
-    fit_measurement_noise, fit_rolling_resistance,
+    fit_measurement_noise, fit_rolling_resistance, resample_uniform,
 )
 
 try:
@@ -174,7 +174,7 @@ def _plot_still(bag, px, py, r):
         print(f"(plot failed: {e})", file=sys.stderr)
 
 
-def _plot_coast(bag, t_s, px, py, kf_speed, pos_speed, rr):
+def _plot_coast(bag, t_s, px, py, kf_speed, pos_speed, tg, vg, rr):
     if plt is None:
         return
     try:
@@ -186,17 +186,18 @@ def _plot_coast(bag, t_s, px, py, kf_speed, pos_speed, rr):
         a0.set_title('ball position (is it a clean coast?)')
         a0.legend(fontsize=8)
         a0.grid(alpha=0.3)
-        a1.plot(t_s, kf_speed, color='tab:red', lw=1, label='KF |v|')
-        a1.plot(t_s, pos_speed, color='tab:green', lw=0.8, alpha=0.7,
-                label='position-derived |v|')
+        a1.plot(t_s, kf_speed, color='tab:red', lw=0.6, alpha=0.35,
+                label='KF |v| (raw, bursty)')
+        a1.plot(tg, vg, color='black', lw=1.4, label='resampled 50 Hz (fit input)')
+        a1.set_ylim(0, max(1.0, 1.3 * (max(vg) if vg else 1.0)))
         a1.set_xlabel('t (s)')
         a1.set_ylabel('|v| (mm/s)')
-        a1.set_title('KF velocity vs position-derived')
+        a1.set_title('speed: raw KF vs de-bursted')
         a1.legend(fontsize=8)
         a1.grid(alpha=0.3)
-        vs, ds = _decel_points(t_s, kf_speed)
-        a2.scatter(vs, ds, s=8, alpha=0.4, color='tab:gray',
-                   label='decel pts (post-cap)')
+        vs, ds = _decel_points(tg, vg)
+        a2.scatter(vs, ds, s=10, alpha=0.5, color='tab:gray',
+                   label='decel pts (resampled)')
         if rr and vs:
             xs = [min(vs), max(vs)]
             a2.plot(xs, [rr['c_roll'] + rr['c_visc'] * x for x in xs],
@@ -252,12 +253,15 @@ def main():
         kf_speed = [math.hypot(vx[i], vy[i]) for i in range(n)]
         pos_speed = _pos_speed(t_s, px, py)
         st = _series_stats(t_s)
-        rr = fit_rolling_resistance(t_s, kf_speed)            # on KF velocity
-        rr_pos = fit_rolling_resistance(t_s, pos_speed)       # on position diff
+        # De-burst onto a uniform 50 Hz grid (median per bin) before fitting —
+        # this is what makes the fit immune to the KF's dual-publish bursts.
+        tg, vg = resample_uniform(t_s, kf_speed, 0.02)
+        rr = fit_rolling_resistance(tg, vg)
         summary.update(
             ball_state_hz=st['hz'], median_dt_ms=st['median_dt_ms'],
             min_dt_ms=st['min_dt_ms'], max_dt_ms=st['max_dt_ms'],
             n_tiny_dt=st['n_tiny_dt'], n_gaps=st['n_gaps'],
+            resampled_n=len(tg),
             kf_speed_max=round(max(kf_speed), 1),
             kf_speed_med=round(_med(kf_speed), 1),
             pos_speed_max=round(max(pos_speed), 1),
@@ -265,18 +269,13 @@ def main():
         if rr:
             summary.update(c_roll=rr['c_roll'], c_visc=rr['c_visc'],
                            fit_n=rr['n'])
-        if rr_pos:
-            summary.update(c_roll_pos=rr_pos['c_roll'],
-                           c_visc_pos=rr_pos['c_visc'])
-        if not rr and not rr_pos:
-            summary['reason'] = 'no clean decel points after collision-reject'
-        _plot_coast(a.bag, t_s, px, py, kf_speed, pos_speed, rr)
-        msg = (f"coast: KF c_roll={rr['c_roll'] if rr else '—'} | "
-               f"pos c_roll={rr_pos['c_roll'] if rr_pos else '—'} | "
-               f"{st['hz']}Hz med_dt {st['median_dt_ms']}ms "
-               f"min_dt {st['min_dt_ms']}ms tiny×{st['n_tiny_dt']} "
-               f"gaps×{st['n_gaps']} | kf|v|max {summary['kf_speed_max']} "
-               f"pos|v|max {summary['pos_speed_max']}")
+        else:
+            summary['reason'] = 'no clean decel after de-burst — flick a bit harder'
+        _plot_coast(a.bag, t_s, px, py, kf_speed, pos_speed, tg, vg, rr)
+        msg = (f"coast (resampled 50Hz): c_roll={rr['c_roll'] if rr else '—'} "
+               f"c_visc={rr['c_visc'] if rr else '—'} (n={rr['n'] if rr else 0})"
+               f" | raw {st['hz']}Hz min_dt {st['min_dt_ms']}ms "
+               f"tiny×{st['n_tiny_dt']} | kf|v|med {summary['kf_speed_med']}")
 
     with open(os.path.join(a.bag, 'digest.summary.json'), 'w',
               encoding='utf-8') as f:

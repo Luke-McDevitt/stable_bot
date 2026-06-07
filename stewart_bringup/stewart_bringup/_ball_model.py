@@ -191,3 +191,27 @@ def breakaway_a_from_theta(theta_deg, alpha=SOLID_ALPHA):
     """Stiction breakaway acceleration (mm/s²) from the measured breakaway
     tilt θ_s (deg): the drive a stationary ball must overcome = α·g·sin(θ_s)."""
     return alpha * G_MM_S2 * math.sin(math.radians(theta_deg))
+
+
+def resample_uniform(t_s, vals, dt_grid=0.02):
+    """Bin an irregular (t, vals) series onto a uniform `dt_grid` (median per
+    bin). /ball_state is published from BOTH a ~100 Hz timer and an immediate
+    event-driven path on each measurement, so it arrives in bursts with
+    near-duplicate timestamps; differentiating that raw is meaningless. Median-
+    per-bin collapses each burst to one representative sample on an even grid
+    (and rejects the per-measurement velocity spike as an outlier), so a
+    deceleration taken across bins is the real one. Returns (t_grid, v_grid)."""
+    if len(t_s) < 2:
+        return list(t_s), list(vals)
+    t0 = t_s[0]
+    bins = {}
+    for i in range(len(t_s)):
+        k = int((t_s[i] - t0) / dt_grid)
+        bins.setdefault(k, []).append(vals[i])
+    tg, vg = [], []
+    for k in sorted(bins):
+        s = sorted(bins[k])
+        m = len(s) // 2
+        tg.append(t0 + (k + 0.5) * dt_grid)
+        vg.append(s[m] if len(s) % 2 else 0.5 * (s[m - 1] + s[m]))
+    return tg, vg

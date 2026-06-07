@@ -12,6 +12,7 @@ import math
 from stewart_bringup._ball_model import (
     BallParams, BallForwardModel, ball_accel, simulate, G_MM_S2, SOLID_ALPHA,
     fit_measurement_noise, fit_rolling_resistance, breakaway_a_from_theta,
+    resample_uniform,
 )
 
 
@@ -135,6 +136,34 @@ def test_fit_rolling_resistance_rejects_collisions():
     r = fit_rolling_resistance(t, speed)
     assert abs(r['c_roll'] - c_roll) < 40.0          # collision didn't dominate
     assert abs(r['c_visc'] - c_visc) < 0.15
+
+
+def test_resample_uniform_rejects_burst_spikes():
+    # one 20 ms bin holding 3 real samples + a velocity spike, then a 2nd bin
+    t = [0.000, 0.005, 0.010, 0.0101, 0.020, 0.025, 0.030]
+    v = [100.0,  98.0,  96.0, 9000.0,  60.0,  58.0,  56.0]
+    tg, vg = resample_uniform(t, v, dt_grid=0.02)
+    assert len(tg) == 2
+    assert vg[0] < 200.0           # 9000 spike rejected by the median
+    assert vg[1] < 100.0
+
+
+def test_resample_then_fit_recovers_coast_from_bursty_stream():
+    # clean coast at 50 Hz but with the KF's dual-publish burst (3 timer
+    # samples + 1 near-duplicate-timestamp event spike per step) — resample +
+    # fit must still recover the real c_roll/c_visc.
+    c_roll, c_visc, dt = 250.0, 0.8, 0.02
+    t, sp, v, tc = [], [], 700.0, 0.0
+    while v > 40.0 and len(sp) < 4000:
+        for j in range(3):
+            t.append(tc + j * 0.005); sp.append(v)        # timer predictions
+        t.append(tc + 0.0051); sp.append(v + 5000.0)      # event-driven spike
+        v -= (c_roll + c_visc * v) * dt
+        tc += dt
+    tg, vg = resample_uniform(t, sp, dt_grid=0.02)
+    r = fit_rolling_resistance(tg, vg)
+    assert abs(r['c_roll'] - c_roll) < 60.0
+    assert abs(r['c_visc'] - c_visc) < 0.25
 
 
 def test_breakaway_a_from_theta_gates_ball_accel():
