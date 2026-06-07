@@ -2874,7 +2874,7 @@ class StewartControlNode(Node):
         axis = str(d.get('axis', 'pitch')).lower()
         if axis not in ('pitch', 'roll'):
             axis = 'pitch'
-        ramp = float(max(0.2, min(float(d.get('ramp_deg_per_s', 1.0)), 4.0)))
+        ramp = float(max(0.1, min(float(d.get('ramp_deg_per_s', 0.5)), 4.0)))
         max_tilt = float(max(1.0, min(float(d.get('max_tilt_deg', 6.0)), 8.0)))
         v_break = float(max(5.0, min(float(d.get('v_break_mm_s', 25.0)), 200.0)))
         z = float(max(0.0, min(float(d.get('z_mm', 30.0)), 80.0)))

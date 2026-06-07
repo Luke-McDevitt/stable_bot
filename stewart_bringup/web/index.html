@@ -1561,8 +1561,8 @@
               <option value="roll">roll</option>
             </select>
           </label>
-          <label>ramp (°/s)
-            <input id="brk-ramp" type="number" step="0.1" min="0.2" max="4" value="1.0"
+          <label>ramp (°/s) — tilt speed
+            <input id="brk-ramp" type="number" step="0.1" min="0.1" max="2" value="0.5"
                    class="mono w-full bg-slate-800 border border-slate-700 rounded px-2 py-1">
           </label>
           <label>max tilt (°)
@@ -1581,6 +1581,29 @@
         </div>
         <div id="brk-status" class="text-xs text-slate-400 mt-2 mono min-h-4">idle</div>
         <div class="text-xs mt-1 mono">breakaway θ_s: <span id="brk-result" class="text-emerald-300">—</span></div>
+      </details>
+
+      <!-- Free-standing recorder for the fitter's data campaigns. -->
+      <details class="bg-slate-900 rounded p-3 border border-slate-700 mb-2">
+        <summary class="cursor-pointer select-none text-xs uppercase text-slate-400">
+          Record data bag
+        </summary>
+        <p class="text-xs text-slate-500 mt-2 mb-2">
+          <b>Meas-noise</b>: place a STILL ball, record ~60 s. <b>Coasting</b>:
+          level plate, flick the ball, record it rolling to a stop (a few
+          directions). The bag stays on the Pi for the fitter — no demo motion
+          is started.
+        </p>
+        <div class="flex items-center gap-2 mb-1">
+          <select id="dc-campaign" class="mono text-xs bg-slate-800 border border-slate-700 rounded px-1 py-0.5">
+            <option value="meas_noise">meas-noise (still ball)</option>
+            <option value="coast">coasting (flick)</option>
+            <option value="model_data">model_data (general)</option>
+          </select>
+          <button id="dc-rec-btn" class="bg-rose-700 hover:bg-rose-600 rounded py-1 px-3 text-xs">● Record</button>
+          <button id="dc-stop-btn" class="bg-slate-600 hover:bg-slate-500 rounded py-1 px-3 text-xs">Stop</button>
+        </div>
+        <div id="dc-status" class="text-xs text-slate-400 mono min-h-4"></div>
       </details>
 
       <div class="flex items-center gap-2 mt-2">
@@ -4892,6 +4915,32 @@ function initVisionGUI() {
         const j = await r.json();
         if (st) st.textContent = (j.ok ? '✓ ' : '✗ ')
           + (j.message || '').split('\n').pop();
+      } catch (e) { if (st) st.textContent = '✗ ' + e; }
+    });
+  }
+  const _dcRec = document.getElementById('dc-rec-btn');
+  if (_dcRec) {
+    _dcRec.addEventListener('click', async () => {
+      const label = document.getElementById('dc-campaign').value;
+      const st = document.getElementById('dc-status');
+      if (st) st.textContent = 'starting ' + label + '…';
+      try {
+        const r = await fetch('/demo/start', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label, video_on: false }) });
+        const j = await r.json();
+        if (st) st.textContent = j.ok ? '● recording ' + label
+          : '✗ ' + (j.message || '');
+      } catch (e) { if (st) st.textContent = '✗ ' + e; }
+    });
+    document.getElementById('dc-stop-btn').addEventListener('click', async () => {
+      const st = document.getElementById('dc-status');
+      if (st) st.textContent = 'stopping…';
+      try {
+        const r = await fetch('/demo/stop', { method: 'POST' });
+        const j = await r.json();
+        if (st) st.textContent = j.ok ? '✓ saved on Pi (for the fitter)'
+          : '✗ ' + (j.message || '');
       } catch (e) { if (st) st.textContent = '✗ ' + e; }
     });
   }
