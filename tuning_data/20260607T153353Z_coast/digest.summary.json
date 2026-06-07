@@ -9,13 +9,12 @@
   "max_dt_ms": 25.8,
   "n_tiny_dt": 1671,
   "n_gaps": 35,
+  "resampled_n": 1062,
   "kf_speed_max": 681.9,
   "kf_speed_med": 15.0,
   "pos_speed_max": 640165.5,
   "pos_speed_med": 39.9,
-  "c_roll": 1380.18,
-  "c_visc": 0.0,
-  "fit_n": 83,
-  "c_roll_pos": 1375.15,
-  "c_visc_pos": 1.85446
+  "c_roll": 1017.03,
+  "c_visc": 3.26302,
+  "fit_n": 202
 }
