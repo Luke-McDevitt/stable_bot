@@ -1,0 +1,9 @@
+{
+  "run_type": "model_data",
+  "campaign": "coast",
+  "duration_s": 11.9,
+  "ball_state_n": 2048,
+  "c_roll": 315965.61,
+  "c_visc": 0.0,
+  "fit_n": 177
+}
