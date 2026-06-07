@@ -27,9 +27,19 @@ hub*, not separate.)
 straight into the Pi's port is adequate **on its own**; the BEC was the problem.
 
 **Rule:** never parallel two unmanaged 5 V sources on the Pi rail. Power the Pi
-from ONE path (or proper ideal-diode OR-ing). If the BEC must stay for the OAK,
-keep its 5 V **off** the Pi's USB/hub 5 V — share only **ground** if CAN needs
-the reference (see "ground" caveat in the wiring notes).
+from ONE path (or proper ideal-diode OR-ing).
+
+### CAN common ground (the catch after removing the BEC) — confirmed 2026-06-07
+The BEC's 5 V **return** was also the Pi↔ODrive **CAN common ground**. Remove the
+BEC's 5 V and CAN dies (Pi sees no ODrives in the GUI) because the transceivers
+have no shared reference. Fix: run a **GROUND-ONLY** wire from any 48 V-system
+ground point (an ODrive GND terminal / the CAN connector GND pin / the BEC's
+black/0 V) to the Pi's ground. This is safe and does NOT back-feed — back-feed is
+a 5 V-*source* conflict; a 0 V reference tie carries only the mA-level CAN signal
+return, and the Pi still draws its power from its own USB‑C brick. **Connect the
+GND wire only; leave the 5 V disconnected.** Best practice: run GND alongside
+CANH/CANL in the harness so the reference travels with the bus. Verify CAN is
+clean (ODrives enumerate, no rising error counts) **before arming**.
 
 ### Keep the clock pinned (operator wants max perf, doesn't care about idle draw)
 ```bash
