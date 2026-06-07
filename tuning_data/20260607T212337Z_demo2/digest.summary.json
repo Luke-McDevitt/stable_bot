@@ -1,0 +1,609 @@
+{
+  "bag": "/home/sorak/stable_bot_repo/tuning_data/20260607T212337Z_demo2",
+  "demo_label": "demo2",
+  "demo_mode": "BALL_TRACK_GOTO",
+  "demo_params": {
+    "x_mm": -1.2789552211761475,
+    "y_mm": 118.36216735839844
+  },
+  "duration_s": 47.641016893,
+  "topic_counts": {
+    "/ball_ref": 2824,
+    "/ball_state": 4646,
+    "/ball_track/diagnostic": 742,
+    "/ball_xy_depth": 0,
+    "/ball_xy_mono": 1980,
+    "/ball_xy_mono/lat": 666,
+    "/control_cmd": 13,
+    "/control_result": 0,
+    "/latency_bench/diag": 0,
+    "/leg_currents": 936,
+    "/leg_encoders": 937,
+    "/oak/ball/depth/diagnostic": 0,
+    "/oak/ball/depth/rgb_pixel": 0,
+    "/oak/ball/v0/diagnostic": 689,
+    "/oak/ball/v0/rgb_pixel": 689,
+    "/oak/config": 10,
+    "/oak/health": 10,
+    "/oak/latency_ms": 434,
+    "/odrive_errors": 94,
+    "/platform/imu/data": 18925,
+    "/platform_pose": 438,
+    "/platform_pose/markers_visible": 438,
+    "/platform_rpy": 936,
+    "/status": 94
+  },
+  "gains_at_record": {
+    "kp": 0.016,
+    "kd": 0.03,
+    "ki": 0.0,
+    "max_tilt_deg": 3.0,
+    "pitch_sign": -1.0,
+    "roll_sign": 1.0,
+    "accel_tilt_deg": 3.0,
+    "err_tol_mm": 15.0,
+    "v_brake_mm_s": 80.0,
+    "v_coast_mm_s": 30.0,
+    "brake_horizon_mm": 100.0,
+    "stiction_v_threshold_mm_s": 61.0,
+    "stiction_break_s": 0.25,
+    "brake_tilt_deg": 9.0,
+    "control_latency_s": 0.2,
+    "kd_v_tau_s": 0.35,
+    "stiction_ramp_start_deg": 2.0,
+    "stiction_ramp_max_deg": 6.0,
+    "stiction_ramp_rate_deg_per_s": 0.25,
+    "stiction_ramp_timeout_s": 25.0,
+    "stiction_moving_hyst_ticks": 3.0,
+    "stiction_pos_delta_mm": 12.0,
+    "tilt_slew_up_deg_per_s": 100.0,
+    "use_model_predictor": 1.0,
+    "algorithm": "pid"
+  },
+  "control_method": "model",
+  "run_config": {
+    "soft_max_vel_tps": 2.0,
+    "hard_max_vel_tps": 4.0,
+    "leg_current_cap_a": 6.0
+  },
+  "leg_current": {
+    "measured_peak_a": 6.49,
+    "measured_p95_a": 3.25,
+    "per_leg_peak_a": [
+      5.56,
+      5.93,
+      5.68,
+      6.49,
+      5.0,
+      6.22
+    ],
+    "cap_a": 6.0,
+    "headroom_a": -0.49,
+    "saturation_fraction": 0.037
+  },
+  "host": {
+    "gui_video_on": false,
+    "cpu_pct": {
+      "mean": 84.6,
+      "max": 96.7
+    },
+    "iowait_pct": {
+      "mean": 0.0,
+      "max": 0.3
+    },
+    "temp_c": {
+      "mean": 59.0,
+      "max": 60.6
+    },
+    "load1": {
+      "mean": 9.7,
+      "max": 10.4
+    },
+    "freq_mhz": {
+      "mean": 2400.0,
+      "max": 2400.0
+    },
+    "throttled_now": false,
+    "throttled_ever": false,
+    "n_samples": 47
+  },
+  "host_latency_correlation": {
+    "n_windows": 30,
+    "window_s": 1.0,
+    "headline_r": -0.453,
+    "headline_vs": "load1",
+    "pearson_r_load1_vs_lat_p95": -0.453,
+    "pearson_r_cpu_vs_lat_p95": -0.173,
+    "pearson_r_load1_vs_lat_p50": -0.309,
+    "pearson_r_cpu_vs_lat_p50": -0.09,
+    "lat_p95_ms_range": [
+      172.1,
+      911.1
+    ],
+    "load1_range": [
+      9.2,
+      10.36
+    ],
+    "cpu_pct_range": [
+      70.9,
+      96.7
+    ],
+    "interpretation": "MODERATE (r=-0.45 vs load1): some coupling of host load and latency; headroom helps but other factors dominate.",
+    "windows": [
+      {
+        "t": 1780867428.539,
+        "cpu_pct": 71.4,
+        "load1": 9.31,
+        "lat_p50_ms": 158.9,
+        "lat_p95_ms": 198.0,
+        "n": 18
+      },
+      {
+        "t": 1780867429.54,
+        "cpu_pct": 82.4,
+        "load1": 9.31,
+        "lat_p50_ms": 431.6,
+        "lat_p95_ms": 866.5,
+        "n": 111
+      },
+      {
+        "t": 1780867434.556,
+        "cpu_pct": 71.1,
+        "load1": 9.2,
+        "lat_p50_ms": 150.1,
+        "lat_p95_ms": 172.1,
+        "n": 22
+      },
+      {
+        "t": 1780867435.566,
+        "cpu_pct": 85.8,
+        "load1": 9.2,
+        "lat_p50_ms": 185.2,
+        "lat_p95_ms": 630.0,
+        "n": 159
+      },
+      {
+        "t": 1780867436.568,
+        "cpu_pct": 91.8,
+        "load1": 9.59,
+        "lat_p50_ms": 191.0,
+        "lat_p95_ms": 549.8,
+        "n": 158
+      },
+      {
+        "t": 1780867437.569,
+        "cpu_pct": 90.5,
+        "load1": 9.59,
+        "lat_p50_ms": 508.6,
+        "lat_p95_ms": 876.1,
+        "n": 87
+      },
+      {
+        "t": 1780867441.579,
+        "cpu_pct": 78.5,
+        "load1": 10.18,
+        "lat_p50_ms": 179.8,
+        "lat_p95_ms": 426.2,
+        "n": 136
+      },
+      {
+        "t": 1780867442.582,
+        "cpu_pct": 92.5,
+        "load1": 10.18,
+        "lat_p50_ms": 496.1,
+        "lat_p95_ms": 911.1,
+        "n": 106
+      },
+      {
+        "t": 1780867445.592,
+        "cpu_pct": 70.9,
+        "load1": 10.18,
+        "lat_p50_ms": 158.4,
+        "lat_p95_ms": 185.5,
+        "n": 95
+      },
+      {
+        "t": 1780867446.593,
+        "cpu_pct": 94.2,
+        "load1": 10.33,
+        "lat_p50_ms": 179.5,
+        "lat_p95_ms": 486.4,
+        "n": 162
+      },
+      {
+        "t": 1780867447.593,
+        "cpu_pct": 94.4,
+        "load1": 10.33,
+        "lat_p50_ms": 161.7,
+        "lat_p95_ms": 190.7,
+        "n": 181
+      },
+      {
+        "t": 1780867448.598,
+        "cpu_pct": 95.5,
+        "load1": 10.33,
+        "lat_p50_ms": 161.8,
+        "lat_p95_ms": 189.8,
+        "n": 177
+      },
+      {
+        "t": 1780867449.6,
+        "cpu_pct": 95.7,
+        "load1": 10.33,
+        "lat_p50_ms": 162.0,
+        "lat_p95_ms": 190.6,
+        "n": 180
+      },
+      {
+        "t": 1780867450.61,
+        "cpu_pct": 95.0,
+        "load1": 10.33,
+        "lat_p50_ms": 164.0,
+        "lat_p95_ms": 190.5,
+        "n": 178
+      },
+      {
+        "t": 1780867451.611,
+        "cpu_pct": 95.5,
+        "load1": 10.14,
+        "lat_p50_ms": 165.7,
+        "lat_p95_ms": 195.7,
+        "n": 179
+      },
+      {
+        "t": 1780867452.613,
+        "cpu_pct": 96.2,
+        "load1": 10.14,
+        "lat_p50_ms": 163.3,
+        "lat_p95_ms": 199.1,
+        "n": 180
+      },
+      {
+        "t": 1780867453.618,
+        "cpu_pct": 94.7,
+        "load1": 10.14,
+        "lat_p50_ms": 161.3,
+        "lat_p95_ms": 193.9,
+        "n": 180
+      },
+      {
+        "t": 1780867454.619,
+        "cpu_pct": 95.7,
+        "load1": 10.14,
+        "lat_p50_ms": 163.7,
+        "lat_p95_ms": 192.2,
+        "n": 179
+      },
+      {
+        "t": 1780867455.629,
+        "cpu_pct": 95.2,
+        "load1": 10.14,
+        "lat_p50_ms": 157.7,
+        "lat_p95_ms": 187.5,
+        "n": 180
+      },
+      {
+        "t": 1780867456.631,
+        "cpu_pct": 95.5,
+        "load1": 10.05,
+        "lat_p50_ms": 165.7,
+        "lat_p95_ms": 194.4,
+        "n": 175
+      },
+      {
+        "t": 1780867457.636,
+        "cpu_pct": 95.2,
+        "load1": 10.05,
+        "lat_p50_ms": 161.7,
+        "lat_p95_ms": 188.5,
+        "n": 182
+      },
+      {
+        "t": 1780867458.639,
+        "cpu_pct": 95.5,
+        "load1": 10.05,
+        "lat_p50_ms": 163.8,
+        "lat_p95_ms": 197.3,
+        "n": 178
+      },
+      {
+        "t": 1780867459.641,
+        "cpu_pct": 96.2,
+        "load1": 10.05,
+        "lat_p50_ms": 161.1,
+        "lat_p95_ms": 192.5,
+        "n": 177
+      },
+      {
+        "t": 1780867460.649,
+        "cpu_pct": 95.5,
+        "load1": 10.05,
+        "lat_p50_ms": 160.5,
+        "lat_p95_ms": 194.8,
+        "n": 174
+      },
+      {
+        "t": 1780867461.652,
+        "cpu_pct": 95.0,
+        "load1": 10.36,
+        "lat_p50_ms": 163.2,
+        "lat_p95_ms": 191.8,
+        "n": 172
+      },
+      {
+        "t": 1780867462.655,
+        "cpu_pct": 96.7,
+        "load1": 10.36,
+        "lat_p50_ms": 171.0,
+        "lat_p95_ms": 212.3,
+        "n": 154
+      },
+      {
+        "t": 1780867463.657,
+        "cpu_pct": 94.5,
+        "load1": 10.36,
+        "lat_p50_ms": 160.3,
+        "lat_p95_ms": 190.7,
+        "n": 180
+      },
+      {
+        "t": 1780867464.658,
+        "cpu_pct": 95.5,
+        "load1": 10.36,
+        "lat_p50_ms": 165.6,
+        "lat_p95_ms": 196.1,
+        "n": 163
+      },
+      {
+        "t": 1780867465.667,
+        "cpu_pct": 94.5,
+        "load1": 10.36,
+        "lat_p50_ms": 163.1,
+        "lat_p95_ms": 199.2,
+        "n": 172
+      },
+      {
+        "t": 1780867466.668,
+        "cpu_pct": 95.3,
+        "load1": 10.25,
+        "lat_p50_ms": 163.8,
+        "lat_p95_ms": 202.0,
+        "n": 179
+      }
+    ]
+  },
+  "next_step": {
+    "suggestion": "Ki \u00d72 (\u21920.0000) \u2014 settled with a steady-state offset; small Ki bump should integrate the bias out.",
+    "suggested_gains": {
+      "ki": 0.0
+    },
+    "rationale": [
+      "settled at err=17mm > tol 15mm; steady-state offset."
+    ],
+    "metrics": {
+      "settled": true,
+      "median_tail_err_mm": 16.516274394061504,
+      "p95_err_mm": 175.60688326900078,
+      "peak_speed_mm_s": 64.94998949783536,
+      "saturation_fraction": 0.0,
+      "cmd_jitter_deg_per_tick": 0.4710283754760541
+    }
+  },
+  "ball_state_n": 4646,
+  "ball_ref_n": 2824,
+  "mono_n": 1980,
+  "depth_n": 0,
+  "error_mm": {
+    "n": 4645,
+    "mean": 143.2065449526857,
+    "std": 60.677798102822074,
+    "rms": 155.53105702686017,
+    "p50": 172.5633921536849,
+    "p95": 175.60688326900078,
+    "min": 0.5063610539482865,
+    "max": 180.8597911922942
+  },
+  "error_x_mm": {
+    "n": 4645,
+    "mean": -43.78391270406261,
+    "std": 19.863100561687265,
+    "rms": 48.07882876693936,
+    "p50": -53.72889260515961,
+    "p95": -0.3729191291303079,
+    "min": -60.635425565797355,
+    "max": 5.182979273844957
+  },
+  "error_y_mm": {
+    "n": 4645,
+    "mean": 136.23154562267487,
+    "std": 57.6133830073257,
+    "rms": 147.91327163000537,
+    "p50": 163.9603265598483,
+    "p95": 167.81405034047955,
+    "min": -1.6641654869478941,
+    "max": 172.62352751796675
+  },
+  "settling_time_s": 36.195386372,
+  "step_metrics": [
+    {
+      "distance_mm": 175.3,
+      "overshoot_pct": 0.0,
+      "overshoot_mm": 0.0,
+      "rise_s": 36.2,
+      "settle_s": 36.11,
+      "steady_state_err_mm": 59.7,
+      "settled_rms_mm": 86.4,
+      "max_lateral_mm": 16.8,
+      "rms_lateral_mm": 4.7,
+      "path_ratio": 4.29,
+      "reversals": 97,
+      "iae_mm_s": 5921.2,
+      "itae_mm_s2": 104886.7,
+      "n": 4645
+    }
+  ],
+  "platform_pose_z_mm": {
+    "n": 438,
+    "mean": 884.4267265787953,
+    "std": 1.682346567469459,
+    "rms": 884.4283266477031,
+    "p50": 883.9717672253869,
+    "p95": 888.4503669793844,
+    "min": 879.6825036011983,
+    "max": 892.9563124563642
+  },
+  "latency_breakdown": {
+    "vision_detector_ms": 50.4,
+    "vision_source": "/oak/health.v0_lat_ms (windowed detector latency)",
+    "vision_pipeline": {
+      "capture_to_state_fresh_ms": 145.9,
+      "capture_to_state_min_ms": 129.0,
+      "capture_to_state_p50_ms": 165.4,
+      "capture_to_state_p90_ms": 250.5,
+      "capture_to_detect_ms": 50.4,
+      "detect_to_state_ms": 95.5,
+      "n": 4646,
+      "note": "capture\u2192state from /ball_state.orientation.z; p10=fresh pipeline, p50/p90=staleness; detect\u2192state = localizer+KF = fresh \u2212 v0_lat.",
+      "capture_to_localizer_in_ms": 138.3,
+      "capture_to_mono_out_ms": 143.0,
+      "stage_split_ms": {
+        "transport_to_localizer": 87.9,
+        "localizer_tick_reproject": 4.8,
+        "kf_mono_to_state": 2.8
+      }
+    },
+    "actuation": {
+      "source": "platform_imu",
+      "pitch_lag_ms": 80.0,
+      "pitch_corr": 0.842,
+      "roll_lag_ms": 150.0,
+      "roll_corr": 0.904,
+      "n_overlap": 1309,
+      "actuation_ms": 150.0,
+      "cmd_period_s": 0.1,
+      "ambiguous": true,
+      "lag_candidates_s": [
+        0.05,
+        0.1,
+        0.15,
+        0.2,
+        0.25,
+        0.3,
+        0.35,
+        0.4
+      ]
+    },
+    "see_to_move_est_ms": 295.9,
+    "note": "vision_detector = capture\u2192detect (host); vision_pipeline splits capture\u2192state (Part-2 orientation.z) into detect\u2192state = localizer+KF; actuation = cmd-tilt\u2192IMU cross-correlation (feeder ZOH + leg slew + mechanical); see_to_move = capture\u2192state fresh + actuation."
+  },
+  "oak_latency_ms": {
+    "n": 434,
+    "mean": 51.30425110390659,
+    "std": 6.676959994040762,
+    "rms": 51.7369111572649,
+    "p50": 51.70800018310547,
+    "p95": 60.3205997467041,
+    "min": 32.96900177001953,
+    "max": 78.52999877929688
+  },
+  "oak_health": {
+    "n": 10,
+    "v0_arr_hz": {
+      "n": 10,
+      "mean": 29.457232093811037,
+      "std": 0.1746769704809295,
+      "rms": 29.45774999338319,
+      "p50": 29.43257713317871,
+      "p95": 29.703828048706054,
+      "min": 29.171741485595703,
+      "max": 29.751216888427734
+    },
+    "v0_pub_hz": {
+      "n": 10,
+      "mean": 13.378240257501602,
+      "std": 13.219211539027608,
+      "rms": 18.80757470013072,
+      "p50": 5.693706512451172,
+      "p95": 29.541613578796387,
+      "min": 0.0,
+      "max": 29.622268676757812
+    },
+    "jpeg_hz": {
+      "n": 10,
+      "mean": 9.179152393341065,
+      "std": 0.06078863244492719,
+      "rms": 9.179353676485809,
+      "p50": 9.197134494781494,
+      "p95": 9.213907766342164,
+      "min": 8.999241828918457,
+      "max": 9.214268684387207
+    },
+    "pose_hz": {
+      "n": 10,
+      "mean": 9.159227180480958,
+      "std": 0.12585149477152482,
+      "rms": 9.160091764955052,
+      "p50": 9.195222854614258,
+      "p95": 9.32407865524292,
+      "min": 8.98526668548584,
+      "max": 9.414579391479492
+    },
+    "jpeg_lat_ms": {
+      "n": 10,
+      "mean": 54.279999542236325,
+      "std": 5.45264923232964,
+      "rms": 54.553182619861886,
+      "p50": 53.83999824523926,
+      "p95": 63.24279994964599,
+      "min": 44.70199966430664,
+      "max": 66.08499908447266
+    },
+    "v0_lat_ms": {
+      "n": 10,
+      "mean": 50.40769920349121,
+      "std": 7.080192909080083,
+      "rms": 50.90250750817131,
+      "p50": 49.296499252319336,
+      "p95": 62.75684814453124,
+      "min": 42.00199890136719,
+      "max": 66.72899627685547
+    }
+  },
+  "oak_config": {
+    "rgb_fps": 60,
+    "mono_fps": 15,
+    "jpeg_quality": 50,
+    "focus_mode": "manual",
+    "focus_pos": 130,
+    "exp_us": 8000,
+    "iso": 1600,
+    "v0_backend": "v1_yolo",
+    "v0_blob": null,
+    "v1_blob": "v1_yolov8n_320.blob",
+    "v1_arch": "v8",
+    "nn_conf_min": 0.0001,
+    "v1_yolo_conf_min": 0.3,
+    "jpeg_fps": 10,
+    "hsv_lo": [
+      5,
+      100,
+      60
+    ],
+    "hsv_hi": [
+      22,
+      255,
+      255
+    ],
+    "enable_depth": false,
+    "mask_v0_to_platform": true,
+    "usb_speed": "super",
+    "rgb_w": 960,
+    "rgb_h": 540
+  },
+  "markers_visible": {
+    "n": 438,
+    "mean": 6.961187214611872,
+    "min": 6,
+    "max": 8
+  }
+}
