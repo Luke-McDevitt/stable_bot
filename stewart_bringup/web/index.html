@@ -3139,6 +3139,7 @@ function setupROSInterface() {
       syncStabZFromStatus(s);
       syncDemo2ZFromStatus(s);
       syncBtGainsFromStatus(s);
+      syncControlMethodFromStatus(s);
       $('status-box').innerText = Object.entries(s).map(([k,v])=>
         `${k.padEnd(28)} ${JSON.stringify(v)}`).join('\n');
       updateLevelButtons(!!s.level_enabled);
@@ -8022,6 +8023,20 @@ async function nnWeightsRebuild() {
   } catch (e) {
     _nnSetStatus('blob rebuilt; reload publish failed: ' + e, false);
   }
+}
+
+// Reflect the control-method dropdown from /status (ball_track_gains.
+// use_model_predictor) — mirrors how onOakConfig confirms controller-source.
+// This clears the transient "→ model/pid" arrow once the controller echoes
+// the switch, so it doesn't linger.
+function syncControlMethodFromStatus(s) {
+  const g = s && s.ball_track_gains;
+  const el = document.getElementById('demo-control-method');
+  if (!g || !el || el.matches(':focus')) return;   // don't fight an open select
+  const want = Number(g.use_model_predictor) ? 'model' : 'pid';
+  if (el.value !== want) el.value = want;
+  const st = document.getElementById('demo-control-method-status');
+  if (st) st.textContent = '';                      // confirmed → clear the arrow
 }
 
 function onOakConfig(cfg) {
