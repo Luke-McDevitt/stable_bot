@@ -4094,6 +4094,12 @@ class StewartControlNode(Node):
                 'state_stale_s', 0.5)
             new_gains['ref_stale_s'] = self.ball_track_gains.get(
                 'ref_stale_s', 2.0)
+            # use_model_predictor is a runtime A/B flag (set_control_method),
+            # NOT persisted on disk — preserve it across the reload, or the
+            # demos control-method dropdown snaps back to PID the moment gains
+            # are (re)applied on arm / demo start.
+            new_gains['use_model_predictor'] = self.ball_track_gains.get(
+                'use_model_predictor', 0)
             self.ball_track_gains = new_gains
         except Exception as e:
             return True, (f"wrote YAML but reload failed: {e}; "
@@ -4114,6 +4120,12 @@ class StewartControlNode(Node):
                 'state_stale_s', 0.5)
             new_gains['ref_stale_s'] = self.ball_track_gains.get(
                 'ref_stale_s', 2.0)
+            # use_model_predictor is a runtime A/B flag (set_control_method),
+            # NOT persisted on disk — preserve it across the reload, or the
+            # demos control-method dropdown snaps back to PID the moment gains
+            # are (re)applied on arm / demo start.
+            new_gains['use_model_predictor'] = self.ball_track_gains.get(
+                'use_model_predictor', 0)
             self.ball_track_gains = new_gains
             return True, "ball-track gains reloaded from yaml"
         except Exception as e:
