@@ -142,9 +142,13 @@ def read_breakaway_theta(bag_dir: str):
         _, pitch, roll, phase, _speed = d[:5]
         max_tilt = max(max_tilt, abs(pitch), abs(roll))
         if phase >= 2.0:
-            if abs(pitch) >= abs(roll):
-                return round(abs(pitch), 3), 'pitch'
-            return round(abs(roll), 3), 'roll'
+            axis = 'pitch' if abs(pitch) >= abs(roll) else 'roll'
+            # 7th element (when present) is the true θ_s — the angle the ball
+            # STARTED at; older 5/6-element bags fall back to the commanded
+            # tilt on the confirmation row.
+            theta = (d[6] if len(d) >= 7 and d[6] > 0.0
+                     else max(abs(pitch), abs(roll)))
+            return round(theta, 3), axis
     if max_tilt > 0.0:
         print(f"  [breakaway] no phase=2 row — ball never broke loose "
               f"(ramped to {max_tilt:.2f}°). Raise max-tilt or lower v_break.",

@@ -1551,10 +1551,13 @@
         </summary>
         <p class="text-xs text-slate-500 mt-2 mb-2">
           Arm, then Run: the platform ramps tilt at <b>Z</b> (held at your
-          current height — no slam) and records the exact angle the ball breaks
-          loose — keep a hand on the power. With <b>auto-record</b> on, the full
-          ramp is saved to a <span class="mono">breakaway</span> bag for the
-          fitter. <b>Disarm</b> or Stop halts it instantly.
+          current height — no slam) and reports the angle the ball breaks
+          loose, confirmed only once it actually rolls <b>min travel</b> mm (so
+          a slight wobble isn't mistaken for breakaway) — keep a hand on the
+          power. Level-hold turns back ON after each run for easy resetting.
+          With <b>auto-record</b> on, the full ramp is saved to a
+          <span class="mono">breakaway</span> bag. <b>Disarm</b> or Stop halts
+          it instantly.
         </p>
         <div class="grid grid-cols-2 gap-2 text-xs mb-2">
           <label>axis
@@ -1573,6 +1576,10 @@
           </label>
           <label>v break (mm/s)
             <input id="brk-vbreak" type="number" step="5" min="5" max="200" value="25"
+                   class="mono w-full bg-slate-800 border border-slate-700 rounded px-2 py-1">
+          </label>
+          <label>min travel (mm) — must roll this far
+            <input id="brk-mintravel" type="number" step="5" min="5" max="150" value="25"
                    class="mono w-full bg-slate-800 border border-slate-700 rounded px-2 py-1">
           </label>
           <label>Z (mm) — hold height
@@ -4937,6 +4944,7 @@ function initVisionGUI() {
         ramp_deg_per_s: Number(document.getElementById('brk-ramp').value),
         max_tilt_deg: Number(document.getElementById('brk-max').value),
         v_break_mm_s: Number(document.getElementById('brk-vbreak').value),
+        min_travel_mm: Number(document.getElementById('brk-mintravel').value),
         z_mm: Number(document.getElementById('brk-z').value) });
       window._brkWasRunning = true;
       if (st) st.textContent = 'ramping… (watch the ball)';

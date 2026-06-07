@@ -48,15 +48,24 @@ def predict_lead(px: float, py: float, vx: float, vy: float, td_s: float,
       - 'model' with `model is None` falls back to 'const_vel' (Phase-0
         behaviour-neutral flip).
     """
+    cvx, cvy = px + vx * td_s, py + vy * td_s        # const-velocity lead
     if method == 'model' and model is not None:
         try:
-            return model.integrate(px, py, vx, vy, td_s, tilt_history)
+            lx, ly = model.integrate(px, py, vx, vy, td_s, tilt_history)
+            # The model is a *refinement* of the constant-velocity lead, not a
+            # teleport. Accept it only if it is finite AND lands within one
+            # const-velocity step (+50 mm slack) of the const-velocity lead;
+            # anything wilder (a bad fit, a NaN that wouldn't raise, a runaway
+            # integration) is rejected so it can never destabilise the loop —
+            # the controller then holds level exactly as the PID path does.
+            import math
+            if math.isfinite(lx) and math.isfinite(ly):
+                slack = math.hypot(vx, vy) * td_s + 50.0
+                if math.hypot(lx - cvx, ly - cvy) <= slack:
+                    return lx, ly
         except Exception:
-            # Never let a model bug command a wild tilt — fall back to the
-            # known-safe constant-velocity lead. (The controller's max_tilt
-            # clamp is the second line of defence.)
             pass
-    return px + vx * td_s, py + vy * td_s
+    return cvx, cvy
 
 
 def load_ball_model(path: Optional[str]):

@@ -48,6 +48,29 @@ def test_broken_model_falls_back_safely():
     assert out == (5.0, 4.0)           # const-vel: 4+2*0.5, 4+0
 
 
+def test_nonfinite_model_output_is_rejected():
+    # NaN/inf don't raise, so the try/except wouldn't catch them — the finite
+    # guard must. A non-finite lead would otherwise command a wild tilt and
+    # break the level hold the controller does at rest.
+    class _NanModel:
+        def integrate(self, px, py, vx, vy, td, hist):
+            return float('nan'), float('inf')
+    out = predict_lead(4.0, 4.0, 2.0, 0.0, 0.5, method='model',
+                       model=_NanModel())
+    assert out == (5.0, 4.0)           # const-vel, non-finite rejected
+
+
+def test_wild_model_output_is_rejected():
+    # A model that teleports the ball far beyond a const-velocity step is a
+    # bad fit; it must be distrusted so the loop holds the const-velocity lead.
+    class _WildModel:
+        def integrate(self, px, py, vx, vy, td, hist):
+            return px + 10000.0, py - 10000.0
+    out = predict_lead(0.0, 0.0, 1.0, 1.0, 0.1, method='model',
+                       model=_WildModel())
+    assert out == predict_lead(0.0, 0.0, 1.0, 1.0, 0.1)   # → const-vel
+
+
 def test_load_ball_model_phase0_is_none():
     assert load_ball_model('whatever/path.yaml') is None
     assert load_ball_model(None) is None

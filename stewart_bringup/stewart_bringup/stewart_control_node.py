@@ -2878,8 +2878,12 @@ class StewartControlNode(Node):
         max_tilt = float(max(1.0, min(float(d.get('max_tilt_deg', 6.0)), 8.0)))
         v_break = float(max(5.0, min(float(d.get('v_break_mm_s', 25.0)), 200.0)))
         z = float(max(0.0, min(float(d.get('z_mm', 30.0)), 80.0)))
+        # The ball must actually roll this far from rest to count as breaking
+        # loose — guards against a momentary wobble being read as breakaway.
+        min_travel = float(max(5.0, min(float(d.get('min_travel_mm', 25.0)),
+                                        150.0)))
         params = dict(axis=axis, ramp=ramp, max_tilt=max_tilt,
-                      v_break=v_break, z=z)
+                      v_break=v_break, z=z, min_travel=min_travel)
         self._breakaway_running = True
         self._breakaway_result = None
         threading.Thread(target=self._breakaway_run, args=(params,),
@@ -2888,17 +2892,22 @@ class StewartControlNode(Node):
                       f"{max_tilt:.1f}deg, break at {v_break:.0f}mm/s")
 
     def _breakaway_run(self, params):
-        """Daemon: ramp tilt up at a constant rate, watching the ball speed;
-        the tilt at which |v| first crosses v_break is the breakaway θ_s.
-        Publishes [t, pitch_cmd, roll_cmd, phase, ball_speed] on
-        /latency_bench/diag throughout (phase 1=ramping, 2=broke loose) so a
-        recording captures the full ramp for the fitter. Always returns to
-        level + rest on exit, even on error or disarm."""
+        """Daemon: ramp tilt up at a constant rate, watching the ball. The
+        breakaway θ_s is the tilt at which the ball FIRST exceeds v_break — but
+        only CONFIRMED once it has actually rolled `min_travel` mm away from
+        rest, so a momentary wobble (a speed blip that doesn't go anywhere) is
+        never mistaken for breaking loose. Publishes
+        [t, pitch_cmd, roll_cmd, phase, ball_speed, displacement_mm] on
+        /latency_bench/diag (phase 1=ramping, 2=confirmed broke) so a recording
+        captures the full ramp for the fitter. On exit always returns to level
+        AND turns the level-hold back ON (for easy ball reset between runs),
+        even on error or disarm."""
         axis = params['axis']
         z = params['z']
         ramp = params['ramp']
         max_tilt = params['max_tilt']
         v_break = params['v_break']
+        min_travel = params['min_travel']
         level_was_on = bool(self.level_enabled)
         result = None
         try:
@@ -2906,6 +2915,8 @@ class StewartControlNode(Node):
                 self._stop_level_loop()
             self._do_set_pose(0.0, 0.0, z, 0.0, 0.0, 0.0)   # level baseline
             time.sleep(1.0)                                 # "still" segment
+            px0 = py0 = None                # rest reference (first valid frame)
+            candidate_tilt = None           # tilt at first motion above v_break
             t0 = time.monotonic()
             while self._breakaway_running:
                 tilt_deg = min(max_tilt, ramp * (time.monotonic() - t0))
@@ -2913,40 +2924,67 @@ class StewartControlNode(Node):
                 r_cmd = tilt_deg if axis == 'roll' else 0.0
                 self._do_set_pose(0.0, 0.0, z, r_cmd, p_cmd, 0.0)
                 speed = 0.0
+                disp = 0.0
                 if (self.last_ball_state is not None
                         and (time.monotonic() - self.last_ball_state_t) < 0.5):
-                    _, _, vx, vy = self.last_ball_state
+                    px, py, vx, vy = self.last_ball_state
                     speed = math.hypot(vx, vy)
-                broke = speed >= v_break and tilt_deg > 0.3
+                    if px0 is None:
+                        px0, py0 = px, py            # capture rest position
+                    disp = math.hypot(px - px0, py - py0)
+                # Candidate: first time the ball is clearly moving at a real
+                # tilt — remember the angle it started at.
+                if (candidate_tilt is None and speed >= v_break
+                        and tilt_deg > 0.3):
+                    candidate_tilt = tilt_deg
+                # A candidate that stalled (speed died AND it never went
+                # anywhere) was a wobble — forget it and keep ramping so a
+                # later, real breakaway is caught at its true angle.
+                elif (candidate_tilt is not None and speed < v_break * 0.5
+                        and disp < min_travel * 0.5):
+                    candidate_tilt = None
+                # Confirmed: the ball actually rolled min_travel mm from rest.
+                # Report the angle it STARTED at, not the higher angle it has
+                # ramped to by the time it had travelled that far.
+                broke = disp >= min_travel and candidate_tilt is not None
                 m = Float32MultiArray()
+                # [t, pitch_cmd, roll_cmd, phase, speed, displacement,
+                #  breakaway_angle] — the 7th element carries θ_s (the angle the
+                #  ball STARTED at) so a recorded bag reports the same value the
+                #  daemon does, not the higher angle reached by confirmation.
                 m.data = [float(time.monotonic() - t0), float(p_cmd),
                           float(r_cmd), float(2.0 if broke else 1.0),
-                          float(speed)]
+                          float(speed), float(disp),
+                          float(candidate_tilt or 0.0)]
                 self.pub_latency_bench.publish(m)
                 if broke:
-                    result = round(tilt_deg, 2)
+                    result = round(candidate_tilt, 2)
                     self.get_logger().info(
-                        f"[breakaway] ball broke loose at {tilt_deg:.2f}deg "
-                        f"({axis}), speed {speed:.0f} mm/s")
+                        f"[breakaway] confirmed at {candidate_tilt:.2f}deg "
+                        f"({axis}): ball rolled {disp:.0f}mm, "
+                        f"speed {speed:.0f} mm/s")
                     break
                 if tilt_deg >= max_tilt:
                     self.get_logger().warn(
-                        f"[breakaway] reached max {max_tilt:.1f}deg, no breakaway")
+                        f"[breakaway] reached max {max_tilt:.1f}deg — no "
+                        f"confirmed breakaway (travelled <{min_travel:.0f}mm)")
                     break
                 time.sleep(0.02)                            # ~50 Hz
             self._breakaway_result = result
         except Exception as e:
             self.get_logger().warn(f"breakaway error: {e}")
         finally:
+            # Return to level baseline, then turn the level-hold ON regardless
+            # of its prior state so the platform actively holds level for the
+            # operator to reset the ball before the next run.
             try:
                 self._do_set_pose(0.0, 0.0, z, 0.0, 0.0, 0.0)
             except Exception:
                 pass
-            if level_was_on:
-                try:
-                    self._do_enable_level(True)
-                except Exception:
-                    pass
+            try:
+                self._do_enable_level(True)
+            except Exception:
+                pass
             self._breakaway_running = False
 
     def _do_latency_step(self, d):
