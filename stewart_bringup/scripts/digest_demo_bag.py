@@ -691,6 +691,7 @@ def _read_level_diag(bag_dir: str):
     t = []
     cr, cp, ir, ip, pr, pp, er, ep, cf = [], [], [], [], [], [], [], [], []
     fmode, astate, aerr = [], [], []
+    mtgt, lenc, lvel, liq = [], [], [], []   # per-leg target / enc / vel / iq
     while reader.has_next():
         topic, raw, t_ns = reader.read_next()
         if topic != '/level_diag':
@@ -708,6 +709,10 @@ def _read_level_diag(bag_dir: str):
         fmode.append([int(x) for x in m.feeder_mode])
         astate.append([int(x) for x in m.axis_state])
         aerr.append([int(x) for x in m.active_errors])
+        mtgt.append([float(x) for x in m.motor_targets])
+        lenc.append([float(x) for x in m.leg_enc])
+        lvel.append([float(x) for x in m.leg_vel])
+        liq.append([float(x) for x in m.leg_iq])
     if not t:
         return None
     return {
@@ -720,6 +725,10 @@ def _read_level_diag(bag_dir: str):
         'feeder_mode': np.array(fmode, dtype=np.int64),
         'axis_state': np.array(astate, dtype=np.int64),
         'active_errors': np.array(aerr, dtype=np.int64),
+        'motor_targets': np.array(mtgt, dtype=float),
+        'leg_enc': np.array(lenc, dtype=float),
+        'leg_vel': np.array(lvel, dtype=float),
+        'leg_iq': np.array(liq, dtype=float),
     }
 
 
@@ -788,6 +797,36 @@ def _level_loop_analysis(d):
                                    if bool(np.any(real[:, i]))]
     else:
         out['legs_with_faults'] = []
+    # Per-leg correction-following — the decisive jacobian-vs-mechanical test.
+    # motor_targets is the per-leg position the IK commanded; leg_enc is where
+    # the leg actually went. A leg whose actual lags its target isn't following
+    # (mechanical: belt / coupling / drive). If every leg tracks its target but
+    # the plate still under-rotates, the targets themselves are wrong (jacobian).
+    # leg_iq (q-axis current) flags a straining or slipping leg.
+    mt, le = d.get('motor_targets'), d.get('leg_enc')
+    lv, lq = d.get('leg_vel'), d.get('leg_iq')
+    out['per_leg'] = None
+    if (mt is not None and le is not None and mt.ndim == 2
+            and mt.shape == le.shape and mt.shape[1] == 6 and mt.shape[0] > 0):
+        track = mt - le
+
+        def _absmax6(a):
+            if a is None or a.shape != mt.shape:
+                return None
+            with np.errstate(invalid='ignore'):
+                return [round(float(np.nanmax(np.abs(a[:, i]))), 3) for i in range(6)]
+
+        with np.errstate(invalid='ignore'):
+            tabsmax = [round(float(np.nanmax(np.abs(track[:, i]))), 4) for i in range(6)]
+            tmean = [round(float(np.nanmean(track[:, i])), 4) for i in range(6)]
+        finite = [v for v in tabsmax if np.isfinite(v)]
+        out['per_leg'] = {
+            'track_err_mean_turns': tmean,
+            'track_err_absmax_turns': tabsmax,
+            'vel_absmax_tps': _absmax6(lv),
+            'iq_absmax_a': _absmax6(lq),
+            'worst_tracking_leg': (int(np.nanargmax(tabsmax)) if finite else None),
+        }
     # Verdict — three regimes:
     #   (1) WINDUP/SATURATION: corr rails at max_corr or grows while |err|
     #       won't shrink (the loop fighting something it can't move).
@@ -816,6 +855,15 @@ def _level_loop_analysis(d):
         windup.append(f"axis not CLOSED_LOOP {out['axis_not_closed_pct']:.0f}% of ticks")
     if out['legs_with_faults']:
         windup.append(f"per-leg faults on legs {out['legs_with_faults']}")
+    pl = out.get('per_leg')
+    if pl and pl.get('worst_tracking_leg') is not None:
+        tae = pl['track_err_absmax_turns']
+        fin = [v for v in tae if np.isfinite(v)]
+        wl = pl['worst_tracking_leg']
+        if fin and np.isfinite(tae[wl]) and tae[wl] > max(0.05, 3.0 * float(np.median(fin))):
+            windup.append(
+                f"leg {wl} tracking error {tae[wl]:.3f} turns >> others "
+                f"(median {float(np.median(fin)):.3f}) - that leg isn't following its target")
     if windup:
         out['verdict'] = 'WINDUP/SATURATION - ' + '; '.join(windup)
     elif mismatch:
@@ -1253,6 +1301,13 @@ def digest(bag_dir: str):
                   f"(non-pos {ll.get('feeder_nonpos_pct')}%)  "
                   f"axis_not_closed {ll.get('axis_not_closed_pct')}%  "
                   f"faults {ll.get('legs_with_faults')}")
+        pl = ll.get('per_leg')
+        if pl:
+            print(f"    per-leg track_err |max| turns: {pl['track_err_absmax_turns']}"
+                  + (f"  (worst=leg{pl['worst_tracking_leg']})"
+                     if pl.get('worst_tracking_leg') is not None else ""))
+            if pl.get('iq_absmax_a'):
+                print(f"    per-leg iq |max| A: {pl['iq_absmax_a']}")
         print(f"    verdict: {ll['verdict']}")
     hs = summary.get('host') or {}
     if hs:
