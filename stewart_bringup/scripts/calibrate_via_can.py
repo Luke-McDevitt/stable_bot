@@ -5,8 +5,9 @@ CAN, with a before/after parameter dump pushed to git and a built-in verify.
 After reassembling an actuator the motor/encoder commutation offset is lost
 (the motor "doesn't rotate as commanded"). This fires the standard
 FULL_CALIBRATION_SEQUENCE (axis state 3) — re-measuring phase
-resistance/inductance and the encoder offset — polls the heartbeat until it
-finishes, checks the result, and only then calls save_configuration().
+resistance/inductance and the encoder offset — confirms the axis actually
+enters the calibration, polls until it finishes, checks the result, and only
+then calls save_configuration().
 
 It writes NO config of its own; save_configuration() persists the fresh
 calibration alongside the unchanged flash config. On fw 0.6.11 the RS-485
@@ -21,8 +22,9 @@ limits, control/input mode, gains) did NOT move.
 
 SAFETY — calibration ROTATES the motor (the encoder-offset lockin); on a
 lead-screw leg that is real travel. Run with the leg DISCONNECTED from the
-platform and free to rotate, ONE node at a time, and watch it. A non-zero
-procedure_result aborts before saving.
+platform and free to rotate, ONE node at a time, and watch it. If the axis
+never leaves IDLE (a rejected state, usually an active error) or returns a
+non-zero procedure_result, the script aborts WITHOUT saving.
 
   sudo systemctl stop stable_bot                       # free the bus
   python3 scripts/calibrate_via_can.py --node 2        # dry-run preview
@@ -33,6 +35,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import math
 import os
 import struct
 import subprocess
@@ -81,18 +84,21 @@ _PROTECTED = (
 
 
 def _ts():
-    return datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+    return datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
 
 
 def _send(bus, node, cmd, data=b''):
-    data = (data + b'\x00' * 8)[:8]
+    # Send the EXACT payload (matches the control node's _send_cmd). ODrive
+    # validates the DLC on standard commands like Set_Axis_State (4 bytes), so
+    # padding to 8 makes the drive silently ignore the command.
     bus.send(can.Message(arbitration_id=(node << 5) | cmd, data=data,
                          is_extended_id=False), timeout=0.2)
 
 
 def _read_heartbeat(bus, node, timeout):
-    """Next heartbeat for node -> (axis_state, procedure_result), else (None, None).
-    Layout (0.6.x): data[4]=axis_state, data[5]=procedure_result."""
+    """Next heartbeat for node -> (axis_state, procedure_result, axis_error),
+    else (None, None, None). Layout (0.6.x): [0:4]=axis_error (legacy),
+    [4]=axis_state, [5]=procedure_result."""
     want = (node << 5) | CMD_HEARTBEAT
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -100,8 +106,9 @@ def _read_heartbeat(bus, node, timeout):
         if m is None:
             break
         if m.arbitration_id == want and len(m.data) >= 6:
-            return int(m.data[4]), int(m.data[5])
-    return None, None
+            err = struct.unpack('<I', bytes(m.data[0:4]))[0]
+            return int(m.data[4]), int(m.data[5]), err
+    return None, None, None
 
 
 def _load_save_endpoint():
@@ -177,10 +184,18 @@ def _git_push(repo, rel, msg):
         print(f"  git push failed ({e}) — dump saved locally, push it manually later")
 
 
+def _changed(b, a):
+    """True if b != a, treating nan==nan as unchanged (Python's nan != nan)."""
+    if (isinstance(b, float) and isinstance(a, float)
+            and math.isnan(b) and math.isnan(a)):
+        return False
+    return b != a
+
+
 def _verify(before, after):
     keys = sorted(set(before) | set(after))
     changed = [(k, before.get(k), after.get(k)) for k in keys
-               if before.get(k) != after.get(k)]
+               if _changed(before.get(k), after.get(k))]
     print(f"\n=== VERIFY: {len(changed)} parameter(s) changed by calibration ===")
     for k, b, a in changed:
         tag = '   [PROTECTED]' if k in _PROTECTED else ''
@@ -190,7 +205,6 @@ def _verify(before, after):
         print(f"  *** WARNING: protected config changed: {prot} — investigate. ***")
     else:
         print("  protected config (node_id / limits / mode / gains) UNCHANGED ✓")
-    # Did the calibration actually land? phase_*_valid should be true.
     rv = after.get('axis0.config.motor.phase_resistance_valid')
     iv = after.get('axis0.config.motor.phase_inductance_valid')
     if rv is not None or iv is not None:
@@ -210,7 +224,7 @@ def calibrate_node(node, channel, do_run, do_push, do_verify):
     client = SdoClient(channel=channel)
     bus = client.bus
     try:
-        st, _pr = _read_heartbeat(bus, node, timeout=2.0)
+        st, _pr, _e = _read_heartbeat(bus, node, timeout=2.0)
         if st is None:
             sys.exit(f"no heartbeat from node {node} on {channel} — powered, on "
                      f"the bus, and stack stopped?")
@@ -225,7 +239,7 @@ def calibrate_node(node, channel, do_run, do_push, do_verify):
             do_push = False
 
         # ---- BEFORE dump (+push immediately, so the pre-state is safe) ----
-        print("node %d: dumping parameters (BEFORE)..." % node)
+        print(f"node {node}: dumping parameters (BEFORE)...")
         before = _dump_config(client, node, flat_eps)
         before_rel = _write_dump(repo, run_ts, node, 'before', before, fw) if repo else None
         if do_push and before_rel:
@@ -239,25 +253,43 @@ def calibrate_node(node, channel, do_run, do_push, do_verify):
         time.sleep(0.3)
         _send(bus, node, CMD_SET_AXIS_STATE,
               struct.pack('<I', STATE_FULL_CALIBRATION_SEQUENCE))
-        print(f"node {node}: FULL_CALIBRATION_SEQUENCE started...")
-        time.sleep(1.0)
-        deadline = time.monotonic() + 45.0
-        last_state, result = None, None
+        print(f"node {node}: FULL_CALIBRATION_SEQUENCE requested...")
+
+        # Phase 1 — confirm it actually STARTS (leaves IDLE). If the drive
+        # rejects the state (almost always an active error / precondition) it
+        # just stays in IDLE.
+        left_idle = False
+        start_deadline = time.monotonic() + 5.0
+        while time.monotonic() < start_deadline:
+            s, pr, err = _read_heartbeat(bus, node, timeout=1.0)
+            if s is not None and s != STATE_IDLE:
+                left_idle = True
+                print(f"  calibration running (axis_state={s})...")
+                break
+        if not left_idle:
+            s, pr, err = _read_heartbeat(bus, node, timeout=1.0)
+            sys.exit(
+                f"node {node}: calibration did NOT start — axis stayed IDLE, so the "
+                f"drive rejected the request (heartbeat axis_error=0x{(err or 0):08X}, "
+                f"procedure_result={pr}). Almost always an active error or a "
+                f"precondition. Open the GUI errors panel (or odrivetool) on node "
+                f"{node}, clear errors, check the motor + RS-485 encoder wiring, then "
+                f"retry. Nothing was saved.")
+
+        # Phase 2 — wait for it to finish (return to IDLE) + read the result.
+        deadline = time.monotonic() + 60.0
+        result = None
         while time.monotonic() < deadline:
-            s, pr = _read_heartbeat(bus, node, timeout=2.0)
-            if s is None:
-                continue
-            if s != last_state:
-                print(f"  axis_state={s} procedure_result={pr}")
-                last_state = s
+            s, pr, err = _read_heartbeat(bus, node, timeout=2.0)
             if s == STATE_IDLE:
                 result = pr
                 break
         if result is None:
-            sys.exit(f"node {node}: did not return to IDLE within 45s — check the drive.")
+            sys.exit(f"node {node}: calibration didn't finish within 60s — check the drive.")
         if result != PROCEDURE_SUCCESS:
             sys.exit(f"node {node}: calibration FAILED (procedure_result={result}). "
-                     f"NOT saving. Check wiring + free rotation, clear errors, retry.")
+                     f"NOT saving. Check wiring + that the motor can rotate freely, "
+                     f"clear errors, retry.")
         print(f"node {node}: calibration SUCCESS. save_configuration() (reboot ~18s)...")
         client.call_function(node, save_id)
 
@@ -265,10 +297,10 @@ def calibrate_node(node, channel, do_run, do_push, do_verify):
         time.sleep(18.0)
         back_deadline = time.monotonic() + 15.0
         while time.monotonic() < back_deadline:
-            s, _pr = _read_heartbeat(bus, node, timeout=2.0)
+            s, _pr, _e = _read_heartbeat(bus, node, timeout=2.0)
             if s is not None:
                 break
-        print("node %d: dumping parameters (AFTER)..." % node)
+        print(f"node {node}: dumping parameters (AFTER)...")
         after = _dump_config(client, node, flat_eps)
         after_rel = _write_dump(repo, run_ts, node, 'after', after, fw) if repo else None
         if do_push and after_rel:
