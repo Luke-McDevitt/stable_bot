@@ -788,23 +788,41 @@ def _level_loop_analysis(d):
                                    if bool(np.any(real[:, i]))]
     else:
         out['legs_with_faults'] = []
-    # Verdict.
-    bits = []
+    # Verdict — three regimes:
+    #   (1) WINDUP/SATURATION: corr rails at max_corr or grows while |err|
+    #       won't shrink (the loop fighting something it can't move).
+    #   (2) IK/CALIBRATION MISMATCH: a large STANDING correction holds a
+    #       near-level plate — the integrator covering a model gap, e.g. a
+    #       stale empirical jacobian (docs/level_loop_lessons_learned.md §2).
+    #   (3) nominal.
+    # Actuator flags only count above a few percent so a single arm/disarm
+    # tick (~0.3%) can't masquerade as a fault.
+    windup, mismatch = [], []
     for ax in ('roll', 'pitch'):
         a = out[ax]
         if a['winding_up'] or a['pct_at_max_corr'] > 30.0:
-            bits.append(
+            windup.append(
                 f"{ax}: corr {a['corr_start_deg']:+.2f}->{a['corr_end_deg']:+.2f}deg "
                 f"(at max_corr {a['pct_at_max_corr']:.0f}% of ticks) while |err| "
                 f"stayed {a['err_filt_mean_abs_deg']:.2f}deg -> not leveling")
-    if out['feeder_nonpos_pct']:
-        bits.append(f"feeder not in pos mode {out['feeder_nonpos_pct']:.0f}% of ticks")
-    if out['axis_not_closed_pct']:
-        bits.append(f"axis not CLOSED_LOOP {out['axis_not_closed_pct']:.0f}% of ticks")
+        elif a['corr_abs_max_deg'] > 0.5 and a['err_filt_mean_abs_deg'] < 0.3:
+            mismatch.append(
+                f"{ax}: standing corr up to {a['corr_abs_max_deg']:.2f}deg holds err "
+                f"to only {a['err_filt_mean_abs_deg']:.2f}deg -> big correction for a "
+                f"near-level plate")
+    if (out['feeder_nonpos_pct'] or 0.0) > 5.0:
+        windup.append(f"feeder not in pos mode {out['feeder_nonpos_pct']:.0f}% of ticks")
+    if (out['axis_not_closed_pct'] or 0.0) > 5.0:
+        windup.append(f"axis not CLOSED_LOOP {out['axis_not_closed_pct']:.0f}% of ticks")
     if out['legs_with_faults']:
-        bits.append(f"per-leg faults on legs {out['legs_with_faults']}")
-    out['verdict'] = ('WINDUP/SATURATION - ' + '; '.join(bits)) if bits else \
-        'leveling nominal (corrections tracked the IMU error, no rail)'
+        windup.append(f"per-leg faults on legs {out['legs_with_faults']}")
+    if windup:
+        out['verdict'] = 'WINDUP/SATURATION - ' + '; '.join(windup)
+    elif mismatch:
+        out['verdict'] = ('IK/CALIBRATION MISMATCH (suspect a stale empirical '
+                          'jacobian) - ' + '; '.join(mismatch))
+    else:
+        out['verdict'] = 'leveling nominal (corrections tracked the IMU error, no rail)'
     return out
 
 
