@@ -2400,6 +2400,19 @@ class StewartControlNode(Node):
                 ok, reply_msg = self._save_limits_from_captures(
                     rest_offset_turns=offset,
                     default_stroke_turns=stroke)
+                if ok:
+                    # Homing just redefined the rest datum, so zero the
+                    # commanded pose to match. The GUI's Stabilization and
+                    # Demo 2 Z sliders both sync from current_xyz via /status
+                    # (syncStabZFromStatus / syncDemo2ZFromStatus), so this
+                    # snaps both sliders to 0 and stops the next engage from
+                    # slamming to a stale pre-home Z. No motor command here:
+                    # manual capture-homing is hands-on / disarmed (unlike the
+                    # 'rest pose' path at ~L2522, which moves because it runs
+                    # armed). Persisted so a restart keeps Z=0.
+                    self.current_xyz = [0.0, 0.0, 0.0]
+                    self.current_rpy = [0.0, 0.0, 0.0]
+                    self._save_persisted_pose()
                 # Echo the captured state so the GUI can update its
                 # status indicators after save.
                 extra['captured'] = {
