@@ -2539,6 +2539,7 @@ class StewartControlNode(Node):
             elif cmd == 'set_speed_cap':
                 v = max(0.1, min(float(d.get('value', 1.0)), self.hard_max_vel))
                 self.soft_max_vel = v
+                self._apply_vel_limit_live()    # push the new cap to the drives now
                 ok, reply_msg = True, f"soft_max_vel = {v:.3f}"
             elif cmd == 'set_control_method':
                 # PID (constant-velocity lead) ⇄ physics-model predictor.
@@ -4179,6 +4180,24 @@ class StewartControlNode(Node):
         self.leg_current_a = current_a
         return True, f"current = {current_a:.1f} A on all 6 legs"
 
+    def _apply_vel_limit_live(self):
+        """Push the current soft_max_vel (×1.5) to every leg's SET_LIMITS so a
+        speed-cap change takes effect on the running drives immediately, not
+        only at the next arm. SET_LIMITS carries [vel_limit, current_limit], so
+        the current cap (self.leg_current_a) is re-sent unchanged alongside the
+        new vel_limit. Mirrors _do_set_leg_current; no-op if the bus is down."""
+        if self.bus is None:
+            return
+        vl = self.soft_max_vel * 1.5
+        cur = float(self.leg_current_a)
+        with self.bus_lock:
+            for n in range(6):
+                try:
+                    _send_cmd(self.bus, n, CMD_SET_LIMITS,
+                              struct.pack('<ff', vl, cur))
+                except Exception:
+                    pass
+
     def _do_clear_errors(self):
         if self.bus is None:
             return False, "bus not open"
@@ -4382,6 +4401,7 @@ class StewartControlNode(Node):
         v = float(req.data)
         v = max(0.1, min(v, self.hard_max_vel))
         self.soft_max_vel = v
+        self._apply_vel_limit_live()        # push the new cap to the drives now
         res.success = True
         res.message = f"soft_max_vel = {v:.3f} turns/s"
         return res
