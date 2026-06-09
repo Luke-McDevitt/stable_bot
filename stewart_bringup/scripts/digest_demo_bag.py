@@ -874,6 +874,61 @@ def _level_loop_analysis(d):
     return out
 
 
+def _vision_dropout_analysis(state_t, state_xy, state_v, det_t,
+                             v_thresh_mm_s=30.0):
+    """Detection rate vs ball velocity — is the detector losing the ball when
+    it's (nearly) stopped? `det_t` = per-NEW-detection timestamps
+    (`/ball_xy_mono/lat` fires once per fresh detection, ~the raw detector
+    cadence), `state_t`/`state_v` = the KF velocity. Splits the run into MOVING
+    (|v| > v_thresh) vs STOPPED and reports the detection rate in each, plus
+    where the ball sat while stopped (to catch an edge / location effect).
+    Returns None if there isn't enough data."""
+    state_t = np.asarray(state_t, dtype=np.float64)
+    det_t = np.asarray(det_t, dtype=np.float64)
+    sv = np.asarray(state_v, dtype=np.float64)
+    if (state_t.size < 5 or det_t.size < 5 or sv.ndim != 2
+            or sv.shape[0] != state_t.size):
+        return None
+    speed = np.hypot(sv[:, 0], sv[:, 1])               # mm/s
+    ts = state_t * 1e-9
+    dts = np.diff(ts)
+    moving = speed[:-1] > v_thresh_mm_s
+    t_moving = float(np.sum(dts[moving]))
+    t_stopped = float(np.sum(dts[~moving]))
+    det_speed = np.interp(det_t * 1e-9, ts, speed)     # |v| at each detection
+    n_mov = int(np.sum(det_speed > v_thresh_mm_s))
+    n_stp = int(np.sum(det_speed <= v_thresh_mm_s))
+    hz_mov = round(n_mov / t_moving, 1) if t_moving > 0.5 else None
+    hz_stp = round(n_stp / t_stopped, 1) if t_stopped > 0.5 else None
+    out = {
+        'v_thresh_mm_s': v_thresh_mm_s,
+        'n_detections': int(det_t.size),
+        't_moving_s': round(t_moving, 2),
+        't_stopped_s': round(t_stopped, 2),
+        'detect_hz_moving': hz_mov,
+        'detect_hz_stopped': hz_stp,
+    }
+    sxy = np.asarray(state_xy, dtype=np.float64)
+    stopped = speed <= v_thresh_mm_s
+    if sxy.ndim == 2 and sxy.shape[0] == state_t.size and bool(np.any(stopped)):
+        sp = sxy[stopped]
+        out['stopped_pos_median_mm'] = [round(float(np.median(sp[:, 0])), 1),
+                                        round(float(np.median(sp[:, 1])), 1)]
+        out['stopped_pos_radius_mm'] = round(
+            float(np.median(np.hypot(sp[:, 0], sp[:, 1]))), 1)
+    if hz_mov and hz_stp is not None:
+        ratio = (hz_stp / hz_mov) if hz_mov > 0 else None
+        out['stopped_over_moving'] = round(ratio, 2) if ratio is not None else None
+        if ratio is not None and ratio < 0.6:
+            out['verdict'] = (f"detector loses the ball when stopped: {hz_mov} Hz "
+                              f"moving -> {hz_stp} Hz stopped "
+                              f"({ratio * 100:.0f}% of the moving rate)")
+        else:
+            out['verdict'] = (f"detection rate holds when stopped ({hz_mov} Hz "
+                              f"moving vs {hz_stp} Hz stopped)")
+    return out
+
+
 def digest(bag_dir: str):
     print(f"[demo-digest] reading {bag_dir}")
     data = _read_bag(bag_dir)
@@ -889,6 +944,15 @@ def digest(bag_dir: str):
     state_t, state_xy, state_v = data['state']
     state_age = data['state_age']      # photon→state latency (s) per /ball_state
     monolat = data['monolat'][1]       # [cap→in ms, cap→out ms] per mono publish
+    # Vision dropout: detection rate while the ball is moving vs stopped.
+    # Separate + guarded — never breaks the core digest. det timestamps come
+    # from /ball_xy_mono/lat (one per fresh detection).
+    try:
+        vision_dropout = _vision_dropout_analysis(
+            state_t, state_xy, state_v, data['monolat'][0])
+    except Exception as _vd_e:
+        print(f"  [vision_dropout] skipped ({_vd_e})")
+        vision_dropout = None
     ref_t, ref_xy = data['ref']
     mono_t, mono_xy = data['mono']
     depth_t, depth_xy = data['depth']
@@ -1175,6 +1239,8 @@ def digest(bag_dir: str):
         # integ-clamp saturation %, IMU error, feeder/axis state + verdict).
         # None unless the bag carries /level_diag (a leveling attempt).
         'level_loop': level_loop,
+        # Detector dropout: detection rate while the ball moves vs while stopped.
+        'vision_dropout': vision_dropout,
     }
 
     print(f"[demo-digest] label={label} duration={duration_s:.1f}s "
@@ -1309,6 +1375,15 @@ def digest(bag_dir: str):
             if pl.get('iq_absmax_a'):
                 print(f"    per-leg iq |max| A: {pl['iq_absmax_a']}")
         print(f"    verdict: {ll['verdict']}")
+    vd = summary.get('vision_dropout')
+    if vd:
+        print(f"  vision_dropout: detect {vd.get('detect_hz_moving')}Hz moving / "
+              f"{vd.get('detect_hz_stopped')}Hz stopped "
+              f"({vd.get('t_moving_s')}s moving / {vd.get('t_stopped_s')}s stopped)"
+              + (f"  stopped@r={vd.get('stopped_pos_radius_mm')}mm"
+                 if vd.get('stopped_pos_radius_mm') is not None else ""))
+        if vd.get('verdict'):
+            print(f"    verdict: {vd['verdict']}")
     hs = summary.get('host') or {}
     if hs:
         cpu = hs.get('cpu_pct') or {}

@@ -1365,6 +1365,19 @@ class OakDriverNode(Node):
                 int(os.environ.get('OAK_ISO', '800'))))
         except Exception:
             self._iso = 800
+        # Calibrated exposure = the env value, treated as the durable source of
+        # truth. A leftover runtime override (e.g. an interrupted exposure
+        # sweep) must not stick — that is what stranded the camera at 8 ms /
+        # ISO 1600 and broke detection on a STOPPED ball. The guardian timer
+        # re-asserts these if no /oak/cmd_exposure has arrived for
+        # OAK_EXP_GUARD_S (the only runtime cmd_exposure source is the sweep,
+        # which is temporary, so this never fights an active sweep). Set
+        # OAK_EXP_GUARD_S=0 to disable.
+        self._exp_us_cal = self._exp_us
+        self._iso_cal = self._iso
+        self._last_exp_cmd_t = None
+        self._exp_guard_s = float(os.environ.get('OAK_EXP_GUARD_S', '120'))
+        self.create_timer(30.0, self._exposure_guardian)
         # Live HSV bounds for cv2 V0. Start at the module defaults;
         # operator can adjust via /oak/cmd_hsv at runtime.
         self._hsv_lo = HSV_LO.copy()
@@ -1753,8 +1766,40 @@ class OakDriverNode(Node):
             return
         self._exp_us = exp_us
         self._iso = iso
+        self._last_exp_cmd_t = self.get_clock().now().nanoseconds * 1e-9
         self._publish_config_snapshot()
         self.get_logger().info(f"  ✓ exposure → {exp_us} µs, ISO {iso}")
+
+    def _exposure_guardian(self):
+        """Re-assert the calibrated (env) exposure if a runtime override drifted
+        it and no /oak/cmd_exposure has arrived for OAK_EXP_GUARD_S. The only
+        runtime cmd_exposure source is the (temporary) exposure sweep, so this
+        auto-heals a leftover sweep value back to the env calibration without
+        fighting an active sweep. OAK_EXP_GUARD_S=0 disables it. No-op whenever
+        the live exposure already equals the calibration (the common case)."""
+        if self._exp_guard_s <= 0 or self.q_cam_ctrl is None:
+            return
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if (self._last_exp_cmd_t is not None
+                and (now - self._last_exp_cmd_t) < self._exp_guard_s):
+            return
+        if (int(self._exp_us) == int(self._exp_us_cal)
+                and int(self._iso) == int(self._iso_cal)):
+            return
+        try:
+            ctrl = dai.CameraControl()
+            ctrl.setManualExposure(int(self._exp_us_cal), int(self._iso_cal))
+            self.q_cam_ctrl.send(ctrl)
+        except Exception as e:
+            self.get_logger().warn(f"  exposure guardian send failed: {e}")
+            return
+        self.get_logger().warn(
+            f"  exposure guardian: reverted {self._exp_us}µs/ISO{self._iso} -> "
+            f"calibrated {self._exp_us_cal}µs/ISO{self._iso_cal} "
+            f"(drifted, no /oak/cmd_exposure for {self._exp_guard_s:.0f}s)")
+        self._exp_us = self._exp_us_cal
+        self._iso = self._iso_cal
+        self._publish_config_snapshot()
 
     def _on_hsv_cmd(self, msg: Float32MultiArray):
         """Live HSV-bound update from the GUI sliders. Payload is
