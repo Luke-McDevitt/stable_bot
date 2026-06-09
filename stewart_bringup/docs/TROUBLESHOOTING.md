@@ -50,6 +50,38 @@ If **Clear all** doesn't work (drives don't respond), the CAN bus is
 off. Click **Soft-reset CAN bus** — if that times out,
 physically unplug + replug the USB-CAN cable.
 
+### One leg under-actuates — leveling "freezes", real Z falls short
+
+**Symptom.** One leg lags its commanded position; the hold-level loop's
+`corr_roll`/`corr_pitch` wind up and can rail to `max_corr` (the platform
+"freezes" while trying to level); a pure-Z heave moves some legs ~2× others;
+and the real platform Z ends up well below the commanded/GUI Z. The deficit
+grows the harder you push.
+
+**Diagnose.** Record a hold-level (or any) bag with the demo recorder and
+digest it. The `level_loop` block in `digest.summary.json` reports, per leg,
+`track_err_absmax_turns` (commanded `motor_target` − actual `leg_enc`),
+`vel_absmax_tps`, `iq_absmax_a`, and names the `worst_tracking_leg`. The bad
+leg shows a **large tracking error and ~half the peak velocity of the others
+but NORMAL current.** That combination — work in, no motion out, current *not*
+elevated — means the motor is turning but the leg isn't following. (A seized /
+high-friction leg would instead *spike* current and usually latch
+`SPINOUT_DETECTED`.)
+
+**Rule out the cheap thing first** (drive-config asymmetry, no disassembly):
+`journalctl -u stable_bot -b | grep -i wL_FF` (did torque-FF fail to write on
+that leg?), and with the stack stopped, `set_odrive_feedforward_via_can.py
+--status` to compare that leg's `wL_FF_enable` / `current_soft_max` / gains to
+the others. If the config matches the others, it's **mechanical**.
+
+**Root cause seen 2026-06-09 (leg 5):** the **Dyneema actuation thread had
+slipped off a pulley**, so the motor spun and drew normal current but the leg
+didn't actuate. **Fix: power down and re-seat the Dyneema thread on the
+pulley** (check thread routing/tension on the other legs while you're in
+there). Confirm by re-digesting a level bag — the leg's `track_err` should
+drop to the others' (~0.1–0.3 turns), the standing `corr` collapses, and the
+freeze / Z-shortfall is gone.
+
 ### CAN "Transmit buffer full"
 
 The kernel TX queue is saturated because sends are failing (ODrives in
