@@ -22,6 +22,7 @@ Topics consumed:
   /status                      String (JSON)
   /leg_encoders                Float64MultiArray[6]
   /leg_currents                Float32MultiArray[6]
+  /level_diag                  jugglebot_interfaces/LevelDiag (hold-level loop)
 
 The headline metric is **tracking error**: the Euclidean distance
 between the KF ball state and the active reference, sampled at the
@@ -64,6 +65,10 @@ try:
         from sensor_msgs.msg import Imu
     except ImportError:
         Imu = None
+    try:
+        from jugglebot_interfaces.msg import LevelDiag
+    except ImportError:
+        LevelDiag = None
 except ImportError as e:
     print(f"ERROR: ROS message types missing: {e}", file=sys.stderr)
     sys.exit(2)
@@ -654,9 +659,166 @@ def _next_gain_recommendation(err_mag: np.ndarray,
     }
 
 
+# /level_diag clip_flags bit layout — mirrors stewart_control_node._level_loop.
+_LEVEL_CLIP_BITS = {
+    'rate_limit_r': 0, 'rate_limit_p': 1,
+    'max_corr_r': 2, 'max_corr_p': 3,
+    'deadband_r': 4, 'deadband_p': 5,
+    'integ_clamp_r': 6, 'integ_clamp_p': 7,
+}
+
+
+def _read_level_diag(bag_dir: str):
+    """Second, isolated pass over the bag for /level_diag (LevelDiag, 50 Hz).
+
+    Kept separate from _read_bag so the core tracking digest is untouched: this
+    only does anything for a bag that actually carries /level_diag (a hold-level
+    attempt). Pure ball-track demos and older bags simply skip it (return None).
+    Collects the windup-relevant fields — per-axis correction, integrator, PI
+    output, filtered IMU error, the clip_flags saturation mask, and the actuator
+    state (feeder_mode / axis_state / active_errors) that would explain a frozen
+    platform.
+    """
+    if LevelDiag is None:
+        return None
+    try:
+        reader = _open_bag(bag_dir)
+        types = {t.name: t.type for t in reader.get_all_topics_and_types()}
+    except Exception:
+        return None
+    if '/level_diag' not in types:
+        return None
+    t = []
+    cr, cp, ir, ip, pr, pp, er, ep, cf = [], [], [], [], [], [], [], [], []
+    fmode, astate, aerr = [], [], []
+    while reader.has_next():
+        topic, raw, t_ns = reader.read_next()
+        if topic != '/level_diag':
+            continue
+        try:
+            m = deserialize_message(raw, LevelDiag)
+        except Exception:
+            continue
+        t.append(t_ns)
+        cr.append(float(m.corr_r));     cp.append(float(m.corr_p))
+        ir.append(float(m.integ_r));    ip.append(float(m.integ_p))
+        pr.append(float(m.pi_out_r));   pp.append(float(m.pi_out_p))
+        er.append(float(m.err_r_filt)); ep.append(float(m.err_p_filt))
+        cf.append(int(m.clip_flags))
+        fmode.append([int(x) for x in m.feeder_mode])
+        astate.append([int(x) for x in m.axis_state])
+        aerr.append([int(x) for x in m.active_errors])
+    if not t:
+        return None
+    return {
+        't_ns': np.array(t, dtype=np.int64),
+        'corr_r': np.array(cr), 'corr_p': np.array(cp),
+        'integ_r': np.array(ir), 'integ_p': np.array(ip),
+        'pi_out_r': np.array(pr), 'pi_out_p': np.array(pp),
+        'err_r': np.array(er), 'err_p': np.array(ep),
+        'clip_flags': np.array(cf, dtype=np.int64),
+        'feeder_mode': np.array(fmode, dtype=np.int64),
+        'axis_state': np.array(astate, dtype=np.int64),
+        'active_errors': np.array(aerr, dtype=np.int64),
+    }
+
+
+def _level_loop_analysis(d):
+    """Summarize the hold-level loop from /level_diag, aimed at the
+    'corr grows and the platform freezes' failure: does the per-axis correction
+    wind up toward its max while the IMU error fails to shrink, and is an
+    actuator issue (feeder not in pos mode / axis fault) freezing it? Returns
+    None when the bag carries no /level_diag."""
+    if not d or d['t_ns'].size == 0:
+        return None
+    t_s = (d['t_ns'] - d['t_ns'][0]) * 1e-9
+    n = int(t_s.size)
+    cf = d['clip_flags']
+    step = max(1, n // 60)         # coarse series (<=~60 pts) for shape in JSON
+
+    def _pct(bit):
+        return round(float(np.mean((cf >> bit) & 1)) * 100.0, 1)
+
+    out = {'n': n, 'duration_s': round(float(t_s[-1]), 2),
+           't_s': [round(float(v), 2) for v in t_s[::step]]}
+    for ax, corr, integ, err, mxb, ib, rb, db in (
+        ('roll', d['corr_r'], d['integ_r'], d['err_r'],
+         'max_corr_r', 'integ_clamp_r', 'rate_limit_r', 'deadband_r'),
+        ('pitch', d['corr_p'], d['integ_p'], d['err_p'],
+         'max_corr_p', 'integ_clamp_p', 'rate_limit_p', 'deadband_p'),
+    ):
+        # Is the correction actually reducing tilt error? Compare |err| over the
+        # first vs last fifth: if |err| didn't fall while |corr| climbed, the
+        # loop is winding up against something it can't move.
+        k = max(1, n // 5)
+        err_first = float(np.mean(np.abs(err[:k])))
+        err_last = float(np.mean(np.abs(err[-k:])))
+        corr_first = float(np.mean(np.abs(corr[:k])))
+        corr_last = float(np.mean(np.abs(corr[-k:])))
+        winding_up = (corr_last > corr_first + 0.2) and (err_last >= err_first - 0.05)
+        out[ax] = {
+            'corr_start_deg': round(float(corr[0]), 3),
+            'corr_end_deg': round(float(corr[-1]), 3),
+            'corr_abs_max_deg': round(float(np.max(np.abs(corr))), 3),
+            'integ_abs_max': round(float(np.max(np.abs(integ))), 3),
+            'err_filt_mean_abs_deg': round(float(np.mean(np.abs(err))), 3),
+            'err_filt_end_deg': round(float(err[-1]), 3),
+            'pct_at_max_corr': _pct(_LEVEL_CLIP_BITS[mxb]),
+            'pct_integ_clamp': _pct(_LEVEL_CLIP_BITS[ib]),
+            'pct_rate_limited': _pct(_LEVEL_CLIP_BITS[rb]),
+            'pct_in_deadband': _pct(_LEVEL_CLIP_BITS[db]),
+            'winding_up': bool(winding_up),
+            'corr_series_deg': [round(float(v), 3) for v in corr[::step]],
+            'err_series_deg': [round(float(v), 3) for v in err[::step]],
+        }
+    # Actuator health that would explain a freeze.
+    fm, ast, ae = d['feeder_mode'], d['axis_state'], d['active_errors']
+    # feeder mode: 1 = pos (what level wants); 0 idle, 2 vel, 255 feeder off.
+    out['feeder_mode_last'] = [int(x) for x in fm[-1]] if fm.size else None
+    out['feeder_nonpos_pct'] = (round(float(np.mean(np.any(fm != 1, axis=1))) * 100.0, 1)
+                                if fm.size else None)
+    # axis_state: 8 = CLOSED_LOOP_CONTROL on ODrive; anything else = not driving.
+    out['axis_not_closed_pct'] = (round(float(np.mean(np.any(ast != 8, axis=1))) * 100.0, 1)
+                                  if ast.size else None)
+    # active_errors: 0xFFFFFFFF = "no fresh frame" (not an error); any other
+    # non-zero = a real per-leg fault.
+    if ae.size:
+        real = (ae != 0) & (ae != 0xFFFFFFFF)
+        out['legs_with_faults'] = [i for i in range(ae.shape[1])
+                                   if bool(np.any(real[:, i]))]
+    else:
+        out['legs_with_faults'] = []
+    # Verdict.
+    bits = []
+    for ax in ('roll', 'pitch'):
+        a = out[ax]
+        if a['winding_up'] or a['pct_at_max_corr'] > 30.0:
+            bits.append(
+                f"{ax}: corr {a['corr_start_deg']:+.2f}->{a['corr_end_deg']:+.2f}deg "
+                f"(at max_corr {a['pct_at_max_corr']:.0f}% of ticks) while |err| "
+                f"stayed {a['err_filt_mean_abs_deg']:.2f}deg -> not leveling")
+    if out['feeder_nonpos_pct']:
+        bits.append(f"feeder not in pos mode {out['feeder_nonpos_pct']:.0f}% of ticks")
+    if out['axis_not_closed_pct']:
+        bits.append(f"axis not CLOSED_LOOP {out['axis_not_closed_pct']:.0f}% of ticks")
+    if out['legs_with_faults']:
+        bits.append(f"per-leg faults on legs {out['legs_with_faults']}")
+    out['verdict'] = ('WINDUP/SATURATION - ' + '; '.join(bits)) if bits else \
+        'leveling nominal (corrections tracked the IMU error, no rail)'
+    return out
+
+
 def digest(bag_dir: str):
     print(f"[demo-digest] reading {bag_dir}")
     data = _read_bag(bag_dir)
+    # Hold-level loop windup diagnostic — separate pass, and never allowed to
+    # break the core demo digest: any /level_diag parse/analysis error just
+    # yields level_loop=None.
+    try:
+        level_loop = _level_loop_analysis(_read_level_diag(bag_dir))
+    except Exception as _ll_e:
+        print(f"  [level_loop] skipped ({_ll_e})")
+        level_loop = None
 
     state_t, state_xy, state_v = data['state']
     state_age = data['state_age']      # photon→state latency (s) per /ball_state
@@ -943,6 +1105,10 @@ def digest(bag_dir: str):
             'min':  int(np.min(mark_n)) if mark_n.size else None,
             'max':  int(np.max(mark_n)) if mark_n.size else None,
         },
+        # Hold-level loop windup diagnostic (corr_r/corr_p growth, max_corr /
+        # integ-clamp saturation %, IMU error, feeder/axis state + verdict).
+        # None unless the bag carries /level_diag (a leveling attempt).
+        'level_loop': level_loop,
     }
 
     print(f"[demo-digest] label={label} duration={duration_s:.1f}s "
@@ -1053,6 +1219,23 @@ def digest(bag_dir: str):
               f"p95={lc.get('measured_p95_a')}A cap={lc.get('cap_a')}A"
               + (f"  near-cap {sat*100:.0f}% of run"
                  if sat is not None else ""))
+    ll = summary.get('level_loop')
+    if ll:
+        print(f"  level_loop: {ll['n']} ticks / {ll['duration_s']:.1f}s")
+        for ax in ('roll', 'pitch'):
+            a = ll[ax]
+            print(f"    {ax}: corr {a['corr_start_deg']:+.2f}->"
+                  f"{a['corr_end_deg']:+.2f}deg (|max| {a['corr_abs_max_deg']:.2f}, "
+                  f"max_corr {a['pct_at_max_corr']:.0f}%, integ_clamp "
+                  f"{a['pct_integ_clamp']:.0f}%)  |err| "
+                  f"{a['err_filt_mean_abs_deg']:.2f}deg"
+                  + ("   *** WINDING UP ***" if a['winding_up'] else ""))
+        if ll.get('feeder_mode_last') is not None:
+            print(f"    feeder_mode={ll['feeder_mode_last']} "
+                  f"(non-pos {ll.get('feeder_nonpos_pct')}%)  "
+                  f"axis_not_closed {ll.get('axis_not_closed_pct')}%  "
+                  f"faults {ll.get('legs_with_faults')}")
+        print(f"    verdict: {ll['verdict']}")
     hs = summary.get('host') or {}
     if hs:
         cpu = hs.get('cpu_pct') or {}

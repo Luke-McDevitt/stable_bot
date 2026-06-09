@@ -141,6 +141,13 @@ DEMO_TOPICS = [
     '/leg_encoders',
     '/leg_currents',
     '/odrive_errors',
+    # Hold-level loop per-tick diagnostic (LevelDiag, 50 Hz). Published only
+    # while the level loop runs, so it's free on pure ball-track demos. Carries
+    # corr_r/corr_p, the integrator, PI output, IMU error, clip_flags (rate-
+    # limit / max-corr / integ-clamp saturation) and feeder_mode/axis_state —
+    # exactly what shows the leveling correction winding up or the platform
+    # freezing. digest_demo_bag summarizes it when present.
+    '/level_diag',
 ]
 VISION_DEBUG_TOPICS = [
     # Camera streams
