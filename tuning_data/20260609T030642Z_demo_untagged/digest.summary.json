@@ -609,6 +609,41 @@
     "feeder_nonpos_pct": 0.0,
     "axis_not_closed_pct": 0.3,
     "legs_with_faults": [],
-    "verdict": "WINDUP/SATURATION - axis not CLOSED_LOOP 0% of ticks"
+    "per_leg": {
+      "track_err_mean_turns": [
+        -0.0004,
+        -0.0006,
+        -0.0001,
+        -0.0003,
+        0.0005,
+        -0.3015
+      ],
+      "track_err_absmax_turns": [
+        0.1181,
+        0.1085,
+        0.1167,
+        0.1184,
+        0.125,
+        0.35
+      ],
+      "vel_absmax_tps": [
+        2.166,
+        1.146,
+        1.383,
+        1.117,
+        1.959,
+        0.595
+      ],
+      "iq_absmax_a": [
+        5.26,
+        6.146,
+        5.888,
+        6.376,
+        5.514,
+        6.387
+      ],
+      "worst_tracking_leg": 5
+    },
+    "verdict": "IK/CALIBRATION MISMATCH (suspect a stale empirical jacobian) - roll: standing corr up to 1.71deg holds err to only 0.16deg -> big correction for a near-level plate; pitch: standing corr up to 1.00deg holds err to only 0.13deg -> big correction for a near-level plate"
   }
 }
