@@ -143,13 +143,20 @@ def _find_ep(flat_eps, path):
     return None, None
 
 
-def _dump_config(client, node, flat_eps):
+def _dump_config(client, node, flat_eps, retries=2, timeout=0.3):
+    """Read each endpoint into {path: value}; retry transient failures (SDO
+    reads can time out right after a reboot). A path MISSING from the result
+    means it never read back — NOT that its value is None."""
     params = {}
     for path, ep_id, kind in flat_eps:
-        try:
-            v = client.read(node, ep_id, kind, timeout=0.25)
-        except Exception:
-            v = None
+        v = None
+        for _ in range(retries + 1):
+            try:
+                v = client.read(node, ep_id, kind, timeout=timeout)
+            except Exception:
+                v = None
+            if v is not None:
+                break
         if v is None:
             continue
         params[path] = round(v, 9) if isinstance(v, float) else v
@@ -202,9 +209,12 @@ def _changed(b, a):
 
 
 def _verify(before, after):
-    keys = sorted(set(before) | set(after))
-    changed = [(k, before.get(k), after.get(k)) for k in keys
-               if _changed(before.get(k), after.get(k))]
+    # Only compare params present in BOTH dumps. A param in `before` but not
+    # `after` failed to re-read (a transient SDO timeout) — that is unknown,
+    # NOT a change, so it must never be reported as one or flagged as protected.
+    common = sorted(set(before) & set(after))
+    changed = [(k, before[k], after[k]) for k in common if _changed(before[k], after[k])]
+    missing = sorted(set(before) - set(after))
     print(f"\n=== VERIFY: {len(changed)} parameter(s) changed by calibration ===")
     for k, b, a in changed:
         tag = '   [PROTECTED]' if k in _PROTECTED else ''
@@ -214,21 +224,25 @@ def _verify(before, after):
         print(f"  *** WARNING: protected config changed: {prot} — investigate. ***")
     else:
         print("  protected config (node_id / limits / mode / gains) UNCHANGED ✓")
+    if missing:
+        print(f"  NOTE: {len(missing)} param(s) did not read back in the AFTER dump "
+              f"(transient SDO timeouts, NOT changes) — not compared "
+              f"(e.g. {', '.join(missing[:3])}). Re-run with --dump-only to confirm.")
     rv = after.get('axis0.config.motor.phase_resistance_valid')
     iv = after.get('axis0.config.motor.phase_inductance_valid')
     if rv is not None or iv is not None:
         ok = bool(rv) and bool(iv)
         print(f"  motor calibration valid: R={rv} L={iv} -> "
               f"{'OK' if ok else 'NOT VALID — re-run'}")
-    if not changed:
+    if not changed and not missing:
         print("  (nothing changed — calibration may not have run; check the log above)")
 
 
-def calibrate_node(node, channel, do_run, do_push, do_verify):
+def calibrate_node(node, channel, do_run, do_push, do_verify, do_dump_only=False):
     save_id = _load_save_endpoint()
     flat_eps = _load_flat_config_endpoints()
     fw = '0.6.11'
-    repo = _repo_root() if do_run else None
+    repo = _repo_root() if (do_run or do_dump_only) else None
     run_ts = _ts()
     client = SdoClient(channel=channel)
     bus = client.bus
@@ -241,6 +255,26 @@ def calibrate_node(node, channel, do_run, do_push, do_verify):
                      f"the bus, and stack stopped?")
         print(f"node {node}: alive (axis_state={st}); {len(flat_eps)} config "
               f"params to dump; save endpoint={save_id}.")
+        if do_dump_only:
+            print(f"node {node}: read-only dump (no calibration, no save)...")
+            params = _dump_config(client, node, flat_eps, retries=3, timeout=0.5)
+            print(f"node {node}: read {len(params)}/{len(flat_eps)} params.")
+            for k in ('axis0.config.can.node_id',
+                      'axis0.config.enable_watchdog',
+                      'axis0.config.motor.phase_resistance',
+                      'axis0.config.motor.phase_resistance_valid',
+                      'axis0.config.motor.phase_inductance',
+                      'axis0.config.motor.phase_inductance_valid',
+                      'axis0.commutation_mapper.config.offset'):
+                print(f"    {k} = {params.get(k, '<did not read>')}")
+            miss = len(flat_eps) - len(params)
+            if miss:
+                print(f"    ({miss} did not read back — transient; re-run --dump-only)")
+            if repo:
+                rel = _write_dump(repo, run_ts, node, 'check', params, fw)
+                if do_push:
+                    _git_push(repo, rel, f"odrive node {node}: read-only param check")
+            return
         if not do_run:
             print("DRY-RUN — would: dump+push BEFORE, FULL_CALIBRATION_SEQUENCE, "
                   "save, dump+push AFTER, verify. Re-run with --run, leg free.")
@@ -327,13 +361,20 @@ def calibrate_node(node, channel, do_run, do_push, do_verify):
 
         # ---- wait for the reboot, then AFTER dump (+push) + verify ----
         time.sleep(18.0)
-        back_deadline = time.monotonic() + 15.0
+        back_deadline = time.monotonic() + 20.0
         while time.monotonic() < back_deadline:
             s, _pr, _e = _read_heartbeat(bus, node, timeout=2.0)
             if s is not None:
                 break
+        time.sleep(3.0)   # let SDO endpoints settle before the read burst
         print(f"node {node}: dumping parameters (AFTER)...")
         after = _dump_config(client, node, flat_eps)
+        if len(after) < len(flat_eps):   # transient post-reboot timeouts: refill the gaps
+            gaps = [(p, i, k) for (p, i, k) in flat_eps if p not in after]
+            print(f"  {len(gaps)} params didn't read back; settling + retrying...")
+            time.sleep(3.0)
+            after.update(_dump_config(client, node, gaps, retries=4, timeout=0.6))
+            print(f"  AFTER dump now has {len(after)}/{len(flat_eps)} params.")
         after_rel = _write_dump(repo, run_ts, node, 'after', after, fw) if repo else None
         if do_push and after_rel:
             _git_push(repo, after_rel, f"odrive cal node {node}: post-calibration param dump")
@@ -365,11 +406,14 @@ def main():
                     help='write the before/after dumps locally but do not git push')
     ap.add_argument('--no-verify', action='store_true',
                     help='skip the before/after diff report (verify is on by default)')
+    ap.add_argument('--dump-only', action='store_true',
+                    help='read + report all params (node_id, watchdog, calibration) '
+                         'then exit; no calibration, no save')
     a = ap.parse_args()
     if not 0 <= a.node <= 5:
         sys.exit("--node must be 0-5")
-    calibrate_node(a.node, a.channel, a.run,
-                   do_push=not a.no_push, do_verify=not a.no_verify)
+    calibrate_node(a.node, a.channel, a.run, do_push=not a.no_push,
+                   do_verify=not a.no_verify, do_dump_only=a.dump_only)
 
 
 if __name__ == '__main__':
