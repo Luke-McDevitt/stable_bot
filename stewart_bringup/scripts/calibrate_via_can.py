@@ -80,6 +80,7 @@ _PROTECTED = (
     'axis0.controller.config.pos_gain',
     'axis0.controller.config.vel_gain',
     'axis0.controller.config.vel_integrator_gain',
+    'axis0.config.enable_watchdog',     # temporarily toggled, must end up ON
 )
 
 
@@ -132,6 +133,14 @@ def _load_flat_config_endpoints():
             continue
         out.append((path, int(ent['id']), kind))
     return out
+
+
+def _find_ep(flat_eps, path):
+    """(id, kind) for a config path in the flat list, else (None, None)."""
+    for p, ep_id, kind in flat_eps:
+        if p == path:
+            return ep_id, kind
+    return None, None
 
 
 def _dump_config(client, node, flat_eps):
@@ -223,6 +232,8 @@ def calibrate_node(node, channel, do_run, do_push, do_verify):
     run_ts = _ts()
     client = SdoClient(channel=channel)
     bus = client.bus
+    wd_ep, wd_kind = _find_ep(flat_eps, 'axis0.config.enable_watchdog')
+    wd_orig, wd_disabled = None, False
     try:
         st, _pr, _e = _read_heartbeat(bus, node, timeout=2.0)
         if st is None:
@@ -244,6 +255,22 @@ def calibrate_node(node, channel, do_run, do_push, do_verify):
         before_rel = _write_dump(repo, run_ts, node, 'before', before, fw) if repo else None
         if do_push and before_rel:
             _git_push(repo, before_rel, f"odrive cal node {node}: pre-calibration param dump")
+
+        # ---- Watchdog: with the stack stopped nothing feeds the safety
+        # watchdog, so it expires and the drive rejects calibration
+        # (WATCHDOG_TIMER_EXPIRED, axis_error 0x01000000). Temporarily disable
+        # it in RAM, then RESTORE it before save_configuration so the persisted
+        # config keeps the watchdog ON exactly as configured. ----
+        if wd_ep is not None:
+            try:
+                wd_orig = client.read(node, wd_ep, wd_kind, timeout=0.5)
+            except Exception:
+                wd_orig = None
+            if wd_orig:
+                client.write(node, wd_ep, False, wd_kind)
+                wd_disabled = True
+                print("  enable_watchdog temporarily OFF for calibration "
+                      "(restored + saved ON afterwards)")
 
         # ---- Calibrate ----
         print(f"node {node}: calibrating in 3s — Ctrl-C to abort (motor WILL spin)...")
@@ -290,7 +317,12 @@ def calibrate_node(node, channel, do_run, do_push, do_verify):
             sys.exit(f"node {node}: calibration FAILED (procedure_result={result}). "
                      f"NOT saving. Check wiring + that the motor can rotate freely, "
                      f"clear errors, retry.")
-        print(f"node {node}: calibration SUCCESS. save_configuration() (reboot ~18s)...")
+        print(f"node {node}: calibration SUCCESS.")
+        if wd_disabled:                  # restore BEFORE save so flash keeps it ON
+            client.write(node, wd_ep, wd_orig, wd_kind)
+            wd_disabled = False
+            print("  enable_watchdog restored ON")
+        print("  save_configuration() (reboot ~18s)...")
         client.call_function(node, save_id)
 
         # ---- wait for the reboot, then AFTER dump (+push) + verify ----
@@ -310,6 +342,12 @@ def calibrate_node(node, channel, do_run, do_push, do_verify):
         print(f"node {node}: done. Restart the stack and verify the leg rotates "
               f"correctly under command.")
     finally:
+        if wd_disabled and wd_ep is not None:   # early exit before the restore
+            try:
+                client.write(node, wd_ep, wd_orig if wd_orig is not None else True, wd_kind)
+                print("  enable_watchdog restored ON (after early exit; flash unchanged)")
+            except Exception:
+                pass
         try:
             client.close()
         except Exception:
